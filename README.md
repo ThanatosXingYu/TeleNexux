@@ -1,7 +1,7 @@
 # TeleNexus
 
-TeleNexus 是用于管理多个 Telegram 账号的 Go 服务。当前第一阶段提供账号
-元数据管理、SQLite 持久化、健康检查和 REST API。
+TeleNexus 是用于管理多个 Telegram 账号的 Go 服务。当前提供管理台框架、
+账号元数据管理、SQLite 持久化、健康检查和 REST API。
 
 > **当前边界：** 尚未接入 Telegram MTProto。账号默认状态为 `pending`；
 > 真实登录、消息采集和监控任务将在后续阶段接入。
@@ -20,6 +20,20 @@ go run ./cmd/telenexus
 ```sh
 curl http://localhost:9487/healthz
 ```
+
+浏览器打开 `http://localhost:9487/` 可查看管理控制台。登录页为
+`http://localhost:9487/login`，登录认证尚未接入。
+
+## 管理台
+
+管理台参考 Snowy 后台的经典布局，通过 Go `html/template` 和静态 CSS/JS
+在服务端提供，不依赖 Node 构建。当前包含工作台、账号列表、账号分组、
+实时监控、监控任务、告警记录、消息记录、数据报表、系统设置和服务状态
+页面。业务页保留筛选、操作区和数据区占位，尚未接入 Telegram 数据。
+
+页面模板位于 `internal/web/templates/`，样式和交互位于
+`internal/web/static/`。支持桌面侧栏折叠、移动端抽屉导航、搜索面板、
+通知面板和界面设置。
 
 ## API
 
