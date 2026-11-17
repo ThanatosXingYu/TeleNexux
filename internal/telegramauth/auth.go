@@ -69,6 +69,8 @@ type ServiceConfig struct {
 	LoginTTL         time.Duration
 	OperationTimeout time.Duration
 	Now              func() time.Time
+	AppID            int
+	AppHash          string
 }
 
 type Challenge struct {
@@ -104,6 +106,7 @@ type Service struct {
 	loginTTL         time.Duration
 	operationTimeout time.Duration
 	now              func() time.Time
+	qr               *QRService
 
 	mu     sync.Mutex
 	logins map[string]*loginState
@@ -149,7 +152,7 @@ func NewService(driver Driver, fetcher CodeFetcher, config ServiceConfig) (*Serv
 	if err := cleanupPendingSessions(pendingDir); err != nil {
 		return nil, err
 	}
-	return &Service{
+	service := &Service{
 		driver:           driver,
 		fetcher:          fetcher,
 		sessionDir:       config.SessionDir,
@@ -157,7 +160,15 @@ func NewService(driver Driver, fetcher CodeFetcher, config ServiceConfig) (*Serv
 		operationTimeout: config.OperationTimeout,
 		now:              config.Now,
 		logins:           make(map[string]*loginState),
-	}, nil
+	}
+	if config.AppID > 0 && strings.TrimSpace(config.AppHash) != "" {
+		qrService, err := NewQRService(config.AppID, config.AppHash, config.SessionDir, 3*time.Minute)
+		if err != nil {
+			return nil, err
+		}
+		service.qr = qrService
+	}
+	return service, nil
 }
 
 func cleanupPendingSessions(directory string) error {
@@ -180,6 +191,27 @@ func cleanupPendingSessions(directory string) error {
 
 func (s *Service) Configured() bool {
 	return s != nil && s.driver != nil
+}
+
+func (s *Service) StartQR(ctx context.Context) (QRChallenge, error) {
+	if s == nil || s.qr == nil {
+		return QRChallenge{}, ErrNotConfigured
+	}
+	return s.qr.Start(ctx)
+}
+
+func (s *Service) PollQR(loginID string) (QRResult, error) {
+	if s == nil || s.qr == nil {
+		return QRResult{}, ErrNotConfigured
+	}
+	return s.qr.Poll(loginID)
+}
+
+func (s *Service) CancelQR(loginID string) error {
+	if s == nil || s.qr == nil {
+		return ErrNotConfigured
+	}
+	return s.qr.Cancel(loginID)
 }
 
 func (s *Service) SendCode(ctx context.Context, phone, codeSource string) (Challenge, error) {

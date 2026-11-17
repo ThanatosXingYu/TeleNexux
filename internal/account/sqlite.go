@@ -177,6 +177,34 @@ WHERE id = ?`
 	return item, err
 }
 
+func (r *SQLiteRepository) UpdateStatus(
+	ctx context.Context,
+	id int64,
+	status string,
+	now time.Time,
+) (Account, error) {
+	const query = `
+UPDATE accounts
+SET status = ?, updated_at = ?
+WHERE id = ?`
+	result, err := r.db.ExecContext(ctx, query, status, now.Format(time.RFC3339Nano), id)
+	if err != nil {
+		return Account{}, fmt.Errorf("update account %d status: %w", id, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Account{}, fmt.Errorf("check updated account %d: %w", id, err)
+	}
+	if affected == 0 {
+		return Account{}, ErrNotFound
+	}
+	item, err := r.Get(ctx, id)
+	if err != nil {
+		return Account{}, fmt.Errorf("read account %d after status update: %w", id, err)
+	}
+	return item, nil
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }

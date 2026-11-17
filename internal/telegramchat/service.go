@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramauth"
@@ -34,6 +35,7 @@ type Chat struct {
 	LastMessage time.Time `json:"last_message_at"`
 	UnreadCount int       `json:"unread_count"`
 	Pinned      bool      `json:"pinned"`
+	HasAvatar   bool      `json:"has_avatar"`
 }
 
 type ChatPage struct {
@@ -45,6 +47,7 @@ type ChatPage struct {
 type Message struct {
 	ID        int       `json:"id"`
 	Sender    string    `json:"sender"`
+	SenderID  int64     `json:"sender_id,omitempty"`
 	Text      string    `json:"text"`
 	MediaType string    `json:"media_type,omitempty"`
 	SentAt    time.Time `json:"sent_at"`
@@ -63,6 +66,22 @@ type Service struct {
 	appHash          string
 	sessionDirectory string
 	operationTimeout time.Duration
+	peerMu           sync.RWMutex
+	peers            map[string]cachedPeer
+	avatarMu         sync.RWMutex
+	avatars          map[string]cachedAvatar
+}
+
+func (s *Service) ValidateSession(ctx context.Context, accountID int64) error {
+	if s == nil {
+		return ErrNotConfigured
+	}
+	return s.withClient(ctx, accountID, func(ctx context.Context, client *telegram.Client) error {
+		if _, err := client.Self(ctx); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func NewService(appID int, appHash, sessionDirectory string) (*Service, error) {
@@ -78,6 +97,8 @@ func NewService(appID int, appHash, sessionDirectory string) (*Service, error) {
 		appHash:          strings.TrimSpace(appHash),
 		sessionDirectory: sessionDirectory,
 		operationTimeout: 30 * time.Second,
+		peers:            make(map[string]cachedPeer),
+		avatars:          make(map[string]cachedAvatar),
 	}, nil
 }
 
@@ -121,7 +142,7 @@ func (s *Service) Messages(
 	limit = normalizeLimit(limit)
 	var page MessagePage
 	err := s.withClient(ctx, accountID, func(ctx context.Context, client *telegram.Client) error {
-		inputPeer, err := resolveInputPeer(ctx, client.API(), peerType, peerID)
+		inputPeer, err := s.resolveInputPeer(ctx, client.API(), accountID, peerType, peerID)
 		if err != nil {
 			return err
 		}

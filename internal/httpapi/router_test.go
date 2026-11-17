@@ -26,6 +26,7 @@ type fakeAccountService struct {
 	upsertErr error
 	listErr   error
 	getErr    error
+	updateErr error
 }
 
 func (s *fakeAccountService) Create(_ context.Context, input account.CreateInput) (account.Account, error) {
@@ -69,6 +70,18 @@ func (s *fakeAccountService) Get(_ context.Context, _ int64) (account.Account, e
 	if s.getErr != nil {
 		return account.Account{}, s.getErr
 	}
+	return s.created, nil
+}
+
+func (s *fakeAccountService) UpdateStatus(
+	_ context.Context,
+	_ int64,
+	status string,
+) (account.Account, error) {
+	if s.updateErr != nil {
+		return account.Account{}, s.updateErr
+	}
+	s.created.Status = status
 	return s.created, nil
 }
 
@@ -120,11 +133,28 @@ func (s *fakeTelegramAuthService) Cancel(_ string) error {
 	return nil
 }
 
+func (s *fakeTelegramAuthService) StartQR(_ context.Context) (telegramauth.QRChallenge, error) {
+	return telegramauth.QRChallenge{}, nil
+}
+
+func (s *fakeTelegramAuthService) PollQR(_ string) (telegramauth.QRResult, error) {
+	return telegramauth.QRResult{}, nil
+}
+
+func (s *fakeTelegramAuthService) CancelQR(_ string) error {
+	return nil
+}
+
 type fakeTelegramChatService struct {
 	chats       telegramchat.ChatPage
 	messages    telegramchat.MessagePage
 	chatsErr    error
 	messagesErr error
+	validateErr error
+}
+
+func (s *fakeTelegramChatService) ValidateSession(_ context.Context, _ int64) error {
+	return s.validateErr
 }
 
 func (s *fakeTelegramChatService) Chats(
@@ -144,6 +174,70 @@ func (s *fakeTelegramChatService) Messages(
 	_ int,
 ) (telegramchat.MessagePage, error) {
 	return s.messages, s.messagesErr
+}
+
+func (s *fakeTelegramChatService) SearchChats(
+	_ context.Context,
+	_ int64,
+	_ string,
+	_ int,
+) (telegramchat.ChatPage, error) {
+	return s.chats, s.chatsErr
+}
+
+func (s *fakeTelegramChatService) CurrentProfile(
+	_ context.Context,
+	_ int64,
+) (telegramchat.Profile, error) {
+	return telegramchat.Profile{}, s.messagesErr
+}
+
+func (s *fakeTelegramChatService) UpdateCurrentProfile(
+	_ context.Context,
+	_ int64,
+	_ telegramchat.UpdateProfileInput,
+) (telegramchat.Profile, error) {
+	return telegramchat.Profile{}, s.messagesErr
+}
+
+func (s *fakeTelegramChatService) ChatProfile(
+	_ context.Context,
+	_ int64,
+	_ string,
+	_ int64,
+) (telegramchat.Profile, error) {
+	return telegramchat.Profile{}, s.messagesErr
+}
+
+func (s *fakeTelegramChatService) Avatar(
+	_ context.Context,
+	_ int64,
+	_ string,
+	_ int64,
+) (telegramchat.Avatar, error) {
+	return telegramchat.Avatar{}, s.messagesErr
+}
+
+func (s *fakeTelegramChatService) DeleteMessages(
+	_ context.Context,
+	_ int64,
+	_ string,
+	_ int64,
+	_ []int,
+) error {
+	return s.messagesErr
+}
+
+func (s *fakeTelegramChatService) ForwardMessages(
+	_ context.Context,
+	_ int64,
+	_ string,
+	_ int64,
+	_ string,
+	_ int64,
+	_ []int,
+) error {
+	return s.messagesErr
 }
 
 type fakeSettingsService struct {
@@ -474,6 +568,27 @@ func TestListChatsReportsInvalidSession(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "授权已失效") {
 		t.Fatalf("response message = %s, want an actionable message", recorder.Body.String())
+	}
+}
+
+func TestRefreshAccountsPersistsExpiredSession(t *testing.T) {
+	accounts := &fakeAccountService{
+		items:   []account.Account{{ID: 42, Status: account.StatusOnline}},
+		created: account.Account{ID: 42, Status: account.StatusOnline},
+	}
+	chats := &fakeTelegramChatService{validateErr: telegramchat.ErrSessionInvalid}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/refresh", strings.NewReader(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithDependencies(accounts, &fakeTelegramAuthService{}, chats, nil).
+		ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if accounts.created.Status != account.StatusError {
+		t.Fatalf("account status = %q, want %q", accounts.created.Status, account.StatusError)
 	}
 }
 

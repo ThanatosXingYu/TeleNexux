@@ -72,6 +72,22 @@ func (r *memoryRepository) Get(_ context.Context, id int64) (Account, error) {
 	return item, nil
 }
 
+func (r *memoryRepository) UpdateStatus(
+	_ context.Context,
+	id int64,
+	status string,
+	now time.Time,
+) (Account, error) {
+	item, exists := r.accounts[id]
+	if !exists {
+		return Account{}, ErrNotFound
+	}
+	item.Status = status
+	item.UpdatedAt = now
+	r.accounts[id] = item
+	return item, nil
+}
+
 func TestServiceCreateNormalizesAccount(t *testing.T) {
 	service := NewService(newMemoryRepository())
 	created, err := service.Create(context.Background(), CreateInput{
@@ -149,5 +165,24 @@ func TestServiceUpsertAuthorizedMarksAccountOnline(t *testing.T) {
 	}
 	if item.Status != StatusOnline {
 		t.Fatalf("UpsertAuthorized() status = %q, want %q", item.Status, StatusOnline)
+	}
+}
+
+func TestServiceUpdateStatusPersistsRealSessionState(t *testing.T) {
+	service := NewService(newMemoryRepository())
+	item, err := service.UpsertAuthorized(context.Background(), CreateInput{
+		ID:          42,
+		PhoneNumber: "+15550001001",
+		DisplayName: "Telegram User",
+	})
+	if err != nil {
+		t.Fatalf("UpsertAuthorized() error = %v", err)
+	}
+	updated, err := service.UpdateStatus(context.Background(), item.ID, StatusError)
+	if err != nil {
+		t.Fatalf("UpdateStatus() error = %v", err)
+	}
+	if updated.Status != StatusError {
+		t.Fatalf("UpdateStatus() status = %q, want %q", updated.Status, StatusError)
 	}
 }

@@ -121,3 +121,33 @@ func TestSQLiteRepositoryUpsertsAuthorizedAccount(t *testing.T) {
 		t.Fatalf("database mode = %o, want 600", info.Mode().Perm())
 	}
 }
+
+func TestSQLiteRepositoryUpdatesAccountStatus(t *testing.T) {
+	ctx := context.Background()
+	repository, err := NewSQLiteRepository(ctx, filepath.Join(t.TempDir(), "accounts.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteRepository() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	service := NewService(repository)
+	item, err := service.UpsertAuthorized(ctx, CreateInput{
+		ID:          8002,
+		PhoneNumber: "+15550001002",
+		DisplayName: "Status account",
+	})
+	if err != nil {
+		t.Fatalf("UpsertAuthorized() error = %v", err)
+	}
+	updated, err := service.UpdateStatus(ctx, item.ID, StatusError)
+	if err != nil {
+		t.Fatalf("UpdateStatus() error = %v", err)
+	}
+	if updated.Status != StatusError || !updated.UpdatedAt.After(item.UpdatedAt) {
+		t.Fatalf("UpdateStatus() = %+v, want error status and newer timestamp", updated)
+	}
+}

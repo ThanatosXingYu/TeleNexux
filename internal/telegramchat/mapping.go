@@ -78,6 +78,7 @@ func mapDialogs(result tg.MessagesDialogsClass, limit int) (ChatPage, error) {
 			LastMessage: sentAt,
 			UnreadCount: dialog.GetUnreadCount(),
 			Pinned:      dialog.GetPinned(),
+			HasAvatar:   peerHasAvatar(identity, usersByID, chatsByID),
 		})
 	}
 	return ChatPage{Items: items, Total: total, Limit: limit}, nil
@@ -118,12 +119,17 @@ func mapMessages(result tg.MessagesMessagesClass, limit int) (MessagePage, error
 		switch message := item.(type) {
 		case *tg.Message:
 			sender := "未知用户"
+			var senderID int64
 			if from, ok := message.GetFromID(); ok {
 				sender = senderName(from, usersByID)
+				if identity, ok := identityFromPeer(from); ok && identity.kind == "user" {
+					senderID = identity.id
+				}
 			}
 			items = append(items, Message{
 				ID:        message.GetID(),
 				Sender:    sender,
+				SenderID:  senderID,
 				Text:      message.GetMessage(),
 				MediaType: mediaType(message),
 				SentAt:    unixTime(message.GetDate()),
@@ -242,6 +248,35 @@ func displayPeer(
 		}
 	}
 	return "未命名会话", ""
+}
+
+func peerHasAvatar(
+	identity peerIdentity,
+	users map[int64]*tg.User,
+	chats map[int64]tg.ChatClass,
+) bool {
+	switch identity.kind {
+	case "user":
+		if user := users[identity.id]; user != nil {
+			photo, ok := user.GetPhoto()
+			if !ok {
+				return false
+			}
+			_, visible := photo.(*tg.UserProfilePhoto)
+			return visible
+		}
+	case "chat":
+		if chat, ok := chats[identity.id].(*tg.Chat); ok {
+			_, visible := chat.GetPhoto().(*tg.ChatPhoto)
+			return visible
+		}
+	case "channel":
+		if channel, ok := chats[identity.id].(*tg.Channel); ok {
+			_, visible := channel.GetPhoto().(*tg.ChatPhoto)
+			return visible
+		}
+	}
+	return false
 }
 
 func senderName(peer tg.PeerClass, users map[int64]*tg.User) string {

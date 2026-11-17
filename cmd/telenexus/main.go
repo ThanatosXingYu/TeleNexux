@@ -89,6 +89,8 @@ func run() error {
 		SessionDir:       cfg.TelegramSessionDir,
 		LoginTTL:         10 * time.Minute,
 		OperationTimeout: 45 * time.Second,
+		AppID:            cfg.TelegramAPIID,
+		AppHash:          cfg.TelegramAPIHash,
 	})
 	if err != nil {
 		return fmt.Errorf("initialize Telegram authentication: %w", err)

@@ -54,6 +54,7 @@ type Repository interface {
 	Upsert(ctx context.Context, input CreateInput, status string, now time.Time) (Account, error)
 	List(ctx context.Context, filter Filter) ([]Account, error)
 	Get(ctx context.Context, id int64) (Account, error)
+	UpdateStatus(ctx context.Context, id int64, status string, now time.Time) (Account, error)
 }
 
 type Service struct {
@@ -102,6 +103,16 @@ func (s *Service) Get(ctx context.Context, id int64) (Account, error) {
 		return Account{}, errors.New("account ID must be positive")
 	}
 	return s.repository.Get(ctx, id)
+}
+
+func (s *Service) UpdateStatus(ctx context.Context, id int64, status string) (Account, error) {
+	if id <= 0 {
+		return Account{}, errors.New("account ID must be positive")
+	}
+	if !IsValidStatus(status) {
+		return Account{}, fmt.Errorf("status must be one of pending, online, paused, error")
+	}
+	return s.repository.UpdateStatus(ctx, id, status, s.clock().UTC())
 }
 
 func IsValidStatus(status string) bool {
