@@ -21,7 +21,7 @@ func TestDashboardRendersSharedLayout(t *testing.T) {
 	for _, expected := range []string{
 		"<title>工作台 · TeleNexus</title>",
 		"欢迎回来，管理员",
-		`class="menu-item active" href="/"`,
+		`class="menu-entry active" href="/"`,
 		`class="page-tab active" href="/"`,
 		"TeleNexus · Telegram 多账号管理平台",
 	} {
@@ -33,28 +33,20 @@ func TestDashboardRendersSharedLayout(t *testing.T) {
 
 func TestEveryNavigationPageRenders(t *testing.T) {
 	handler := newTestHandler(t)
-	paths := []string{
-		"/accounts",
-		"/accounts/groups",
-		"/monitor",
-		"/monitor/tasks",
-		"/monitor/alerts",
-		"/messages",
-		"/reports",
-		"/system",
-		"/system/health",
-	}
-
-	for _, path := range paths {
-		t.Run(path, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodGet, path, nil)
+	for _, page := range pages {
+		t.Run(page.Path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, page.Path, nil)
 			recorder := httptest.NewRecorder()
 			handler.ServeHTTP(recorder, request)
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200", recorder.Code)
 			}
-			if !strings.Contains(recorder.Body.String(), `aria-current="page"`) {
+			body := recorder.Body.String()
+			if !strings.Contains(body, `aria-current="page"`) {
 				t.Error("active page did not expose aria-current")
+			}
+			if !strings.Contains(body, `aria-expanded="true"`) {
+				t.Error("active menu group was not expanded")
 			}
 		})
 	}
@@ -107,6 +99,46 @@ func TestStaticAssetsAreServed(t *testing.T) {
 				t.Error("security headers were not set")
 			}
 		})
+	}
+}
+
+func TestNavigationUsesExpandableGroups(t *testing.T) {
+	handler := newTestHandler(t)
+	request := httptest.NewRequest(http.MethodGet, "/accounts/groups", nil)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	body := recorder.Body.String()
+	if strings.Contains(body, `class="menu-label"`) {
+		t.Error("sidebar should not use flat section labels")
+	}
+	if !strings.Contains(body, `data-submenu-toggle data-menu-tip="账号管理"`) {
+		t.Error("account navigation must be an expandable submenu")
+	}
+	if !strings.Contains(body, `class="submenu is-open" id="submenu-accounts"`) {
+		t.Error("current account submenu must be open")
+	}
+	if !strings.Contains(body, `class="submenu-item active" href="/accounts/groups"`) {
+		t.Error("current child page must be highlighted")
+	}
+}
+
+func TestDashboardUsesVectorIcons(t *testing.T) {
+	handler := newTestHandler(t)
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	body := recorder.Body.String()
+	for _, letterIcon := range []string{">账</span>", ">监</span>", ">消</span>", ">警</span>", ">务</span>", ">诊</span>"} {
+		if strings.Contains(body, letterIcon) {
+			t.Errorf("dashboard still uses letter tile %q", letterIcon)
+		}
+	}
+	if !strings.Contains(body, `class="icon icon-users"`) {
+		t.Error("dashboard should use the shared vector icon set")
 	}
 }
 
