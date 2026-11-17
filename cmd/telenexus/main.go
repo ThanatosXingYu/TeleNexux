@@ -10,10 +10,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/ThanatosXingYu/TeleNexux/internal/account"
 	"github.com/ThanatosXingYu/TeleNexux/internal/config"
 	"github.com/ThanatosXingYu/TeleNexux/internal/httpapi"
+	"github.com/ThanatosXingYu/TeleNexux/internal/telegramauth"
 	"github.com/ThanatosXingYu/TeleNexux/internal/web"
 )
 
@@ -55,9 +57,32 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("initialize web interface: %w", err)
 	}
+
+	codeFetcher, err := telegramauth.NewHTTPCodeFetcher(cfg.TelegramCodeHosts, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("initialize Telegram code fetcher: %w", err)
+	}
+	var telegramDriver telegramauth.Driver
+	if cfg.TelegramAPIID > 0 {
+		telegramDriver = telegramauth.NewGotdDriver(cfg.TelegramAPIID, cfg.TelegramAPIHash)
+	}
+	telegramAuth, err := telegramauth.NewService(telegramDriver, codeFetcher, telegramauth.ServiceConfig{
+		SessionDir:       cfg.TelegramSessionDir,
+		LoginTTL:         10 * time.Minute,
+		OperationTimeout: 45 * time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("initialize Telegram authentication: %w", err)
+	}
+
 	server := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.New(account.NewService(repository), webRenderer.Handler(), logger).Handler(),
+		Addr: cfg.HTTPAddr,
+		Handler: httpapi.New(
+			account.NewService(repository),
+			telegramAuth,
+			webRenderer.Handler(),
+			logger,
+		).Handler(),
 		ReadHeaderTimeout: cfg.ShutdownTimeout,
 	}
 	serverErrors := make(chan error, 1)

@@ -85,3 +85,30 @@ func TestSQLiteRepositoryReturnsNotFound(t *testing.T) {
 		t.Fatalf("Get() error = %v, want ErrNotFound", err)
 	}
 }
+
+func TestSQLiteRepositoryUpsertsAuthorizedAccount(t *testing.T) {
+	ctx := context.Background()
+	repository, err := NewSQLiteRepository(ctx, filepath.Join(t.TempDir(), "accounts.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteRepository() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	service := NewService(repository)
+	input := CreateInput{ID: 8001, PhoneNumber: "+15550001001", DisplayName: "Initial"}
+	if _, err := service.UpsertAuthorized(ctx, input); err != nil {
+		t.Fatalf("first UpsertAuthorized() error = %v", err)
+	}
+	input.DisplayName = "Updated"
+	item, err := service.UpsertAuthorized(ctx, input)
+	if err != nil {
+		t.Fatalf("second UpsertAuthorized() error = %v", err)
+	}
+	if item.DisplayName != "Updated" || item.Status != StatusOnline {
+		t.Fatalf("UpsertAuthorized() = %+v, want updated online account", item)
+	}
+}

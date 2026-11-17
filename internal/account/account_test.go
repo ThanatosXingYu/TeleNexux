@@ -33,6 +33,26 @@ func (r *memoryRepository) Create(_ context.Context, input CreateInput, now time
 	return item, nil
 }
 
+func (r *memoryRepository) Upsert(
+	_ context.Context,
+	input CreateInput,
+	status string,
+	now time.Time,
+) (Account, error) {
+	item, exists := r.accounts[input.ID]
+	if !exists {
+		item.CreatedAt = now
+	}
+	item.ID = input.ID
+	item.PhoneNumber = input.PhoneNumber
+	item.Username = input.Username
+	item.DisplayName = input.DisplayName
+	item.Status = status
+	item.UpdatedAt = now
+	r.accounts[input.ID] = item
+	return item, nil
+}
+
 func (r *memoryRepository) List(_ context.Context, filter Filter) ([]Account, error) {
 	items := make([]Account, 0, len(r.accounts))
 	for _, item := range r.accounts {
@@ -114,5 +134,20 @@ func TestServiceRejectsMissingAccount(t *testing.T) {
 	_, err := NewService(newMemoryRepository()).Get(context.Background(), 100)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Get() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestServiceUpsertAuthorizedMarksAccountOnline(t *testing.T) {
+	service := NewService(newMemoryRepository())
+	item, err := service.UpsertAuthorized(context.Background(), CreateInput{
+		ID:          42,
+		PhoneNumber: "+15550001001",
+		DisplayName: "Telegram User",
+	})
+	if err != nil {
+		t.Fatalf("UpsertAuthorized() error = %v", err)
+	}
+	if item.Status != StatusOnline {
+		t.Fatalf("UpsertAuthorized() status = %q, want %q", item.Status, StatusOnline)
 	}
 }

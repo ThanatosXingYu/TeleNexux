@@ -51,6 +51,7 @@ type Filter struct {
 
 type Repository interface {
 	Create(ctx context.Context, input CreateInput, now time.Time) (Account, error)
+	Upsert(ctx context.Context, input CreateInput, status string, now time.Time) (Account, error)
 	List(ctx context.Context, filter Filter) ([]Account, error)
 	Get(ctx context.Context, id int64) (Account, error)
 }
@@ -73,6 +74,14 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Account, error
 		return Account{}, err
 	}
 	return s.repository.Create(ctx, normalized, s.clock().UTC())
+}
+
+func (s *Service) UpsertAuthorized(ctx context.Context, input CreateInput) (Account, error) {
+	normalized, err := normalizeCreateInput(input)
+	if err != nil {
+		return Account{}, err
+	}
+	return s.repository.Upsert(ctx, normalized, StatusOnline, s.clock().UTC())
 }
 
 func (s *Service) List(ctx context.Context, filter Filter) ([]Account, error) {

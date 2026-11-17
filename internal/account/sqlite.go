@@ -85,6 +85,43 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`
 	}, nil
 }
 
+func (r *SQLiteRepository) Upsert(
+	ctx context.Context,
+	input CreateInput,
+	status string,
+	now time.Time,
+) (Account, error) {
+	const query = `
+INSERT INTO accounts (id, phone_number, username, display_name, status, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+	phone_number = excluded.phone_number,
+	username = excluded.username,
+	display_name = excluded.display_name,
+	status = excluded.status,
+	updated_at = excluded.updated_at`
+	timestamp := now.Format(time.RFC3339Nano)
+	if _, err := r.db.ExecContext(
+		ctx,
+		query,
+		input.ID,
+		input.PhoneNumber,
+		input.Username,
+		input.DisplayName,
+		status,
+		timestamp,
+		timestamp,
+	); err != nil {
+		return Account{}, fmt.Errorf("upsert account %d: %w", input.ID, err)
+	}
+
+	item, err := r.Get(ctx, input.ID)
+	if err != nil {
+		return Account{}, fmt.Errorf("read upserted account %d: %w", input.ID, err)
+	}
+	return item, nil
+}
+
 func (r *SQLiteRepository) List(ctx context.Context, filter Filter) ([]Account, error) {
 	query := `
 SELECT id, phone_number, username, display_name, status, created_at, updated_at
