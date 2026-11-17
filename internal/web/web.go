@@ -81,7 +81,11 @@ func (r *Renderer) Handler() http.Handler {
 	mux.Handle("GET /static/", http.StripPrefix("/static/", r.fileServer))
 	mux.HandleFunc("GET /", r.dashboard)
 	mux.HandleFunc("GET /login", r.login)
+	mux.HandleFunc("GET /accounts", r.accounts)
 	for _, page := range pages {
+		if page.Path == "/accounts" {
+			continue
+		}
 		mux.HandleFunc("GET "+page.Path, r.placeholder(page))
 	}
 	return secureHeaders(mux)
@@ -114,6 +118,18 @@ func (r *Renderer) login(w http.ResponseWriter, _ *http.Request) {
 	if err := r.templates.ExecuteTemplate(w, "login.html", data); err != nil {
 		http.Error(w, "render login page", http.StatusInternalServerError)
 	}
+}
+
+func (r *Renderer) accounts(w http.ResponseWriter, _ *http.Request) {
+	r.render(w, pageData{
+		Title:       "账号列表",
+		Section:     "账号列表",
+		ActivePath:  "/accounts",
+		Page:        "accounts",
+		Navigation:  navigation("/accounts"),
+		Breadcrumbs: []breadcrumb{{Label: "工作台", Path: "/"}, {Label: "账号管理"}, {Label: "账号列表"}},
+		Account:     defaultAccount,
+	})
 }
 
 func (r *Renderer) placeholder(page pageDefinition) http.HandlerFunc {

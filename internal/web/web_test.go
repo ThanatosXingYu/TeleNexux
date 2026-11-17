@@ -142,6 +142,35 @@ func TestDashboardUsesVectorIcons(t *testing.T) {
 	}
 }
 
+func TestAccountsPageRendersTelegramLoginFlow(t *testing.T) {
+	handler := newTestHandler(t)
+	request := httptest.NewRequest(http.MethodGet, "/accounts", nil)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	body := recorder.Body.String()
+	for _, expected := range []string{
+		"登录 Telegram 账号",
+		`data-auth-step="phone"`,
+		`data-auth-step="code"`,
+		`data-auth-step="password"`,
+		`data-accounts-body`,
+		`class="menu-group current"`,
+		`class="submenu-item active" href="/accounts"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("accounts page missing %q", expected)
+		}
+	}
+	if strings.Contains(body, "账号列表尚未接入") {
+		t.Error("accounts page must not render the generic placeholder")
+	}
+}
+
 func newTestHandler(t *testing.T) http.Handler {
 	t.Helper()
 	renderer, err := New()

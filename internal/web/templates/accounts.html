@@ -1,0 +1,170 @@
+{{define "accounts.html"}}
+<section class="page-heading accounts-heading">
+  <div>
+    <p class="eyebrow">Telegram Account Operations</p>
+    <h1>账号列表</h1>
+    <p class="page-subtitle">通过 Telegram 官方 MTProto 登录，集中管理账号授权与在线状态。</p>
+  </div>
+  <div class="heading-actions">
+    <button class="button button-secondary" type="button" data-accounts-refresh>
+      <span class="icon icon-refresh-cw" aria-hidden="true"></span>
+      刷新
+    </button>
+    <button class="button button-primary" type="button" data-open-login>
+      <span class="icon icon-user-round-plus" aria-hidden="true"></span>
+      登录 Telegram 账号
+    </button>
+  </div>
+</section>
+
+<section class="account-overview" aria-label="账号概览">
+  <div class="overview-item">
+    <span class="stat-icon stat-blue"><span class="icon icon-users" aria-hidden="true"></span></span>
+    <span><strong data-account-count>—</strong><small>全部账号</small></span>
+  </div>
+  <div class="overview-item">
+    <span class="stat-icon stat-green"><span class="icon icon-activity" aria-hidden="true"></span></span>
+    <span><strong data-online-count>—</strong><small>在线账号</small></span>
+  </div>
+  <div class="overview-item overview-integration">
+    <span class="stat-icon stat-orange"><span class="icon icon-shield-check" aria-hidden="true"></span></span>
+    <span>
+      <strong>MTProto</strong>
+      <small data-telegram-config>正在检查登录配置</small>
+    </span>
+  </div>
+</section>
+
+<section class="card accounts-card">
+  <div class="card-header accounts-card-header">
+    <div>
+      <h2>已接入账号</h2>
+      <span class="muted">手机号仅显示末四位，授权会话保存在本地受保护目录。</span>
+    </div>
+    <span class="badge badge-blue">实时数据</span>
+  </div>
+
+  <div class="table-state" data-accounts-loading>
+    <span class="table-spinner" aria-hidden="true"></span>
+    <p>正在加载账号...</p>
+  </div>
+  <div class="empty-state accounts-empty" data-accounts-empty hidden>
+    <span class="empty-icon"><span class="icon icon-user-round" aria-hidden="true"></span></span>
+    <h2>还没有 Telegram 账号</h2>
+    <p>点击“登录 Telegram 账号”，输入手机号并完成验证码验证。</p>
+    <button class="button button-primary" type="button" data-open-login>登录第一个账号</button>
+  </div>
+  <div class="accounts-table-wrap" data-accounts-table hidden>
+    <table class="accounts-table">
+      <thead>
+        <tr>
+          <th>账号</th>
+          <th>手机号</th>
+          <th>用户名</th>
+          <th>状态</th>
+          <th>最近更新</th>
+        </tr>
+      </thead>
+      <tbody data-accounts-body></tbody>
+    </table>
+  </div>
+  <p class="form-notice form-notice-error" data-accounts-error hidden></p>
+</section>
+
+<dialog class="account-dialog" id="telegram-login-dialog" aria-labelledby="telegram-login-title">
+  <div class="dialog-card">
+    <div class="dialog-header">
+      <div>
+        <p class="eyebrow">官方 MTProto 登录</p>
+        <h2 id="telegram-login-title">登录 Telegram 账号</h2>
+      </div>
+      <button class="tool-button" type="button" data-login-close aria-label="关闭登录窗口">
+        <span class="icon icon-x" aria-hidden="true"></span>
+      </button>
+    </div>
+
+    <div class="auth-progress" aria-label="登录进度">
+      <span class="auth-progress-step active" data-progress-step="phone"><b>1</b>手机号</span>
+      <span class="auth-progress-line" aria-hidden="true"></span>
+      <span class="auth-progress-step" data-progress-step="code"><b>2</b>验证码</span>
+      <span class="auth-progress-line" aria-hidden="true"></span>
+      <span class="auth-progress-step" data-progress-step="complete"><b>3</b>完成</span>
+    </div>
+
+    <div class="auth-step" data-auth-step="phone">
+      <div class="auth-step-heading">
+        <span class="auth-step-icon"><span class="icon icon-smartphone" aria-hidden="true"></span></span>
+        <div>
+          <h3>输入手机号</h3>
+          <p>Telegram 会向该号码发送应用内消息或短信验证码。</p>
+        </div>
+      </div>
+      <form class="auth-form" data-phone-form>
+        <label class="field">
+          <span>手机号（含国家区号）</span>
+          <input name="phone_number" type="tel" inputmode="tel" autocomplete="tel"
+            placeholder="+8613800138000" required>
+        </label>
+        <label class="field">
+          <span>接码链接（可选，仅限已配置的服务）</span>
+          <input name="code_url" type="url" inputmode="url"
+            placeholder="https://tgok.cc/.../GetHTML">
+        </label>
+        <p class="field-hint">没有接码链接时，可以手动输入 Telegram 收到的验证码。</p>
+        <p class="form-notice" data-phone-notice hidden></p>
+        <button class="button button-primary button-block" type="submit">发送验证码</button>
+      </form>
+    </div>
+
+    <div class="auth-step" data-auth-step="code" hidden>
+      <div class="auth-step-heading">
+        <span class="auth-step-icon"><span class="icon icon-message-square-text" aria-hidden="true"></span></span>
+        <div>
+          <h3>输入验证码</h3>
+          <p><span data-auth-phone-hint></span> · <span data-auth-code-type>Telegram 验证码</span></p>
+        </div>
+      </div>
+      <form class="auth-form" data-code-form>
+        <label class="field">
+          <span>验证码</span>
+          <input class="code-field" name="code" type="text" inputmode="numeric" pattern="[0-9]{4,8}"
+            autocomplete="one-time-code" maxlength="8" placeholder="请输入验证码" required>
+        </label>
+        <p class="form-notice" data-code-notice hidden></p>
+        <button class="button button-primary button-block" type="submit">验证并登录</button>
+        <button class="button button-secondary button-block" type="button" data-fetch-code hidden>
+          <span class="icon icon-refresh-cw" aria-hidden="true"></span>
+          从接码链接读取
+        </button>
+        <button class="text-button" type="button" data-login-back>修改手机号</button>
+      </form>
+    </div>
+
+    <div class="auth-step" data-auth-step="password" hidden>
+      <div class="auth-step-heading">
+        <span class="auth-step-icon"><span class="icon icon-key-round" aria-hidden="true"></span></span>
+        <div>
+          <h3>二次验证</h3>
+          <p>该账号启用了两步验证，请输入 Telegram 云密码。</p>
+        </div>
+      </div>
+      <form class="auth-form" data-password-form>
+        <label class="field">
+          <span>二次验证密码</span>
+          <input name="password" type="password" autocomplete="current-password"
+            maxlength="256" placeholder="请输入云密码" required>
+        </label>
+        <p class="form-notice" data-password-notice hidden></p>
+        <button class="button button-primary button-block" type="submit">完成登录</button>
+      </form>
+    </div>
+
+    <div class="auth-step auth-complete" data-auth-step="complete" hidden>
+      <span class="complete-icon"><span class="icon icon-circle-check" aria-hidden="true"></span></span>
+      <h3>账号登录成功</h3>
+      <p><strong data-complete-name>Telegram 账号</strong> 已接入账号列表。</p>
+      <button class="button button-primary" type="button" data-login-finish>完成</button>
+    </div>
+  </div>
+</dialog>
+{{end}}

@@ -26,6 +26,11 @@ func TestScriptUsesOnlyReferencedControls(t *testing.T) {
 		`document.querySelector("[data-toggle-breadcrumb]")`,
 		`document.querySelector("[data-toggle-tabs]")`,
 		`document.querySelector("[data-login-form]")`,
+		`/api/v1/telegram/auth/send-code`,
+		`data-auth-step`,
+		`requestJSON`,
+		`fetchCodeFromSource`,
+		`passwordForm?.addEventListener`,
 	}
 	for _, behavior := range requiredBehavior {
 		if !strings.Contains(script, behavior) {
