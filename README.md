@@ -2,7 +2,7 @@
 
 TeleNexus 是使用 Go 开发的 Telegram 多账号管理服务。当前提供管理台、
 账号元数据管理、SQLite 持久化、MTProto 手机号登录、可选两步验证、
-接码链接轮询、健康检查和 REST API。
+接码链接轮询、账号聊天查看、系统设置、健康检查和 REST API。
 
 ## 环境要求
 
@@ -47,7 +47,9 @@ curl http://localhost:9487/healthz
 
 短期登录状态仅保存在内存中；授权会话位于
 `data/telegram-sessions/accounts/<telegram-id>.session`。目录权限为
-`0700`，会话文件权限为 `0600`。
+`0700`，会话文件权限为 `0600`。同一会话的 MTProto 设备信息会从常见
+Apple iPhone 型号、iOS 版本和 Telegram iOS 版本中稳定选择并保存到
+`.session.device` sidecar，不会使用项目名称作为设备型号。
 
 接码地址必须使用 HTTPS 默认端口，且主机必须出现在
 `TELEGRAM_CODE_FETCH_HOSTS` 中。服务会在请求和重定向时校验 URL，并在
@@ -58,7 +60,9 @@ SSRF 和 DNS 重绑定风险。接码域名通过 `TELEGRAM_CODE_DNS_SERVER` 指
 
 ## 配置
 
-配置从进程环境变量或 `.env` 读取，进程环境变量优先。启动时会校验错误配置。
+配置从进程环境变量、系统设置页或 `.env` 读取。优先级为进程环境变量 →
+系统设置 → `.env` → 默认值。系统设置在 `SETTINGS_PATH` 指定的本地 JSON
+文件中保存，文件权限为 `0600`；页面保存后需重启服务。API Hash 只写不回显。
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -66,6 +70,7 @@ SSRF 和 DNS 重绑定风险。接码域名通过 `TELEGRAM_CODE_DNS_SERVER` 指
 | `HTTP_ADDR` | `127.0.0.1:9487` | HTTP 监听地址 |
 | `LOG_LEVEL` | `info` | `debug`、`info`、`warn` 或 `error` |
 | `DATABASE_PATH` | `./data/telenexus.db` | SQLite 数据文件 |
+| `SETTINGS_PATH` | `./data/settings.json` | 系统设置本地文件 |
 | `SHUTDOWN_TIMEOUT` | `10s` | HTTP 启动检查与关闭超时 |
 | `TELEGRAM_API_ID` | 空 | Telegram 应用 ID |
 | `TELEGRAM_API_HASH` | 空 | Telegram 应用 Hash |
@@ -95,6 +100,18 @@ POST   /api/v1/telegram/auth/{login_id}/password
 POST   /api/v1/telegram/auth/{login_id}/fetch-code
 DELETE /api/v1/telegram/auth/{login_id}
 ```
+
+系统设置与聊天查看：
+
+```text
+GET    /api/v1/settings
+PUT    /api/v1/settings
+GET    /api/v1/accounts/{id}/chats
+GET    /api/v1/accounts/{id}/chats/{type}/{peer_id}/messages
+```
+
+聊天接口只读取账号目录中与 `{id}` 对应的授权会话，`type` 支持 `user`、
+`chat` 和 `channel`。消息历史使用 `before_id` 和 `limit` 分页。
 
 错误响应统一为：
 
