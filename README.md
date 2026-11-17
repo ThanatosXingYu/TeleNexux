@@ -2,8 +2,7 @@
 
 TeleNexus 是使用 Go 开发的 Telegram 多账号管理服务。当前提供管理台、
 账号元数据管理、SQLite 持久化、MTProto 二维码/手机号登录、可选两步验证、
-临时接码链接轮询、账号会话搜索、个人资料编辑、消息转发/删除、系统配置、
-健康检查和 REST API。
+账号会话搜索、个人资料编辑、消息转发/删除、系统配置、健康检查和 REST API。
 
 ## 环境要求
 
@@ -43,7 +42,7 @@ curl http://localhost:9487/healthz
 登录流程使用 Telegram MTProto：
 
 1. 默认为 Telegram 二维码授权；二维码过期后可在页面重新生成。
-2. 手机号方式会创建短期登录会话，可手动输入验证码或临时填写接码链接。
+2. 手机号方式会按国家区号和本地号码创建短期登录会话，再手动输入验证码。
 3. 账号启用两步验证时，继续输入 Telegram 云密码。
 4. 登录成功后按 Telegram 用户 ID 幂等写入账号列表，并保存授权会话。
 
@@ -53,9 +52,8 @@ curl http://localhost:9487/healthz
 版本和 Telegram iOS 版本中随机选择设备信息，并保存到 `.session.device`
 sidecar；后续连接沿用同一资料，不会使用项目名称作为设备型号。
 
-接码链接只在单次登录中临时使用，不进入系统设置、浏览器存储或长期配置。
-服务端仍会限制允许的 HTTPS 主机、端口、重定向和解析地址，以降低 SSRF
-风险；网络日志不会记录完整接码链接。
+管理台不保存手机号输入草稿、验证码或云密码。授权会话失效后，账号会显示
+为“已掉线”，需要通过二维码或手机号重新授权。
 
 ## 配置
 
@@ -77,10 +75,8 @@ sidecar；后续连接沿用同一资料，不会使用项目名称作为设备�
 | `TELEGRAM_API_ID` | 空 | Telegram 应用 ID |
 | `TELEGRAM_API_HASH` | 空 | Telegram 应用 Hash |
 | `TELEGRAM_SESSION_DIR` | `./data/telegram-sessions` | 授权会话目录 |
-| `TELEGRAM_CODE_FETCH_HOSTS` | 空 | 允许的接码主机，逗号分隔 |
-| `TELEGRAM_CODE_DNS_SERVER` | `1.1.1.1:53` | 接码域名使用的 DNS 服务器 |
 
-`.env`、API 凭据、手机号、验证码、云密码、接码链接、授权会话、数据库和
+`.env`、API 凭据、手机号、验证码、云密码、授权会话、数据库和
 `temp/` 均不得提交到 Git。`.env.example` 仅包含空模板。
 
 ## API
@@ -90,6 +86,10 @@ sidecar；后续连接沿用同一资料，不会使用项目名称作为设备�
 ```sh
 curl 'http://localhost:9487/api/v1/accounts?status=online&limit=20'
 curl http://localhost:9487/api/v1/accounts/10001
+curl -X PUT http://localhost:9487/api/v1/accounts/10001 \
+  -H 'Content-Type: application/json' \
+  -d '{"phone_number":"+15550001001","username":"example","display_name":"Example"}'
+curl -X DELETE http://localhost:9487/api/v1/accounts/10001
 ```
 
 登录相关端点：
@@ -102,7 +102,6 @@ DELETE /api/v1/telegram/auth/qr/{login_id}
 POST   /api/v1/telegram/auth/send-code
 POST   /api/v1/telegram/auth/{login_id}/code
 POST   /api/v1/telegram/auth/{login_id}/password
-POST   /api/v1/telegram/auth/{login_id}/fetch-code
 DELETE /api/v1/telegram/auth/{login_id}
 ```
 
@@ -127,7 +126,8 @@ GET    /api/v1/accounts/{id}/chats/{type}/{peer_id}/avatar
 聊天接口只读取账号目录中与 `{id}` 对应的授权会话，`type` 支持 `user`、
 `chat` 和 `channel`。消息历史使用 `before_id` 和 `limit` 分页。点击
 “打开 Web”进入独立客户端后，可搜索用户名、查看真实头像、打开消息右键
-菜单、多选后转发或删除消息，并查看或编辑当前账号资料。头像按需在浏览器
+菜单、多选后转发或删除消息，并查看或编辑当前账号资料。删除消息时可选择
+“仅为我删除”或“为所有人删除”，默认使用更安全的仅本地删除。头像按需在浏览器
 读取，不会下载为本地会话归档。
 
 错误响应统一为：
