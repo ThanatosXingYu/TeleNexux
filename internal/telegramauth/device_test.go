@@ -7,6 +7,36 @@ import (
 	"testing"
 )
 
+func TestPrepareDeviceSessionPersistsAppleProfile(t *testing.T) {
+	sessionPath := filepath.Join(t.TempDir(), "accounts", "1001.session")
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o700); err != nil {
+		t.Fatalf("create session directory: %v", err)
+	}
+	if err := PrepareDeviceSession(sessionPath); err != nil {
+		t.Fatalf("PrepareDeviceSession() error = %v", err)
+	}
+	device := DeviceForSession(sessionPath)
+	if !strings.HasPrefix(device.DeviceModel, "iPhone") {
+		t.Fatalf("DeviceModel = %q, want an iPhone model", device.DeviceModel)
+	}
+	if strings.Contains(device.DeviceModel, "TeleNexus") || strings.Contains(device.AppVersion, "TeleNexus") {
+		t.Fatalf("device profile exposes the project name: %#v", device)
+	}
+	info, err := os.Stat(deviceSidecarPath(sessionPath))
+	if err != nil {
+		t.Fatalf("stat device sidecar: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("device sidecar mode = %o, want 600", info.Mode().Perm())
+	}
+	if err := PrepareDeviceSession(sessionPath); err != nil {
+		t.Fatalf("PrepareDeviceSession() second call error = %v", err)
+	}
+	if got := DeviceForSession(sessionPath); got != device {
+		t.Fatal("device profile changed after a second preparation")
+	}
+}
+
 func TestDeviceForSessionIsStableAppleProfile(t *testing.T) {
 	first := DeviceForSession("/tmp/accounts/1001.session")
 	second := DeviceForSession("/tmp/accounts/1001.session")

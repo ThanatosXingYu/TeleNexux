@@ -103,6 +103,9 @@ func (d *GotdDriver) withClient(
 	sessionPath string,
 	run func(context.Context, *telegram.Client) error,
 ) error {
+	if err := PrepareDeviceSession(sessionPath); err != nil {
+		return fmt.Errorf("prepare Telegram device: %w", err)
+	}
 	client := telegram.NewClient(d.appID, d.appHash, telegram.Options{
 		SessionStorage:  &session.FileStorage{Path: sessionPath},
 		Device:          DeviceForSession(sessionPath),

@@ -150,6 +150,9 @@ func (s *Service) withClient(
 	if err != nil {
 		return err
 	}
+	if err := telegramauth.PrepareDeviceSession(sessionPath); err != nil {
+		return fmt.Errorf("prepare Telegram device: %w", err)
+	}
 	operationCtx, cancel := context.WithTimeout(ctx, s.operationTimeout)
 	defer cancel()
 
