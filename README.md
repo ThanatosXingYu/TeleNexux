@@ -2,7 +2,7 @@
 
 TeleNexus 是使用 Go 开发的 Telegram 多账号管理服务。当前提供管理台、
 账号元数据管理、SQLite 持久化、MTProto 手机号登录、可选两步验证、
-接码链接轮询、账号聊天查看、系统设置、健康检查和 REST API。
+接码链接轮询、账号聊天查看、系统配置、健康检查和 REST API。
 
 ## 环境要求
 
@@ -47,9 +47,9 @@ curl http://localhost:9487/healthz
 
 短期登录状态仅保存在内存中；授权会话位于
 `data/telegram-sessions/accounts/<telegram-id>.session`。目录权限为
-`0700`，会话文件权限为 `0600`。同一会话的 MTProto 设备信息会从常见
-Apple iPhone 型号、iOS 版本和 Telegram iOS 版本中稳定选择并保存到
-`.session.device` sidecar，不会使用项目名称作为设备型号。
+`0700`，会话文件权限为 `0600`。新登录会从常见 Apple iPhone 型号、iOS
+版本和 Telegram iOS 版本中随机选择设备信息，并保存到 `.session.device`
+sidecar；后续连接沿用同一资料，不会使用项目名称作为设备型号。
 
 接码地址必须使用 HTTPS 默认端口，且主机必须出现在
 `TELEGRAM_CODE_FETCH_HOSTS` 中。服务会在请求和重定向时校验 URL，并在
@@ -60,9 +60,11 @@ SSRF 和 DNS 重绑定风险。接码域名通过 `TELEGRAM_CODE_DNS_SERVER` 指
 
 ## 配置
 
-配置从进程环境变量、系统设置页或 `.env` 读取。优先级为进程环境变量 →
-系统设置 → `.env` → 默认值。系统设置在 `SETTINGS_PATH` 指定的本地 JSON
+配置从进程环境变量、系统配置页或 `.env` 读取。优先级为进程环境变量 →
+系统配置 → `.env` → 默认值。系统配置在 `SETTINGS_PATH` 指定的本地 JSON
 文件中保存，文件权限为 `0600`；页面保存后需重启服务。API Hash 只写不回显。
+“系统配置 → 基础配置”可修改运行环境、日志级别、Telegram API 凭据、
+接码网络、服务监听地址和接码 DNS。
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -101,7 +103,7 @@ POST   /api/v1/telegram/auth/{login_id}/fetch-code
 DELETE /api/v1/telegram/auth/{login_id}
 ```
 
-系统设置与聊天查看：
+系统配置与聊天查看：
 
 ```text
 GET    /api/v1/settings
@@ -111,7 +113,9 @@ GET    /api/v1/accounts/{id}/chats/{type}/{peer_id}/messages
 ```
 
 聊天接口只读取账号目录中与 `{id}` 对应的授权会话，`type` 支持 `user`、
-`chat` 和 `channel`。消息历史使用 `before_id` 和 `limit` 分页。
+`chat` 和 `channel`。消息历史使用 `before_id` 和 `limit` 分页。在账号列表
+点击账号行或“查看聊天”按钮进入会话查看页，页面会自动打开最近的会话；
+切换左侧会话即可在浏览器中查看消息，无需下载会话文件。
 
 错误响应统一为：
 
