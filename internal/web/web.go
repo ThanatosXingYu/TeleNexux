@@ -20,12 +20,34 @@ type pageData struct {
 	ActivePath  string
 	Page        string
 	Breadcrumbs []breadcrumb
+	Navigation  []navGroup
 	Account     accountSummary
 }
 
 type breadcrumb struct {
 	Label string
 	Path  string
+}
+
+type navGroup struct {
+	ID     string
+	Label  string
+	Icon   string
+	Path   string
+	Active bool
+	Items  []navItem
+}
+
+type navItem struct {
+	Label string
+	Path  string
+}
+
+type pageDefinition struct {
+	Path        string
+	Group       string
+	Title       string
+	Description string
 }
 
 type accountSummary struct {
@@ -59,15 +81,9 @@ func (r *Renderer) Handler() http.Handler {
 	mux.Handle("GET /static/", http.StripPrefix("/static/", r.fileServer))
 	mux.HandleFunc("GET /", r.dashboard)
 	mux.HandleFunc("GET /login", r.login)
-	mux.HandleFunc("GET /accounts", r.placeholder("账号管理", "管理、验证、监控 Telegram 账号"))
-	mux.HandleFunc("GET /accounts/groups", r.placeholder("账号分组", "按业务场景组织多个 Telegram 账号"))
-	mux.HandleFunc("GET /monitor", r.placeholder("实时监控", "订阅群组、关键词和消息告警"))
-	mux.HandleFunc("GET /monitor/tasks", r.placeholder("监控任务", "配置采集范围、频率和通知渠道"))
-	mux.HandleFunc("GET /monitor/alerts", r.placeholder("告警记录", "查看已触发的监控告警"))
-	mux.HandleFunc("GET /messages", r.placeholder("消息记录", "检索已采集的 Telegram 消息"))
-	mux.HandleFunc("GET /reports", r.placeholder("数据报表", "查看账号活跃度和监控趋势"))
-	mux.HandleFunc("GET /system", r.placeholder("系统设置", "配置服务、日志与通知渠道"))
-	mux.HandleFunc("GET /system/health", r.placeholder("服务状态", "查看 Go 服务与基础设施状态"))
+	for _, page := range pages {
+		mux.HandleFunc("GET "+page.Path, r.placeholder(page))
+	}
 	return secureHeaders(mux)
 }
 
@@ -81,6 +97,7 @@ func (r *Renderer) dashboard(w http.ResponseWriter, req *http.Request) {
 		Section:    "工作台",
 		ActivePath: "/",
 		Page:       "dashboard",
+		Navigation: navigation("/"),
 		Breadcrumbs: []breadcrumb{
 			{Label: "工作台"},
 		},
@@ -99,22 +116,108 @@ func (r *Renderer) login(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
-func (r *Renderer) placeholder(section, description string) http.HandlerFunc {
+func (r *Renderer) placeholder(page pageDefinition) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		path := "/" + strings.TrimPrefix(req.URL.Path, "/")
+		groupLabel := groupLabelForPath(page.Path)
+		breadcrumbs := []breadcrumb{{Label: "工作台", Path: "/"}}
+		if groupLabel != "" {
+			breadcrumbs = append(breadcrumbs, breadcrumb{Label: groupLabel})
+		}
+		breadcrumbs = append(breadcrumbs, breadcrumb{Label: page.Title})
 		r.render(w, pageData{
-			Title:       section,
-			Section:     section,
-			Description: description,
+			Title:       page.Title,
+			Section:     page.Title,
+			Description: page.Description,
 			ActivePath:  path,
 			Page:        "placeholder",
-			Breadcrumbs: []breadcrumb{
-				{Label: "工作台", Path: "/"},
-				{Label: section},
-			},
-			Account: defaultAccount,
+			Navigation:  navigation(path),
+			Breadcrumbs: breadcrumbs,
+			Account:     defaultAccount,
 		})
 	}
+}
+
+var pages = []pageDefinition{
+	{Path: "/accounts", Group: "accounts", Title: "账号列表", Description: "管理、验证、监控 Telegram 账号"},
+	{Path: "/accounts/groups", Group: "accounts", Title: "账号分组", Description: "按业务场景组织多个 Telegram 账号"},
+	{Path: "/monitor", Group: "monitor", Title: "实时监控", Description: "订阅群组、关键词和消息告警"},
+	{Path: "/monitor/tasks", Group: "monitor", Title: "监控任务", Description: "配置采集范围、频率和通知渠道"},
+	{Path: "/monitor/alerts", Group: "monitor", Title: "告警记录", Description: "查看已触发的监控告警"},
+	{Path: "/messages", Group: "data", Title: "消息记录", Description: "检索已采集的 Telegram 消息"},
+	{Path: "/reports", Group: "data", Title: "数据报表", Description: "查看账号活跃度和监控趋势"},
+	{Path: "/system", Group: "system", Title: "系统设置", Description: "配置服务、日志与通知渠道"},
+	{Path: "/system/health", Group: "system", Title: "服务状态", Description: "查看 Go 服务与基础设施状态"},
+}
+
+func navigation(activePath string) []navGroup {
+	groups := []navGroup{
+		{ID: "workspace", Label: "工作台", Icon: "layout-dashboard", Path: "/"},
+		{
+			ID:    "accounts",
+			Label: "账号管理",
+			Icon:  "users",
+			Items: []navItem{
+				{Label: "账号列表", Path: "/accounts"},
+				{Label: "账号分组", Path: "/accounts/groups"},
+			},
+		},
+		{
+			ID:    "monitor",
+			Label: "监控中心",
+			Icon:  "radio-tower",
+			Items: []navItem{
+				{Label: "实时监控", Path: "/monitor"},
+				{Label: "监控任务", Path: "/monitor/tasks"},
+				{Label: "告警记录", Path: "/monitor/alerts"},
+			},
+		},
+		{
+			ID:    "data",
+			Label: "数据中心",
+			Icon:  "messages-square",
+			Items: []navItem{
+				{Label: "消息记录", Path: "/messages"},
+				{Label: "数据报表", Path: "/reports"},
+			},
+		},
+		{
+			ID:    "system",
+			Label: "系统管理",
+			Icon:  "settings",
+			Items: []navItem{
+				{Label: "系统设置", Path: "/system"},
+				{Label: "服务状态", Path: "/system/health"},
+			},
+		},
+	}
+
+	for i := range groups {
+		if groups[i].Path == activePath {
+			groups[i].Active = true
+		}
+		for _, item := range groups[i].Items {
+			if item.Path == activePath {
+				groups[i].Active = true
+				break
+			}
+		}
+	}
+	return groups
+}
+
+func groupLabelForPath(path string) string {
+	for _, page := range pages {
+		if page.Path != path {
+			continue
+		}
+		for _, group := range navigation(path) {
+			if group.ID == page.Group {
+				return group.Label
+			}
+		}
+	}
+	return ""
 }
 
 var defaultAccount = accountSummary{
@@ -131,6 +234,7 @@ func (r *Renderer) notFound(w http.ResponseWriter, req *http.Request) {
 		Description: "你访问的页面尚未创建，或链接已经失效。",
 		ActivePath:  req.URL.Path,
 		Page:        "notfound",
+		Navigation:  navigation(req.URL.Path),
 		Breadcrumbs: []breadcrumb{
 			{Label: "工作台", Path: "/"},
 			{Label: "页面不存在"},

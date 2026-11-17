@@ -5,12 +5,42 @@
   const backdrop = document.getElementById("mobile-backdrop");
   const userTrigger = document.getElementById("user-trigger");
   const userDropdown = document.getElementById("user-dropdown");
+  const menuToggles = [...document.querySelectorAll("[data-submenu-toggle]")];
 
   if (!shell) {
     return;
   }
 
   const isMobile = () => window.matchMedia("(max-width: 767px)").matches;
+
+  const setSubmenuOpen = (group, open) => {
+    const toggle = group.querySelector("[data-submenu-toggle]");
+    const submenu = group.querySelector(".submenu");
+    group.classList.toggle("is-open", open);
+    toggle?.setAttribute("aria-expanded", String(open));
+    submenu?.classList.toggle("is-open", open);
+  };
+
+  menuToggles.forEach((toggle) => {
+    const group = toggle.closest("[data-menu-group]");
+    if (!group) {
+      return;
+    }
+    setSubmenuOpen(group, toggle.getAttribute("aria-expanded") === "true");
+    toggle.addEventListener("click", () => {
+      const shouldOpen = toggle.getAttribute("aria-expanded") !== "true";
+      if (shell.dataset.sidebar === "collapsed" && !isMobile()) {
+        setCollapsed(false);
+      }
+      menuToggles.forEach((otherToggle) => {
+        const otherGroup = otherToggle.closest("[data-menu-group]");
+        if (otherGroup && otherGroup !== group) {
+          setSubmenuOpen(otherGroup, false);
+        }
+      });
+      setSubmenuOpen(group, shouldOpen);
+    });
+  });
 
   const closeMobileSidebar = () => {
     sidebar?.classList.remove("is-open");
@@ -139,6 +169,16 @@
     if (!isMobile()) {
       setCollapsed(event.target.checked);
     }
+  });
+
+  document.querySelectorAll("[data-menu-tip]").forEach((target) => {
+    target.addEventListener("mouseenter", () => {
+      if (shell.dataset.sidebar !== "collapsed" || isMobile()) {
+        return;
+      }
+      const rect = target.getBoundingClientRect();
+      target.style.setProperty("--menu-tip-offset", `${Math.round(rect.top + rect.height / 2)}px`);
+    });
   });
 
   const clock = document.querySelector("[data-current-time]");

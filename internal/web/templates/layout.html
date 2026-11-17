@@ -17,41 +17,34 @@
           <img class="brand-mark" src="/static/img/logo.svg" alt="">
           <span class="brand-name">TeleNexus</span>
         </a>
-        <nav class="menu">
-          <p class="menu-label">总览</p>
-          <a class="menu-item{{if eq .ActivePath "/"}} active{{end}}" href="/" {{if eq .ActivePath "/"}}aria-current="page"{{end}}>
-            <span class="icon icon-dashboard" aria-hidden="true"></span><span class="menu-text">工作台</span>
-          </a>
-          <p class="menu-label">账号管理</p>
-          <a class="menu-item{{if eq .ActivePath "/accounts"}} active{{end}}" href="/accounts" {{if eq .ActivePath "/accounts"}}aria-current="page"{{end}}>
-            <span class="icon icon-accounts" aria-hidden="true"></span><span class="menu-text">账号列表</span>
-          </a>
-          <a class="menu-item{{if eq .ActivePath "/accounts/groups"}} active{{end}}" href="/accounts/groups" {{if eq .ActivePath "/accounts/groups"}}aria-current="page"{{end}}>
-            <span class="icon icon-groups" aria-hidden="true"></span><span class="menu-text">账号分组</span>
-          </a>
-          <p class="menu-label">监控中心</p>
-          <a class="menu-item{{if eq .ActivePath "/monitor"}} active{{end}}" href="/monitor" {{if eq .ActivePath "/monitor"}}aria-current="page"{{end}}>
-            <span class="icon icon-monitor" aria-hidden="true"></span><span class="menu-text">实时监控</span>
-          </a>
-          <a class="menu-item{{if eq .ActivePath "/monitor/tasks"}} active{{end}}" href="/monitor/tasks" {{if eq .ActivePath "/monitor/tasks"}}aria-current="page"{{end}}>
-            <span class="icon icon-tasks" aria-hidden="true"></span><span class="menu-text">监控任务</span>
-          </a>
-          <a class="menu-item{{if eq .ActivePath "/monitor/alerts"}} active{{end}}" href="/monitor/alerts" {{if eq .ActivePath "/monitor/alerts"}}aria-current="page"{{end}}>
-            <span class="icon icon-alerts" aria-hidden="true"></span><span class="menu-text">告警记录</span>
-          </a>
-          <p class="menu-label">数据与系统</p>
-          <a class="menu-item{{if eq .ActivePath "/messages"}} active{{end}}" href="/messages" {{if eq .ActivePath "/messages"}}aria-current="page"{{end}}>
-            <span class="icon icon-messages" aria-hidden="true"></span><span class="menu-text">消息记录</span>
-          </a>
-          <a class="menu-item{{if eq .ActivePath "/reports"}} active{{end}}" href="/reports" {{if eq .ActivePath "/reports"}}aria-current="page"{{end}}>
-            <span class="icon icon-reports" aria-hidden="true"></span><span class="menu-text">数据报表</span>
-          </a>
-          <a class="menu-item{{if eq .ActivePath "/system"}} active{{end}}" href="/system" {{if eq .ActivePath "/system"}}aria-current="page"{{end}}>
-            <span class="icon icon-settings" aria-hidden="true"></span><span class="menu-text">系统设置</span>
-          </a>
-          <a class="menu-item{{if eq .ActivePath "/system/health"}} active{{end}}" href="/system/health" {{if eq .ActivePath "/system/health"}}aria-current="page"{{end}}>
-            <span class="icon icon-health" aria-hidden="true"></span><span class="menu-text">服务状态</span>
-          </a>
+        <nav class="menu" aria-label="功能菜单">
+          {{range .Navigation}}
+            {{if .Path}}
+              <a class="menu-entry{{if .Active}} active{{end}}" href="{{.Path}}" {{if .Active}}aria-current="page"{{end}} data-menu-tip="{{.Label}}">
+                <span class="icon icon-{{.Icon}}" aria-hidden="true"></span>
+                <span class="menu-text">{{.Label}}</span>
+              </a>
+            {{else}}
+              <div class="menu-group{{if .Active}} current{{end}}" data-menu-group="{{.ID}}">
+                <button class="menu-submenu-title" type="button"
+                  aria-expanded="{{if .Active}}true{{else}}false{{end}}" aria-controls="submenu-{{.ID}}" data-submenu-toggle data-menu-tip="{{.Label}}">
+                  <span class="icon icon-{{.Icon}}" aria-hidden="true"></span>
+                  <span class="menu-text">{{.Label}}</span>
+                  <span class="icon icon-chevron-down menu-chevron" aria-hidden="true"></span>
+                </button>
+                <div class="submenu{{if .Active}} is-open{{end}}" id="submenu-{{.ID}}">
+                  <div class="submenu-inner">
+                    {{range .Items}}
+                      <a class="submenu-item{{if eq .Path $.ActivePath}} active{{end}}" href="{{.Path}}" {{if eq .Path $.ActivePath}}aria-current="page"{{end}}>
+                        <span class="submenu-marker" aria-hidden="true"></span>
+                        <span>{{.Label}}</span>
+                      </a>
+                    {{end}}
+                  </div>
+                </div>
+              </div>
+            {{end}}
+          {{end}}
         </nav>
         <p class="sidebar-version">Go · v0.1.0</p>
       </aside>
@@ -63,7 +56,7 @@
               <span class="icon icon-menu" aria-hidden="true"></span>
             </button>
             <div class="product-switch">
-              <span class="icon icon-apps" aria-hidden="true"></span>
+              <span class="icon icon-grid" aria-hidden="true"></span>
               <span>管理控制台</span>
             </div>
           </div>
@@ -82,7 +75,7 @@
               <button class="user-trigger" type="button" id="user-trigger" aria-haspopup="menu" aria-expanded="false">
                 <span class="avatar">{{.Account.Initials}}</span>
                 <span class="user-name">{{.Account.Name}}</span>
-                <span class="icon icon-chevron" aria-hidden="true"></span>
+                <span class="icon icon-chevron-down" aria-hidden="true"></span>
               </button>
               <div class="dropdown user-dropdown" id="user-dropdown" role="menu" hidden>
                 <span class="dropdown-caption">{{.Account.Role}}</span>
@@ -115,7 +108,7 @@
         <div class="panel-header">
           <h2 id="search-title">搜索页面</h2>
           <button class="tool-button" type="button" data-close-panel aria-label="关闭搜索">
-            <span class="icon icon-close" aria-hidden="true"></span>
+            <span class="icon icon-x" aria-hidden="true"></span>
           </button>
         </div>
         <label class="search-field">
@@ -135,7 +128,7 @@
         <div class="panel-header">
           <h2 id="notification-title">通知中心</h2>
           <button class="tool-button" type="button" data-close-panel aria-label="关闭通知">
-            <span class="icon icon-close" aria-hidden="true"></span>
+            <span class="icon icon-x" aria-hidden="true"></span>
           </button>
         </div>
         <div class="empty-state compact">
@@ -150,7 +143,7 @@
         <div class="panel-header">
           <h2 id="settings-title">界面设置</h2>
           <button class="tool-button" type="button" data-close-panel aria-label="关闭设置">
-            <span class="icon icon-close" aria-hidden="true"></span>
+            <span class="icon icon-x" aria-hidden="true"></span>
           </button>
         </div>
         <fieldset class="settings-block">
