@@ -1980,6 +1980,340 @@ a {
   content: "";
 }
 
+.account-row {
+  cursor: pointer;
+}
+
+.account-row:hover {
+  background: var(--primary-1);
+}
+
+.account-detail-link {
+  display: block;
+}
+
+.account-detail-link:hover strong {
+  color: var(--primary-6);
+}
+
+.back-icon {
+  transform: rotate(90deg);
+}
+
+.chat-workspace {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  gap: 10px;
+  min-height: 620px;
+}
+
+.chat-sidebar-card,
+.conversation-card {
+  min-height: 620px;
+}
+
+.chat-sidebar-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-section-icon {
+  width: 30px;
+  height: 30px;
+  flex-basis: 30px;
+  color: var(--primary-6);
+}
+
+.chat-list-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 260px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.chat-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 0;
+  margin: 12px -8px -8px;
+  overflow-y: auto;
+}
+
+.chat-list-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 64px;
+  padding: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-list-item:hover,
+.chat-list-item.active {
+  background: var(--primary-1);
+}
+
+.chat-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--primary-2), var(--primary-5));
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.chat-list-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.chat-list-copy strong,
+.chat-list-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-list-copy strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chat-list-copy span {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.chat-list-side {
+  display: flex;
+  align-items: flex-end;
+  align-self: stretch;
+  flex-direction: column;
+  justify-content: space-between;
+  flex: 0 0 62px;
+}
+
+.chat-list-side b {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--primary-6);
+  color: #fff;
+  font-size: 10px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.chat-list-side small {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.chat-list-empty,
+.message-empty {
+  margin: auto;
+  padding: 36px 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.conversation-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.conversation-empty {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 460px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.conversation-empty h2 {
+  margin: 12px 0 5px;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.conversation-empty p {
+  margin: 0;
+  font-size: 12px;
+}
+
+[data-conversation] {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.conversation-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.conversation-header h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.message-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  max-height: 520px;
+  padding: 16px 2px;
+  overflow-y: auto;
+}
+
+.message-item {
+  align-self: flex-start;
+  width: min(78%, 680px);
+  padding: 10px 12px;
+  border-radius: 4px 12px 12px;
+  background: var(--surface-muted);
+}
+
+.message-item.is-outgoing {
+  align-self: flex-end;
+  border-radius: 12px 4px 12px 12px;
+  background: var(--primary-1);
+}
+
+.message-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.message-meta strong {
+  color: var(--primary-6);
+  font-size: 11px;
+}
+
+.message-item p {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.message-media {
+  display: inline-block;
+  margin-top: 7px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: rgba(22, 119, 255, 0.08);
+  color: var(--primary-6);
+  font-size: 10px;
+}
+
+.message-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 48px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.message-actions .form-notice {
+  margin: 0;
+}
+
+.settings-layout {
+  max-width: 1080px;
+}
+
+.settings-card {
+  padding: 22px 24px;
+}
+
+.settings-card .stat-icon {
+  width: 38px;
+  height: 38px;
+  flex-basis: 38px;
+}
+
+.settings-card .stat-icon > .icon {
+  width: 20px;
+  height: 20px;
+  flex-basis: 20px;
+}
+
+.settings-form {
+  margin-top: 22px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.form-grid .field {
+  margin-bottom: 0;
+}
+
+.form-section-title {
+  margin: 22px 0 14px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.environment-note p {
+  margin: 1px 0 0;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.environment-note code {
+  padding: 1px 3px;
+  border-radius: 3px;
+  background: var(--surface-muted);
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 20px;
+}
+
 [hidden] {
   display: none !important;
 }
@@ -2005,6 +2339,10 @@ a {
     flex-basis: 50%;
     min-width: 360px;
     padding: 28px;
+  }
+
+  .chat-workspace {
+    grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
   }
 }
 
@@ -2077,6 +2415,19 @@ a {
 
   .split-cards,
   .page-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chat-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chat-sidebar-card,
+  .conversation-card {
+    min-height: 420px;
+  }
+
+  .form-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ThanatosXingYu/TeleNexux/internal/settings"
 )
 
 type Config struct {
@@ -16,6 +18,7 @@ type Config struct {
 	HTTPAddr           string
 	LogLevel           string
 	DatabasePath       string
+	SettingsPath       string
 	ShutdownTimeout    time.Duration
 	TelegramAPIID      int
 	TelegramAPIHash    string
@@ -30,8 +33,19 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	settingsPath := valueOrDefault(
+		valueOrDefault(os.Getenv("SETTINGS_PATH"), fileValues["SETTINGS_PATH"]),
+		"./data/settings.json",
+	)
+	storedSettings, err := settings.Load(settingsPath)
+	if err != nil {
+		return Config{}, err
+	}
 	lookup := func(key string) string {
 		if value, ok := os.LookupEnv(key); ok {
+			return value
+		}
+		if value, ok := storedSettings.Lookup(key); ok {
 			return value
 		}
 		return fileValues[key]
@@ -42,6 +56,7 @@ func Load() (Config, error) {
 		HTTPAddr:           valueOrDefault(lookup("HTTP_ADDR"), "127.0.0.1:9487"),
 		LogLevel:           valueOrDefault(lookup("LOG_LEVEL"), "info"),
 		DatabasePath:       valueOrDefault(lookup("DATABASE_PATH"), "./data/telenexus.db"),
+		SettingsPath:       settingsPath,
 		ShutdownTimeout:    10 * time.Second,
 		TelegramAPIHash:    strings.TrimSpace(lookup("TELEGRAM_API_HASH")),
 		TelegramSessionDir: valueOrDefault(lookup("TELEGRAM_SESSION_DIR"), "./data/telegram-sessions"),

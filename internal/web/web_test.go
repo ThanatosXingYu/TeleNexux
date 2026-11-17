@@ -171,6 +171,54 @@ func TestAccountsPageRendersTelegramLoginFlow(t *testing.T) {
 	}
 }
 
+func TestSystemPageRendersEditableSettings(t *testing.T) {
+	handler := newTestHandler(t)
+	request := httptest.NewRequest(http.MethodGet, "/system", nil)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	body := recorder.Body.String()
+	for _, expected := range []string{
+		`data-settings-form`,
+		`name="telegram_api_id"`,
+		`name="telegram_api_hash"`,
+		`name="telegram_code_fetch_hosts"`,
+		`name="http_addr"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("system page missing %q", expected)
+		}
+	}
+	if strings.Contains(body, "系统设置尚未接入") {
+		t.Error("system page must not render the generic placeholder")
+	}
+}
+
+func TestAccountDetailRendersChatViewer(t *testing.T) {
+	handler := newTestHandler(t)
+	request := httptest.NewRequest(http.MethodGet, "/accounts/42", nil)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `data-account-id="42"`) {
+		t.Error("account detail missing the account ID")
+	}
+	for _, expected := range []string{"data-chat-list", "data-message-list", "data-load-older"} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("account detail missing chat viewer element %q", expected)
+		}
+	}
+}
+
 func newTestHandler(t *testing.T) http.Handler {
 	t.Helper()
 	renderer, err := New()

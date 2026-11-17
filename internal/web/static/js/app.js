@@ -308,6 +308,8 @@
 
     items.forEach((account) => {
       const row = document.createElement("tr");
+      row.className = "account-row";
+      row.dataset.href = `/accounts/${encodeURIComponent(account.id)}`;
 
       const identity = document.createElement("div");
       identity.className = "account-identity";
@@ -322,6 +324,11 @@
       telegramID.textContent = `Telegram ID ${account.id}`;
       identityCopy.append(name, telegramID);
       identity.append(monogram, identityCopy);
+      const identityLink = document.createElement("a");
+      identityLink.className = "account-detail-link";
+      identityLink.href = row.dataset.href;
+      identityLink.setAttribute("aria-label", `查看 ${name.textContent} 的聊天`);
+      identityLink.append(identity);
 
       const phone = document.createElement("span");
       phone.className = "table-secondary";
@@ -336,12 +343,17 @@
       status.textContent = statusLabels[account.status] || account.status;
 
       row.append(
-        tableCell(identity),
+        tableCell(identityLink),
         tableCell(phone),
         tableCell(username),
         tableCell(status),
         tableCell(formatAccountDate(account.updated_at)),
       );
+      row.addEventListener("click", (event) => {
+        if (!event.target.closest("a")) {
+          window.location.assign(row.dataset.href);
+        }
+      });
       accountBody.append(row);
     });
   };
@@ -660,4 +672,300 @@
       loginNotice.hidden = false;
     }
   });
+
+  const detailRoot = document.querySelector("[data-account-detail]");
+  if (detailRoot) {
+    const accountID = Number(detailRoot.dataset.accountId);
+    const detailName = detailRoot.querySelector("[data-detail-name]");
+    const detailMeta = detailRoot.querySelector("[data-detail-meta]");
+    const chatList = detailRoot.parentElement.querySelector("[data-chat-list]");
+    const chatCount = detailRoot.parentElement.querySelector("[data-chat-count]");
+    const chatsLoading = detailRoot.parentElement.querySelector("[data-chats-loading]");
+    const chatsError = detailRoot.parentElement.querySelector("[data-chats-error]");
+    const chatsRefresh = detailRoot.parentElement.querySelector("[data-chats-refresh]");
+    const conversation = detailRoot.parentElement.querySelector("[data-conversation]");
+    const conversationEmpty = detailRoot.parentElement.querySelector("[data-messages-empty]");
+    const conversationTitle = detailRoot.parentElement.querySelector("[data-conversation-title]");
+    const conversationMeta = detailRoot.parentElement.querySelector("[data-conversation-meta]");
+    const conversationType = detailRoot.parentElement.querySelector("[data-conversation-type]");
+    const messageList = detailRoot.parentElement.querySelector("[data-message-list]");
+    const messagesLoading = detailRoot.parentElement.querySelector("[data-messages-loading]");
+    const messagesError = detailRoot.parentElement.querySelector("[data-messages-error]");
+    const loadOlder = detailRoot.parentElement.querySelector("[data-load-older]");
+    let selectedChat = null;
+    let nextBeforeID = 0;
+
+    const formatMessageDate = (value) => {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        return "时间未知";
+      }
+      return new Intl.DateTimeFormat("zh-CN", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).format(date);
+    };
+
+    const renderMessage = (message) => {
+      const item = document.createElement("article");
+      item.className = `message-item${message.outgoing ? " is-outgoing" : ""}`;
+      const meta = document.createElement("div");
+      meta.className = "message-meta";
+      const sender = document.createElement("strong");
+      sender.textContent = message.sender || (message.outgoing ? "我" : "未知用户");
+      const time = document.createElement("time");
+      time.dateTime = message.sent_at || "";
+      time.textContent = formatMessageDate(message.sent_at);
+      meta.append(sender, time);
+      const body = document.createElement("p");
+      body.textContent = message.text || message.media_type || "空消息";
+      item.append(meta, body);
+      if (message.media_type && message.text) {
+        const media = document.createElement("span");
+        media.className = "message-media";
+        media.textContent = message.media_type;
+        item.append(media);
+      }
+      return item;
+    };
+
+    const appendMessages = (items, replace) => {
+      if (!messageList) {
+        return;
+      }
+      if (replace) {
+        messageList.replaceChildren();
+      }
+      items.forEach((message) => messageList.append(renderMessage(message)));
+    };
+
+    const loadMessages = async (chat, reset = true) => {
+      if (!chat) {
+        return;
+      }
+      if (reset) {
+        selectedChat = chat;
+        nextBeforeID = 0;
+        appendMessages([], true);
+        conversation?.removeAttribute("hidden");
+        conversationEmpty?.setAttribute("hidden", "");
+        if (conversationTitle) {
+          conversationTitle.textContent = chat.title || "未命名会话";
+        }
+        if (conversationMeta) {
+          conversationMeta.textContent = chat.username ? `@${chat.username}` : chat.id;
+        }
+        if (conversationType) {
+          conversationType.textContent = {user: "私聊", chat: "群组", channel: "频道"}[chat.type] || "Telegram";
+        }
+      }
+      messagesLoading?.removeAttribute("hidden");
+      loadOlder?.setAttribute("disabled", "");
+      showNotice(messagesError, "");
+      try {
+        const params = new URLSearchParams({limit: "50"});
+        if (!reset && nextBeforeID > 0) {
+          params.set("before_id", String(nextBeforeID));
+        }
+        const payload = await requestJSON(
+          `/api/v1/accounts/${encodeURIComponent(accountID)}/chats/${encodeURIComponent(chat.type)}/${encodeURIComponent(chat.peer_id)}/messages?${params}`,
+        );
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+        appendMessages(items, reset);
+        nextBeforeID = Number(payload?.next_before_id) || 0;
+        loadOlder?.toggleAttribute("hidden", nextBeforeID <= 0);
+        if (reset && items.length === 0) {
+          appendMessages([], true);
+          const empty = document.createElement("p");
+          empty.className = "message-empty";
+          empty.textContent = "这个聊天还没有可显示的消息。";
+          messageList?.append(empty);
+        }
+      } catch (error) {
+        showNotice(messagesError, error.message, true);
+      } finally {
+        messagesLoading?.setAttribute("hidden", "");
+        if (nextBeforeID > 0) {
+          loadOlder?.removeAttribute("disabled");
+        }
+      }
+    };
+
+    const renderChats = (items) => {
+      if (!chatList) {
+        return;
+      }
+      chatList.replaceChildren();
+      items.forEach((chat) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "chat-list-item";
+        button.dataset.chatId = chat.id;
+        const avatar = document.createElement("span");
+        avatar.className = "chat-avatar";
+        avatar.textContent = String(chat.title || "TG").trim().slice(0, 2).toUpperCase();
+        const copy = document.createElement("span");
+        copy.className = "chat-list-copy";
+        const title = document.createElement("strong");
+        title.textContent = chat.title || "未命名会话";
+        const preview = document.createElement("span");
+        preview.textContent = chat.preview || (chat.username ? `@${chat.username}` : "暂无消息");
+        copy.append(title, preview);
+        const side = document.createElement("span");
+        side.className = "chat-list-side";
+        if (chat.unread_count > 0) {
+          const badge = document.createElement("b");
+          badge.textContent = String(chat.unread_count);
+          side.append(badge);
+        }
+        const time = document.createElement("small");
+        time.textContent = chat.last_message_at ? formatMessageDate(chat.last_message_at) : "";
+        side.append(time);
+        button.append(avatar, copy, side);
+        button.addEventListener("click", () => {
+          chatList.querySelectorAll(".chat-list-item").forEach((item) => item.classList.remove("active"));
+          button.classList.add("active");
+          loadMessages(chat);
+        });
+        chatList.append(button);
+      });
+      chatList.toggleAttribute("hidden", items.length === 0);
+      if (items.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "chat-list-empty";
+        empty.textContent = "这个账号目前没有可读取的聊天。";
+        chatList.append(empty);
+        chatList.removeAttribute("hidden");
+      }
+    };
+
+    const loadChats = async () => {
+      chatsLoading?.removeAttribute("hidden");
+      chatsError?.setAttribute("hidden", "");
+      chatsRefresh?.setAttribute("disabled", "");
+      try {
+        const payload = await requestJSON(`/api/v1/accounts/${encodeURIComponent(accountID)}/chats?limit=100`);
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+        renderChats(items);
+        if (chatCount) {
+          chatCount.textContent = `${items.length} / ${payload?.total ?? items.length} 个会话`;
+        }
+      } catch (error) {
+        showNotice(chatsError, error.message, true);
+      } finally {
+        chatsLoading?.setAttribute("hidden", "");
+        chatsRefresh?.removeAttribute("disabled");
+      }
+    };
+
+    requestJSON(`/api/v1/accounts/${encodeURIComponent(accountID)}`)
+      .then((account) => {
+        if (detailName) {
+          detailName.textContent = account.display_name || account.username || "Telegram 账号";
+        }
+        if (detailMeta) {
+          detailMeta.textContent = `${account.username ? `@${account.username} · ` : ""}${maskPhone(account.phone_number)} · ${statusLabels[account.status] || account.status}`;
+        }
+      })
+      .catch((error) => {
+        if (detailMeta) {
+          detailMeta.textContent = error.message;
+        }
+      });
+    loadChats();
+    chatsRefresh?.addEventListener("click", loadChats);
+    loadOlder?.addEventListener("click", () => loadMessages(selectedChat, false));
+  }
+
+  const settingsForm = document.querySelector("[data-settings-form]");
+  if (settingsForm) {
+    const settingsNotice = document.querySelector("[data-settings-notice]");
+    const settingsState = document.querySelector("[data-settings-state]");
+    const apiHashState = document.querySelector("[data-api-hash-state]");
+    const restartNote = document.querySelector("[data-restart-note]");
+    const environmentOverrides = document.querySelector("[data-environment-overrides]");
+
+    const renderSettings = (settings) => {
+      const setValue = (name, value) => {
+        const input = settingsForm.elements.namedItem(name);
+        if (input) {
+          input.value = value;
+        }
+      };
+      setValue("telegram_api_id", settings.telegram_api_id || "");
+      setValue("telegram_api_hash", "");
+      setValue("telegram_code_fetch_hosts", Array.isArray(settings.telegram_code_fetch_hosts)
+        ? settings.telegram_code_fetch_hosts.join(", ")
+        : "");
+      setValue("telegram_code_dns_server", settings.telegram_code_dns_server || "");
+      setValue("http_addr", settings.http_addr || "");
+      if (apiHashState) {
+        apiHashState.textContent = settings.telegram_api_hash_configured
+          ? (settings.telegram_api_hash_hint || "已配置")
+          : "尚未配置";
+      }
+      const overrides = Array.isArray(settings.environment_overrides) ? settings.environment_overrides : [];
+      if (environmentOverrides) {
+        environmentOverrides.textContent = overrides.length
+          ? `以下环境变量会覆盖页面设置：${overrides.join("、")}`
+          : "未检测到环境变量覆盖。";
+      }
+      if (settingsState) {
+        settingsState.textContent = settings.telegram_api_hash_configured ? "已配置" : "待配置";
+        settingsState.className = `badge ${settings.telegram_api_hash_configured ? "badge-blue" : "badge-neutral"}`;
+      }
+      if (restartNote) {
+        restartNote.textContent = settings.restart_required ? "设置已保存，重启服务后生效。" : "";
+      }
+    };
+
+    const loadSettings = async () => {
+      try {
+        renderSettings(await requestJSON("/api/v1/settings"));
+      } catch (error) {
+        showNotice(settingsNotice, error.message, true);
+        if (settingsState) {
+          settingsState.textContent = "读取失败";
+        }
+      }
+    };
+
+    settingsForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = settingsForm.querySelector("button[type='submit']");
+      const data = new FormData(settingsForm);
+      const payload = {
+        http_addr: String(data.get("http_addr") || "").trim(),
+        telegram_api_id: Number(data.get("telegram_api_id") || 0),
+        telegram_code_fetch_hosts: String(data.get("telegram_code_fetch_hosts") || "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+        telegram_code_dns_server: String(data.get("telegram_code_dns_server") || "").trim(),
+      };
+      const apiHash = String(data.get("telegram_api_hash") || "").trim();
+      if (apiHash) {
+        payload.telegram_api_hash = apiHash;
+      }
+      button?.setAttribute("disabled", "");
+      showNotice(settingsNotice, "");
+      try {
+        const saved = await requestJSON("/api/v1/settings", {
+          method: "PUT",
+          body: JSON.stringify(payload),
+        });
+        renderSettings(saved);
+        showNotice(settingsNotice, "设置已保存。请重启服务使配置生效。");
+      } catch (error) {
+        showNotice(settingsNotice, error.message, true);
+      } finally {
+        button?.removeAttribute("disabled");
+      }
+    });
+    loadSettings();
+  }
 })();

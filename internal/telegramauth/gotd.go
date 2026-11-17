@@ -17,21 +17,12 @@ import (
 type GotdDriver struct {
 	appID   int
 	appHash string
-	device  telegram.DeviceConfig
 }
 
 func NewGotdDriver(appID int, appHash string) *GotdDriver {
 	return &GotdDriver{
 		appID:   appID,
 		appHash: strings.TrimSpace(appHash),
-		device: telegram.DeviceConfig{
-			DeviceModel:    "TeleNexus",
-			SystemVersion:  "Go",
-			AppVersion:     "0.1.0",
-			SystemLangCode: "zh",
-			LangPack:       "tdesktop",
-			LangCode:       "zh",
-		},
 	}
 }
 
@@ -114,7 +105,7 @@ func (d *GotdDriver) withClient(
 ) error {
 	client := telegram.NewClient(d.appID, d.appHash, telegram.Options{
 		SessionStorage:  &session.FileStorage{Path: sessionPath},
-		Device:          d.device,
+		Device:          DeviceForSession(sessionPath),
 		DialTimeout:     15 * time.Second,
 		ExchangeTimeout: 15 * time.Second,
 	})

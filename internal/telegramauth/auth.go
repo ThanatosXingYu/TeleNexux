@@ -166,7 +166,8 @@ func cleanupPendingSessions(directory string) error {
 		return fmt.Errorf("list pending Telegram sessions: %w", err)
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".session") {
+		if entry.IsDir() ||
+			(!strings.HasSuffix(entry.Name(), ".session") && !strings.HasSuffix(entry.Name(), ".session.device")) {
 			continue
 		}
 		if err := os.Remove(filepath.Join(directory, entry.Name())); err != nil &&
@@ -365,7 +366,11 @@ func (s *Service) complete(state *loginState, profile *Profile) (Result, error) 
 	}
 	destination := filepath.Join(accountDir, fmt.Sprintf("%d.session", profile.ID))
 	removeIfPresent(destination)
+	if err := bridgeDeviceProfile(state.sessionPath, destination); err != nil {
+		return Result{}, err
+	}
 	if err := os.Rename(state.sessionPath, destination); err != nil {
+		removeIfPresent(deviceSidecarPath(destination))
 		return Result{}, fmt.Errorf("persist authorized Telegram session: %w", err)
 	}
 	if err := os.Chmod(destination, 0o600); err != nil {
@@ -458,7 +463,5 @@ func removeIfPresent(path string) {
 	if path == "" {
 		return
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return
-	}
+	removeSessionFiles(path)
 }

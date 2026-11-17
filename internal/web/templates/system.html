@@ -1,0 +1,73 @@
+{{define "system.html"}}
+<section class="page-heading">
+  <div>
+    <p class="eyebrow">Runtime Configuration</p>
+    <h1>系统设置</h1>
+    <p class="page-subtitle">配置 Telegram 应用凭据、接码域名、DNS 与服务监听地址。</p>
+  </div>
+  <span class="badge badge-neutral" data-settings-state>读取中</span>
+</section>
+
+<div class="settings-layout">
+  <section class="card settings-card">
+    <div class="card-header">
+      <div>
+        <h2>Telegram 应用</h2>
+        <span class="muted">API Hash 仅用于本地存储，保存后不会在接口或页面中回显。</span>
+      </div>
+      <span class="stat-icon stat-blue"><span class="icon icon-key-round" aria-hidden="true"></span></span>
+    </div>
+    <form class="settings-form" data-settings-form>
+      <div class="form-grid">
+        <label class="field">
+          <span>Telegram API ID</span>
+          <input name="telegram_api_id" type="number" min="0" inputmode="numeric" placeholder="例如 12345678">
+        </label>
+        <label class="field">
+          <span>Telegram API Hash</span>
+          <input name="telegram_api_hash" type="password" autocomplete="new-password"
+            placeholder="留空则保留已配置的 Hash">
+          <small class="field-hint" data-api-hash-state>尚未配置</small>
+        </label>
+      </div>
+
+      <h3 class="form-section-title">接码网络</h3>
+      <div class="form-grid">
+        <label class="field">
+          <span>允许的接码主机</span>
+          <input name="telegram_code_fetch_hosts" type="text"
+            placeholder="tgok.cc, api.didiapi.uk">
+          <small class="field-hint">多个域名使用英文逗号分隔。</small>
+        </label>
+        <label class="field">
+          <span>接码 DNS 服务器</span>
+          <input name="telegram_code_dns_server" type="text" placeholder="1.1.1.1:53">
+        </label>
+      </div>
+
+      <h3 class="form-section-title">服务访问</h3>
+      <div class="form-grid">
+        <label class="field">
+          <span>HTTP 监听地址</span>
+          <input name="http_addr" type="text" placeholder="127.0.0.1:9487">
+          <small class="field-hint">修改后必须重启 Go 服务才能生效。</small>
+        </label>
+        <div class="field environment-note">
+          <span>配置优先级</span>
+          <p>进程环境变量 → 系统设置 → <code>.env</code> → 默认值</p>
+          <small class="field-hint" data-environment-overrides>未检测到环境变量覆盖。</small>
+        </div>
+      </div>
+
+      <p class="form-notice" data-settings-notice hidden></p>
+      <div class="settings-actions">
+        <button class="button button-primary" type="submit">
+          <span class="icon icon-circle-check" aria-hidden="true"></span>
+          保存设置
+        </button>
+        <span class="muted" data-restart-note></span>
+      </div>
+    </form>
+  </section>
+</div>
+{{end}}

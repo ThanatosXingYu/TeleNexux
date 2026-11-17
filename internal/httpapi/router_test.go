@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/ThanatosXingYu/TeleNexux/internal/account"
+	"github.com/ThanatosXingYu/TeleNexux/internal/settings"
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramauth"
+	"github.com/ThanatosXingYu/TeleNexux/internal/telegramchat"
 	"github.com/ThanatosXingYu/TeleNexux/internal/web"
 )
 
@@ -118,6 +120,55 @@ func (s *fakeTelegramAuthService) Cancel(_ string) error {
 	return nil
 }
 
+type fakeTelegramChatService struct {
+	chats       telegramchat.ChatPage
+	messages    telegramchat.MessagePage
+	chatsErr    error
+	messagesErr error
+}
+
+func (s *fakeTelegramChatService) Chats(
+	_ context.Context,
+	_ int64,
+	_ int,
+) (telegramchat.ChatPage, error) {
+	return s.chats, s.chatsErr
+}
+
+func (s *fakeTelegramChatService) Messages(
+	_ context.Context,
+	_ int64,
+	_ string,
+	_ int64,
+	_ int,
+	_ int,
+) (telegramchat.MessagePage, error) {
+	return s.messages, s.messagesErr
+}
+
+type fakeSettingsService struct {
+	values          settings.Values
+	restartRequired bool
+	saveErr         error
+}
+
+func (s *fakeSettingsService) Snapshot() settings.Values {
+	return s.values
+}
+
+func (s *fakeSettingsService) Save(values settings.Values) error {
+	if s.saveErr != nil {
+		return s.saveErr
+	}
+	s.values = values
+	s.restartRequired = true
+	return nil
+}
+
+func (s *fakeSettingsService) RestartRequired() bool {
+	return s.restartRequired
+}
+
 func newTestHandler(service AccountService) http.Handler {
 	return newTestHandlerWithTelegram(service, &fakeTelegramAuthService{})
 }
@@ -131,7 +182,7 @@ func newTestHandlerWithTelegram(
 		panic(err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(service, telegram, webHandler.Handler(), logger).Handler()
+	return New(service, telegram, nil, nil, webHandler.Handler(), logger).Handler()
 }
 
 func TestCreateAccount(t *testing.T) {
@@ -311,4 +362,84 @@ func TestTelegramInvalidPasswordIsSanitized(t *testing.T) {
 	if strings.Contains(recorder.Body.String(), "secret-value") {
 		t.Fatal("response must not expose the two-step password")
 	}
+}
+
+func TestSettingsResponseNeverEchoesAPIHash(t *testing.T) {
+	settingsService := &fakeSettingsService{values: settings.Values{
+		TelegramAPIID:   12345,
+		TelegramAPIHash: "highly-secret-hash",
+	}}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/settings", nil)
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithDependencies(
+		&fakeAccountService{},
+		&fakeTelegramAuthService{},
+		nil,
+		settingsService,
+	).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "highly-secret-hash") {
+		t.Fatal("API hash was echoed in the response")
+	}
+	if !strings.Contains(recorder.Body.String(), `"telegram_api_hash_configured":true`) {
+		t.Fatalf("response = %s, want configured indicator", recorder.Body.String())
+	}
+}
+
+func TestUpdateSettingsRequiresJSON(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/settings", strings.NewReader(`{}`))
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithDependencies(
+		&fakeAccountService{},
+		&fakeTelegramAuthService{},
+		nil,
+		&fakeSettingsService{},
+	).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d, want 415", recorder.Code)
+	}
+}
+
+func TestListChatsSanitizesSessionErrors(t *testing.T) {
+	accounts := &fakeAccountService{created: account.Account{ID: 42, Status: account.StatusOnline}}
+	chats := &fakeTelegramChatService{chatsErr: telegramchat.ErrSessionMissing}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/42/chats", nil)
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithDependencies(accounts, &fakeTelegramAuthService{}, chats, nil).
+		ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "session file") {
+		t.Fatal("response must not expose session paths")
+	}
+}
+
+func newTestHandlerWithDependencies(
+	accounts AccountService,
+	telegram TelegramAuthService,
+	chats TelegramChatService,
+	settingsService SettingsService,
+) http.Handler {
+	webHandler, err := web.New()
+	if err != nil {
+		panic(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return New(
+		accounts,
+		telegram,
+		chats,
+		settingsService,
+		webHandler.Handler(),
+		logger,
+	).Handler()
 }

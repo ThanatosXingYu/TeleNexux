@@ -15,7 +15,9 @@ import (
 	"github.com/ThanatosXingYu/TeleNexux/internal/account"
 	"github.com/ThanatosXingYu/TeleNexux/internal/config"
 	"github.com/ThanatosXingYu/TeleNexux/internal/httpapi"
+	"github.com/ThanatosXingYu/TeleNexux/internal/settings"
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramauth"
+	"github.com/ThanatosXingYu/TeleNexux/internal/telegramchat"
 	"github.com/ThanatosXingYu/TeleNexux/internal/web"
 )
 
@@ -57,6 +59,17 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("initialize web interface: %w", err)
 	}
+	settingsStore, err := settings.NewStore(cfg.SettingsPath)
+	if err != nil {
+		return fmt.Errorf("initialize system settings: %w", err)
+	}
+	settingsStore.UseDefaults(settings.Values{
+		HTTPAddr:              cfg.HTTPAddr,
+		TelegramAPIID:         cfg.TelegramAPIID,
+		TelegramAPIHash:       cfg.TelegramAPIHash,
+		TelegramCodeHosts:     cfg.TelegramCodeHosts,
+		TelegramCodeDNSServer: cfg.TelegramDNSServer,
+	})
 
 	codeFetcher, err := telegramauth.NewHTTPCodeFetcher(
 		cfg.TelegramCodeHosts,
@@ -78,12 +91,25 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("initialize Telegram authentication: %w", err)
 	}
+	var telegramChats *telegramchat.Service
+	if cfg.TelegramAPIID > 0 {
+		telegramChats, err = telegramchat.NewService(
+			cfg.TelegramAPIID,
+			cfg.TelegramAPIHash,
+			cfg.TelegramSessionDir,
+		)
+		if err != nil {
+			return fmt.Errorf("initialize Telegram chat service: %w", err)
+		}
+	}
 
 	server := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: httpapi.New(
 			account.NewService(repository),
 			telegramAuth,
+			telegramChats,
+			settingsStore,
 			webRenderer.Handler(),
 			logger,
 		).Handler(),

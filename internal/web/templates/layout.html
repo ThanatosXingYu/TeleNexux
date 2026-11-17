@@ -96,7 +96,7 @@
         </div>
 
         <main class="content" id="main-content">
-          {{if eq .Page "dashboard"}}{{template "dashboard.html" .}}{{else if eq .Page "accounts"}}{{template "accounts.html" .}}{{else if eq .Page "placeholder"}}{{template "placeholder.html" .}}{{else}}{{template "notfound.html" .}}{{end}}
+          {{if eq .Page "dashboard"}}{{template "dashboard.html" .}}{{else if eq .Page "accounts"}}{{template "accounts.html" .}}{{else if eq .Page "account-detail"}}{{template "account_detail.html" .}}{{else if eq .Page "system"}}{{template "system.html" .}}{{else if eq .Page "placeholder"}}{{template "placeholder.html" .}}{{else}}{{template "notfound.html" .}}{{end}}
           <footer class="footer">TeleNexus · Telegram 多账号管理平台</footer>
         </main>
       </div>

@@ -9,6 +9,7 @@ import (
 )
 
 func TestLoadDefaults(t *testing.T) {
+	t.Setenv("SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
 	t.Setenv("APP_ENV", "")
 	t.Setenv("HTTP_ADDR", "")
 	t.Setenv("LOG_LEVEL", "")
@@ -36,9 +37,13 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.TelegramDNSServer != "1.1.1.1:53" {
 		t.Errorf("TelegramDNSServer = %q, want default DNS server", cfg.TelegramDNSServer)
 	}
+	if cfg.SettingsPath == "" {
+		t.Error("SettingsPath must not be empty")
+	}
 }
 
 func TestLoadRejectsInvalidValues(t *testing.T) {
+	t.Setenv("SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
 	tests := []struct {
 		name    string
 		key     string
@@ -64,6 +69,7 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 }
 
 func TestLoadTelegramConfiguration(t *testing.T) {
+	t.Setenv("SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
 	t.Setenv("TELEGRAM_API_ID", "12345")
 	t.Setenv("TELEGRAM_API_HASH", "test-hash")
 	t.Setenv("TELEGRAM_CODE_FETCH_HOSTS", "tgok.cc, API.didiapi.uk")
@@ -85,6 +91,7 @@ func TestLoadTelegramConfiguration(t *testing.T) {
 }
 
 func TestLoadReadsDotEnvWithoutOverridingProcessEnvironment(t *testing.T) {
+	t.Setenv("SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
 	path := filepath.Join(t.TempDir(), ".env")
 	content := "APP_ENV=file\nHTTP_ADDR=:9000\nTELEGRAM_API_ID=123\nTELEGRAM_API_HASH=\"from-file\"\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -102,5 +109,39 @@ func TestLoadReadsDotEnvWithoutOverridingProcessEnvironment(t *testing.T) {
 	}
 	if cfg.HTTPAddr != ":9000" || cfg.TelegramAPIHash != "from-file" {
 		t.Errorf("dotenv values were not loaded: %+v", cfg)
+	}
+}
+
+func TestLoadPrefersLocalSettingsAndProcessEnvironment(t *testing.T) {
+	directory := t.TempDir()
+	settingsPath := filepath.Join(directory, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{
+		"http_addr": "127.0.0.1:9500",
+		"telegram_api_id": 456,
+		"telegram_api_hash": "settings-hash",
+		"telegram_code_dns_server": "9.9.9.9:53"
+	}`), 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	envPath := filepath.Join(directory, ".env")
+	if err := os.WriteFile(envPath, []byte(
+		"SETTINGS_PATH="+settingsPath+"\nHTTP_ADDR=127.0.0.1:9000\nTELEGRAM_API_HASH=file-hash\n",
+	), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	t.Setenv("ENV_FILE", envPath)
+	t.Setenv("SETTINGS_PATH", "")
+	t.Setenv("TELEGRAM_API_ID", "789")
+	t.Setenv("TELEGRAM_API_HASH", "process-hash")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.TelegramAPIID != 789 || cfg.TelegramAPIHash != "process-hash" {
+		t.Fatalf("Telegram credentials = %d/%q, want process environment values", cfg.TelegramAPIID, cfg.TelegramAPIHash)
+	}
+	if cfg.HTTPAddr != "127.0.0.1:9500" {
+		t.Fatalf("HTTPAddr = %q, want UI settings over dotenv", cfg.HTTPAddr)
 	}
 }

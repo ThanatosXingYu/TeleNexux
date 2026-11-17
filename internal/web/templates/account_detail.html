@@ -1,0 +1,65 @@
+{{define "account_detail.html"}}
+<section class="page-heading account-detail-heading" data-account-detail data-account-id="{{.AccountID}}">
+  <div>
+    <p class="eyebrow">Telegram Conversation Viewer</p>
+    <h1 data-detail-name>账号聊天</h1>
+    <p class="page-subtitle">
+      <span data-detail-meta>正在加载账号信息...</span>
+    </p>
+  </div>
+  <div class="heading-actions">
+    <a class="button button-secondary" href="/accounts">
+      <span class="icon icon-chevron-down back-icon" aria-hidden="true"></span>
+      返回账号列表
+    </a>
+    <button class="button button-primary" type="button" data-chats-refresh>
+      <span class="icon icon-refresh-cw" aria-hidden="true"></span>
+      刷新聊天
+    </button>
+  </div>
+</section>
+
+<div class="chat-workspace">
+  <section class="card chat-sidebar-card" aria-label="聊天列表">
+    <div class="card-header">
+      <div>
+        <h2>会话列表</h2>
+        <span class="muted" data-chat-count>正在读取...</span>
+      </div>
+      <span class="icon icon-messages-square chat-section-icon" aria-hidden="true"></span>
+    </div>
+    <div class="chat-list-state" data-chats-loading>
+      <span class="table-spinner" aria-hidden="true"></span>
+      <p>正在从 Telegram 读取聊天...</p>
+    </div>
+    <div class="chat-list" data-chat-list hidden></div>
+    <p class="form-notice form-notice-error" data-chats-error hidden></p>
+  </section>
+
+  <section class="card conversation-card" aria-label="聊天记录">
+    <div class="conversation-empty" data-messages-empty>
+      <span class="empty-icon"><span class="icon icon-message-square-text" aria-hidden="true"></span></span>
+      <h2>选择一个聊天</h2>
+      <p>点击左侧会话，查看最近消息和更早记录。</p>
+    </div>
+    <div data-conversation hidden>
+      <div class="conversation-header">
+        <div>
+          <h2 data-conversation-title>聊天</h2>
+          <span class="muted" data-conversation-meta></span>
+        </div>
+        <span class="badge badge-blue" data-conversation-type>Telegram</span>
+      </div>
+      <div class="message-list" data-message-list></div>
+      <div class="message-actions">
+        <button class="button button-secondary" type="button" data-load-older hidden>
+          <span class="icon icon-refresh-cw" aria-hidden="true"></span>
+          加载更早消息
+        </button>
+        <span class="table-spinner" data-messages-loading hidden aria-label="正在加载消息"></span>
+        <p class="form-notice form-notice-error" data-messages-error hidden></p>
+      </div>
+    </div>
+  </section>
+</div>
+{{end}}

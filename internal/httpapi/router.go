@@ -11,12 +11,15 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ThanatosXingYu/TeleNexux/internal/account"
+	"github.com/ThanatosXingYu/TeleNexux/internal/settings"
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramauth"
+	"github.com/ThanatosXingYu/TeleNexux/internal/telegramchat"
 )
 
 const maxRequestBody = 1 << 20
@@ -37,9 +40,29 @@ type TelegramAuthService interface {
 	Cancel(loginID string) error
 }
 
+type TelegramChatService interface {
+	Chats(ctx context.Context, accountID int64, limit int) (telegramchat.ChatPage, error)
+	Messages(
+		ctx context.Context,
+		accountID int64,
+		peerType string,
+		peerID int64,
+		beforeID int,
+		limit int,
+	) (telegramchat.MessagePage, error)
+}
+
+type SettingsService interface {
+	Snapshot() settings.Values
+	Save(values settings.Values) error
+	RestartRequired() bool
+}
+
 type API struct {
 	accounts AccountService
 	telegram TelegramAuthService
+	chats    TelegramChatService
+	settings SettingsService
 	web      http.Handler
 	logger   *slog.Logger
 }
@@ -47,10 +70,19 @@ type API struct {
 func New(
 	accounts AccountService,
 	telegram TelegramAuthService,
+	chats TelegramChatService,
+	settingsService SettingsService,
 	webHandler http.Handler,
 	logger *slog.Logger,
 ) *API {
-	return &API{accounts: accounts, telegram: telegram, web: webHandler, logger: logger}
+	return &API{
+		accounts: accounts,
+		telegram: telegram,
+		chats:    chats,
+		settings: settingsService,
+		web:      webHandler,
+		logger:   logger,
+	}
 }
 
 func (a *API) Handler() http.Handler {
@@ -61,6 +93,10 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/accounts", a.listAccounts)
 	mux.HandleFunc("POST /api/v1/accounts", a.createAccount)
 	mux.HandleFunc("GET /api/v1/accounts/{id}", a.getAccount)
+	mux.HandleFunc("GET /api/v1/accounts/{id}/chats", a.listAccountChats)
+	mux.HandleFunc("GET /api/v1/accounts/{id}/chats/{peerType}/{peerID}/messages", a.listChatMessages)
+	mux.HandleFunc("GET /api/v1/settings", a.getSettings)
+	mux.HandleFunc("PUT /api/v1/settings", a.updateSettings)
 	mux.HandleFunc("GET /api/v1/telegram/auth/config", a.telegramAuthConfig)
 	mux.HandleFunc("POST /api/v1/telegram/auth/send-code", a.sendTelegramCode)
 	mux.HandleFunc("POST /api/v1/telegram/auth/{loginID}/code", a.submitTelegramCode)
@@ -130,6 +166,194 @@ func (a *API) getAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func (a *API) listAccountChats(w http.ResponseWriter, r *http.Request) {
+	accountID, ok := a.authorizedAccount(w, r)
+	if !ok {
+		return
+	}
+	limit, ok := parseLimit(w, r, 50)
+	if !ok {
+		return
+	}
+	page, err := a.chats.Chats(r.Context(), accountID, limit)
+	if err != nil {
+		a.writeChatError(w, accountID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (a *API) listChatMessages(w http.ResponseWriter, r *http.Request) {
+	accountID, ok := a.authorizedAccount(w, r)
+	if !ok {
+		return
+	}
+	peerType := r.PathValue("peerType")
+	if peerType != "user" && peerType != "chat" && peerType != "channel" {
+		writeError(w, http.StatusBadRequest, "invalid_peer", "chat type must be user, chat, or channel")
+		return
+	}
+	peerID, err := strconv.ParseInt(r.PathValue("peerID"), 10, 64)
+	if err != nil || peerID <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid_peer", "chat ID must be a positive integer")
+		return
+	}
+	limit, ok := parseLimit(w, r, 50)
+	if !ok {
+		return
+	}
+	beforeID := 0
+	if raw := r.URL.Query().Get("before_id"); raw != "" {
+		beforeID, err = strconv.Atoi(raw)
+		if err != nil || beforeID < 0 {
+			writeError(w, http.StatusBadRequest, "invalid_query", "before_id must be a non-negative integer")
+			return
+		}
+	}
+	page, err := a.chats.Messages(r.Context(), accountID, peerType, peerID, beforeID, limit)
+	if err != nil {
+		a.writeChatError(w, accountID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (a *API) authorizedAccount(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	if a.chats == nil {
+		writeError(w, http.StatusServiceUnavailable, "telegram_not_configured",
+			"请先在系统设置中配置 Telegram API 凭据并重启服务")
+		return 0, false
+	}
+	accountID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || accountID <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid_id", "account ID must be a positive integer")
+		return 0, false
+	}
+	item, err := a.accounts.Get(r.Context(), accountID)
+	if errors.Is(err, account.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "account_not_found", "account was not found")
+		return 0, false
+	}
+	if err != nil {
+		a.logger.Error("get account for chat access", "account_id", accountID, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not load account")
+		return 0, false
+	}
+	if item.Status != account.StatusOnline {
+		writeError(w, http.StatusConflict, "account_not_online", "account is not currently online")
+		return 0, false
+	}
+	return accountID, true
+}
+
+func (a *API) writeChatError(w http.ResponseWriter, accountID int64, err error) {
+	switch {
+	case errors.Is(err, telegramchat.ErrNotConfigured):
+		writeError(w, http.StatusServiceUnavailable, "telegram_not_configured",
+			"Telegram 聊天服务尚未配置")
+	case errors.Is(err, telegramchat.ErrSessionMissing):
+		writeError(w, http.StatusNotFound, "session_not_found", "该账号的授权会话不存在，请重新登录")
+	case errors.Is(err, telegramchat.ErrPeerNotFound):
+		writeError(w, http.StatusNotFound, "chat_not_found", "未找到该聊天")
+	case errors.Is(err, telegramchat.ErrTelegram):
+		a.logger.Warn("load Telegram chats", "account_id", accountID, "error", err)
+		writeError(w, http.StatusBadGateway, "telegram_error", "无法从 Telegram 读取聊天数据")
+	default:
+		a.logger.Error("load Telegram chats", "account_id", accountID, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "聊天数据暂时不可用")
+	}
+}
+
+func (a *API) getSettings(w http.ResponseWriter, _ *http.Request) {
+	if a.settings == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings_unavailable", "系统设置尚未初始化")
+		return
+	}
+	writeJSON(w, http.StatusOK, settingsResponse(a.settings))
+}
+
+func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
+	if a.settings == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings_unavailable", "系统设置尚未初始化")
+		return
+	}
+	if !prepareJSONMutation(w, r) {
+		return
+	}
+	var input struct {
+		HTTPAddr              *string   `json:"http_addr"`
+		TelegramAPIID         *int      `json:"telegram_api_id"`
+		TelegramAPIHash       *string   `json:"telegram_api_hash"`
+		TelegramCodeHosts     *[]string `json:"telegram_code_fetch_hosts"`
+		TelegramCodeDNSServer *string   `json:"telegram_code_dns_server"`
+	}
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	next := a.settings.Snapshot()
+	if input.HTTPAddr != nil {
+		next.HTTPAddr = *input.HTTPAddr
+	}
+	if input.TelegramAPIID != nil {
+		next.TelegramAPIID = *input.TelegramAPIID
+		if next.TelegramAPIID == 0 {
+			next.TelegramAPIHash = ""
+		}
+	}
+	if input.TelegramAPIHash != nil && strings.TrimSpace(*input.TelegramAPIHash) != "" {
+		next.TelegramAPIHash = *input.TelegramAPIHash
+	}
+	if input.TelegramCodeHosts != nil {
+		next.TelegramCodeHosts = append([]string(nil), (*input.TelegramCodeHosts)...)
+	}
+	if input.TelegramCodeDNSServer != nil {
+		next.TelegramCodeDNSServer = *input.TelegramCodeDNSServer
+	}
+	if err := a.settings.Save(next); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_settings", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, settingsResponse(a.settings))
+}
+
+type settingsAPIResponse struct {
+	HTTPAddr                  string   `json:"http_addr"`
+	TelegramAPIID             int      `json:"telegram_api_id"`
+	TelegramAPIHashConfigured bool     `json:"telegram_api_hash_configured"`
+	TelegramAPIHashHint       string   `json:"telegram_api_hash_hint"`
+	TelegramCodeFetchHosts    []string `json:"telegram_code_fetch_hosts"`
+	TelegramCodeDNSServer     string   `json:"telegram_code_dns_server"`
+	RestartRequired           bool     `json:"restart_required"`
+	EnvironmentOverrides      []string `json:"environment_overrides"`
+}
+
+func settingsResponse(service SettingsService) settingsAPIResponse {
+	values := service.Snapshot()
+	response := settingsAPIResponse{
+		HTTPAddr:               values.HTTPAddr,
+		TelegramAPIID:          values.TelegramAPIID,
+		TelegramCodeFetchHosts: values.TelegramCodeHosts,
+		TelegramCodeDNSServer:  values.TelegramCodeDNSServer,
+		RestartRequired:        service.RestartRequired(),
+	}
+	if values.TelegramAPIHash != "" {
+		response.TelegramAPIHashConfigured = true
+		response.TelegramAPIHashHint = "已配置（不会回显）"
+	}
+	for _, key := range []string{
+		"HTTP_ADDR",
+		"TELEGRAM_API_ID",
+		"TELEGRAM_API_HASH",
+		"TELEGRAM_CODE_FETCH_HOSTS",
+		"TELEGRAM_CODE_DNS_SERVER",
+	} {
+		if _, ok := os.LookupEnv(key); ok {
+			response.EnvironmentOverrides = append(response.EnvironmentOverrides, key)
+		}
+	}
+	return response
 }
 
 func (a *API) telegramAuthConfig(w http.ResponseWriter, _ *http.Request) {
@@ -286,6 +510,10 @@ func (a *API) prepareAuthRequest(w http.ResponseWriter, r *http.Request) bool {
 			"请先配置 TELEGRAM_API_ID 和 TELEGRAM_API_HASH")
 		return false
 	}
+	return prepareJSONMutation(w, r)
+}
+
+func prepareJSONMutation(w http.ResponseWriter, r *http.Request) bool {
 	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 		writeError(w, http.StatusForbidden, "cross_site_request", "cross-site requests are not allowed")
 		return false
@@ -297,7 +525,7 @@ func (a *API) prepareAuthRequest(w http.ResponseWriter, r *http.Request) bool {
 			return false
 		}
 	}
-	if r.Method == http.MethodPost {
+	if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
 		mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 		if err != nil || !strings.EqualFold(mediaType, "application/json") {
 			writeError(w, http.StatusUnsupportedMediaType, "invalid_content_type",
@@ -306,6 +534,19 @@ func (a *API) prepareAuthRequest(w http.ResponseWriter, r *http.Request) bool {
 		}
 	}
 	return true
+}
+
+func parseLimit(w http.ResponseWriter, r *http.Request, fallback int) (int, bool) {
+	limit := fallback
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100 {
+			writeError(w, http.StatusBadRequest, "invalid_query", "limit must be between 1 and 100")
+			return 0, false
+		}
+		limit = parsed
+	}
+	return limit, true
 }
 
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, target any) bool {

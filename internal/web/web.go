@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -22,6 +23,7 @@ type pageData struct {
 	Breadcrumbs []breadcrumb
 	Navigation  []navGroup
 	Account     accountSummary
+	AccountID   int64
 }
 
 type breadcrumb struct {
@@ -82,12 +84,14 @@ func (r *Renderer) Handler() http.Handler {
 	mux.HandleFunc("GET /", r.dashboard)
 	mux.HandleFunc("GET /login", r.login)
 	mux.HandleFunc("GET /accounts", r.accounts)
+	mux.HandleFunc("GET /accounts/{id}", r.accountDetail)
 	for _, page := range pages {
-		if page.Path == "/accounts" {
+		if page.Path == "/accounts" || page.Path == "/system" {
 			continue
 		}
 		mux.HandleFunc("GET "+page.Path, r.placeholder(page))
 	}
+	mux.HandleFunc("GET /system", r.system)
 	return secureHeaders(mux)
 }
 
@@ -128,6 +132,37 @@ func (r *Renderer) accounts(w http.ResponseWriter, _ *http.Request) {
 		Page:        "accounts",
 		Navigation:  navigation("/accounts"),
 		Breadcrumbs: []breadcrumb{{Label: "工作台", Path: "/"}, {Label: "账号管理"}, {Label: "账号列表"}},
+		Account:     defaultAccount,
+	})
+}
+
+func (r *Renderer) accountDetail(w http.ResponseWriter, req *http.Request) {
+	accountID, err := strconv.ParseInt(req.PathValue("id"), 10, 64)
+	if err != nil || accountID <= 0 {
+		r.notFound(w, req)
+		return
+	}
+	r.render(w, pageData{
+		Title:       "账号详情",
+		Section:     "账号详情",
+		ActivePath:  "/accounts",
+		Page:        "account-detail",
+		Navigation:  navigation("/accounts"),
+		Breadcrumbs: []breadcrumb{{Label: "工作台", Path: "/"}, {Label: "账号管理", Path: "/accounts"}, {Label: "聊天查看"}},
+		Account:     defaultAccount,
+		AccountID:   accountID,
+	})
+}
+
+func (r *Renderer) system(w http.ResponseWriter, _ *http.Request) {
+	r.render(w, pageData{
+		Title:       "系统设置",
+		Section:     "系统设置",
+		Description: "配置 Telegram 应用凭据、接码网络和服务监听地址",
+		ActivePath:  "/system",
+		Page:        "system",
+		Navigation:  navigation("/system"),
+		Breadcrumbs: []breadcrumb{{Label: "工作台", Path: "/"}, {Label: "系统管理"}, {Label: "系统设置"}},
 		Account:     defaultAccount,
 	})
 }
