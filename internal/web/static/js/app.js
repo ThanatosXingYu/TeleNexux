@@ -6,10 +6,167 @@
   const userTrigger = document.getElementById("user-trigger");
   const userDropdown = document.getElementById("user-dropdown");
   const menuToggles = [...document.querySelectorAll("[data-submenu-toggle]")];
+  const pageTabs = document.querySelector("[data-page-tabs]");
 
   if (!shell) {
     return;
   }
+
+  const initPageTabs = () => {
+    if (!pageTabs) {
+      return;
+    }
+    const track = pageTabs.querySelector("[data-page-tabs-track]");
+    const currentPath = pageTabs.dataset.currentPath || "";
+    const currentTitle = pageTabs.dataset.currentTitle || "当前页面";
+    const storageKey = "telenexus.page-tabs";
+    const maxTabs = 20;
+
+    const normalizePath = (value) => {
+      if (typeof value !== "string" ||
+        !value.startsWith("/") ||
+        value.startsWith("//") ||
+        value.includes("\\")) {
+        return "";
+      }
+      return value;
+    };
+
+    const readTabs = () => {
+      try {
+        const stored = JSON.parse(window.sessionStorage.getItem(storageKey) || "[]");
+        if (!Array.isArray(stored)) {
+          return [];
+        }
+        return stored
+          .map((tab) => ({
+            path: normalizePath(tab?.path),
+            title: String(tab?.title || "").trim().slice(0, 48),
+          }))
+          .filter((tab) => tab.path && tab.path !== "/" && tab.title);
+      } catch {
+        return [];
+      }
+    };
+
+    let tabs = readTabs();
+    const activePath = normalizePath(currentPath);
+    if (activePath && activePath !== "/") {
+      const existing = tabs.find((tab) => tab.path === activePath);
+      if (existing) {
+        existing.title = currentTitle.trim().slice(0, 48) || existing.title;
+      } else {
+        tabs.push({path: activePath, title: currentTitle.trim().slice(0, 48) || "当前页面"});
+      }
+      tabs = tabs.slice(-maxTabs);
+    }
+
+    const saveTabs = () => {
+      try {
+        window.sessionStorage.setItem(storageKey, JSON.stringify(tabs));
+      } catch {
+        // Keep the current-page tabs functional when storage is unavailable.
+      }
+    };
+
+    const closeTab = (path) => {
+      const index = tabs.findIndex((tab) => tab.path === path);
+      if (index < 0) {
+        return;
+      }
+      tabs.splice(index, 1);
+      saveTabs();
+      if (path === activePath) {
+        const next = tabs[index] || tabs[index - 1] || {path: "/"};
+        window.location.assign(next.path);
+        return;
+      }
+      renderTabs();
+    };
+
+    const makeTab = (tab, active = false, affix = false) => {
+      const item = document.createElement("div");
+      item.className = `page-tab${active ? " active" : ""}${affix ? " is-affix" : ""}`;
+      item.dataset.tabPath = tab.path;
+      const link = document.createElement("a");
+      link.className = "page-tab-link";
+      link.href = tab.path;
+      link.textContent = tab.title;
+      link.setAttribute("role", "tab");
+      link.setAttribute("aria-selected", String(active));
+      if (active) {
+        link.setAttribute("aria-current", "page");
+      }
+      item.append(link);
+      if (!affix) {
+        const close = document.createElement("button");
+        close.className = "page-tab-close";
+        close.type = "button";
+        close.dataset.tabClose = "";
+        close.setAttribute("aria-label", `关闭 ${tab.title}`);
+        const icon = document.createElement("span");
+        icon.className = "icon icon-x";
+        icon.setAttribute("aria-hidden", "true");
+        close.append(icon);
+        item.append(close);
+      }
+      item.addEventListener("auxclick", (event) => {
+        if (event.button === 1 && !affix) {
+          event.preventDefault();
+          closeTab(tab.path);
+        }
+      });
+      return item;
+    };
+
+    const renderTabs = () => {
+      if (!track) {
+        return;
+      }
+      track.replaceChildren();
+      track.append(makeTab({path: "/", title: "工作台"}, activePath === "/", true));
+      tabs.forEach((tab) => {
+        track.append(makeTab(tab, tab.path === activePath));
+      });
+      pageTabs.querySelector("[data-tabs-close-others]")?.toggleAttribute(
+        "disabled",
+        activePath === "/" && tabs.length === 0,
+      );
+      track.querySelector(".page-tab.active")?.scrollIntoView({block: "nearest", inline: "nearest"});
+    };
+
+    track?.addEventListener("click", (event) => {
+      const close = event.target.closest("[data-tab-close]");
+      if (!close) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      closeTab(close.closest("[data-tab-path]")?.dataset.tabPath || "");
+    });
+
+    pageTabs.querySelectorAll("[data-tabs-scroll]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const direction = Number(button.dataset.tabsScroll) || 1;
+        track?.scrollBy({left: direction * 220, behavior: "smooth"});
+      });
+    });
+
+    pageTabs.querySelector("[data-tabs-close-others]")?.addEventListener("click", () => {
+      if (!activePath || activePath === "/") {
+        tabs = [];
+      } else {
+        tabs = [tabs.find((tab) => tab.path === activePath) || {path: activePath, title: currentTitle}];
+      }
+      saveTabs();
+      renderTabs();
+    });
+
+    saveTabs();
+    renderTabs();
+  };
+
+  initPageTabs();
 
   const isMobile = () => window.matchMedia("(max-width: 767px)").matches;
 
@@ -248,11 +405,6 @@
     return `••••••${digits.slice(-4)}`;
   };
 
-  const initials = (account) => {
-    const name = account.display_name || account.username || `TG${account.id}`;
-    return String(name).trim().slice(0, 2).toUpperCase();
-  };
-
   const formatAccountDate = (value) => {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) {
@@ -315,7 +467,10 @@
       identity.className = "account-identity";
       const monogram = document.createElement("span");
       monogram.className = "account-monogram";
-      monogram.textContent = initials(account);
+      const monogramIcon = document.createElement("span");
+      monogramIcon.className = "icon icon-user-round";
+      monogramIcon.setAttribute("aria-hidden", "true");
+      monogram.append(monogramIcon);
       const identityCopy = document.createElement("span");
       identityCopy.className = "account-identity-copy";
       const name = document.createElement("strong");
@@ -347,13 +502,24 @@
       chatAction.href = row.dataset.href;
       chatAction.textContent = "查看聊天";
 
+      const webAction = document.createElement("a");
+      webAction.className = "button button-primary button-compact";
+      webAction.href = `${row.dataset.href}/web`;
+      webAction.target = "_blank";
+      webAction.rel = "noopener";
+      webAction.textContent = "打开 Web";
+
+      const actionGroup = document.createElement("div");
+      actionGroup.className = "account-actions";
+      actionGroup.append(chatAction, webAction);
+
       row.append(
         tableCell(identityLink),
         tableCell(phone),
         tableCell(username),
         tableCell(status),
         tableCell(formatAccountDate(account.updated_at)),
-        tableCell(chatAction),
+        tableCell(actionGroup),
       );
       row.addEventListener("click", (event) => {
         if (!event.target.closest("a")) {
@@ -421,6 +587,7 @@
   const fetchCodeButton = document.querySelector("[data-fetch-code]");
   const completeName = document.querySelector("[data-complete-name]");
   const viewChatButton = document.querySelector("[data-login-view-chat]");
+  const viewWebButton = document.querySelector("[data-login-view-web]");
   let loginID = "";
   let pollTimer = 0;
   let pollAttempts = 0;
@@ -467,6 +634,8 @@
     showNotice(passwordNotice, "");
     viewChatButton?.setAttribute("hidden", "");
     viewChatButton?.removeAttribute("href");
+    viewWebButton?.setAttribute("hidden", "");
+    viewWebButton?.removeAttribute("href");
     setAuthStep("phone");
     const submit = phoneForm?.querySelector("button[type='submit']");
     if (submit) {
@@ -574,6 +743,10 @@
       if (viewChatButton && result.account?.id) {
         viewChatButton.href = `/accounts/${encodeURIComponent(result.account.id)}`;
         viewChatButton.removeAttribute("hidden");
+      }
+      if (viewWebButton && result.account?.id) {
+        viewWebButton.href = `/accounts/${encodeURIComponent(result.account.id)}/web`;
+        viewWebButton.removeAttribute("hidden");
       }
       setAuthStep("complete");
       loadAccounts();
@@ -820,7 +993,10 @@
         button.dataset.chatId = chat.id;
         const avatar = document.createElement("span");
         avatar.className = "chat-avatar";
-        avatar.textContent = String(chat.title || "TG").trim().slice(0, 2).toUpperCase();
+        const avatarIcon = document.createElement("span");
+        avatarIcon.className = "icon icon-message-square-text";
+        avatarIcon.setAttribute("aria-hidden", "true");
+        avatar.append(avatarIcon);
         const copy = document.createElement("span");
         copy.className = "chat-list-copy";
         const title = document.createElement("strong");

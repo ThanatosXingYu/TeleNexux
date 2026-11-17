@@ -22,7 +22,8 @@ func TestDashboardRendersSharedLayout(t *testing.T) {
 		"<title>工作台 · TeleNexus</title>",
 		"欢迎回来，管理员",
 		`class="menu-entry active" href="/"`,
-		`class="page-tab active" href="/"`,
+		`data-page-tabs data-current-path="/"`,
+		`class="page-tab is-affix active" data-tab-path="/"`,
 		"TeleNexus · Telegram 多账号管理平台",
 	} {
 		if !strings.Contains(body, expected) {
@@ -160,6 +161,7 @@ func TestAccountsPageRendersTelegramLoginFlow(t *testing.T) {
 		`data-auth-step="password"`,
 		`data-accounts-body`,
 		`data-login-view-chat`,
+		`data-login-view-web`,
 		`class="menu-group current"`,
 		`class="submenu-item active" href="/accounts"`,
 	} {
@@ -218,6 +220,29 @@ func TestAccountDetailRendersChatViewer(t *testing.T) {
 	for _, expected := range []string{"data-chat-list", "data-message-list", "data-load-older"} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("account detail missing chat viewer element %q", expected)
+		}
+	}
+}
+
+func TestAccountWorkspaceRendersStandaloneChatViewer(t *testing.T) {
+	handler := newTestHandler(t)
+	request := httptest.NewRequest(http.MethodGet, "/accounts/42/web", nil)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	body := recorder.Body.String()
+	for _, expected := range []string{
+		`data-current-path="/accounts/42/web"`,
+		`data-account-workspace="true"`,
+		"Telegram Account Workspace",
+		`data-chat-list`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("account workspace missing %q", expected)
 		}
 	}
 }

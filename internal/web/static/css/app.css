@@ -5,6 +5,7 @@
   --primary-6: #1677ff;
   --primary-7: #096dd9;
   --sidebar-bg: #001529;
+  --sidebar-selected: #1677ff;
   --sidebar-text: rgba(255, 255, 255, 0.68);
   --sidebar-border: rgba(255, 255, 255, 0.08);
   --body-bg: #f0f2f5;
@@ -15,7 +16,7 @@
   --border: #f0f0f0;
   --shadow: 0 1px 2px -2px rgba(0, 0, 0, 0.12), 0 3px 6px rgba(0, 0, 0, 0.07);
   --radius: 8px;
-  --sidebar-width: 224px;
+  --sidebar-width: 210px;
   --topbar-height: 50px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   color: var(--text);
@@ -105,7 +106,7 @@ a {
 }
 
 .menu {
-  padding: 14px 10px 12px;
+  padding: 8px 0 12px;
 }
 
 .menu-entry,
@@ -115,12 +116,13 @@ a {
   align-items: center;
   gap: 12px;
   width: 100%;
-  height: 42px;
-  margin: 2px 0;
-  padding: 0 13px;
+  height: 44px;
+  margin: 0;
+  padding: 0 13px 0 16px;
   overflow: hidden;
   border: 0;
-  border-radius: 6px;
+  border-left: 4px solid transparent;
+  border-radius: 0;
   background: transparent;
   color: var(--sidebar-text);
   font: inherit;
@@ -138,13 +140,14 @@ a {
 
 .menu-entry.active {
   color: #fff;
-  background: rgba(22, 119, 255, 0.92);
-  box-shadow: inset 3px 0 0 rgba(255, 255, 255, 0.72);
+  background: var(--sidebar-selected);
+  box-shadow: inset 4px 0 0 rgba(255, 255, 255, 0.72);
 }
 
 .menu-group.current > .menu-submenu-title {
-  background: rgba(255, 255, 255, 0.055);
+  background: var(--sidebar-selected);
   color: #fff;
+  box-shadow: inset 4px 0 0 rgba(255, 255, 255, 0.72);
 }
 
 .menu-chevron {
@@ -172,11 +175,11 @@ a {
 
 .submenu-inner {
   min-height: 0;
-  margin: 1px 2px 7px;
-  padding: 4px 6px;
+  margin: 0;
+  padding: 0;
   overflow: hidden;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.16);
+  border-radius: 0;
+  background: transparent;
 }
 
 .submenu-item {
@@ -184,11 +187,12 @@ a {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 36px;
-  margin: 1px 0;
-  padding: 0 10px 0 34px;
+  height: 40px;
+  margin: 0;
+  padding: 0 12px 0 48px;
   overflow: hidden;
-  border-radius: 4px;
+  border-left: 4px solid transparent;
+  border-radius: 0;
   color: rgba(255, 255, 255, 0.6);
   font-size: 13px;
   white-space: nowrap;
@@ -201,14 +205,14 @@ a {
 }
 
 .submenu-item.active {
-  box-shadow: inset 2px 0 0 var(--primary-5);
   color: #fff;
-  background: rgba(22, 119, 255, 0.34);
+  background: var(--sidebar-selected);
+  box-shadow: inset 4px 0 0 rgba(255, 255, 255, 0.72);
 }
 
 .submenu-marker {
   position: absolute;
-  left: 18px;
+  left: 32px;
   width: 5px;
   height: 5px;
   border: 1px solid currentColor;
@@ -415,25 +419,112 @@ a {
 
 .page-tabs {
   display: flex;
+  align-items: stretch;
   flex-shrink: 0;
-  gap: 0;
   height: 40px;
-  padding: 0 10px;
-  overflow-x: auto;
+  padding: 0;
+  overflow: hidden;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
   scrollbar-width: none;
 }
 
+.page-tabs-track {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.page-tabs-track::-webkit-scrollbar {
+  display: none;
+}
+
+.page-tabs-arrow,
+.page-tabs-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  flex: 0 0 40px;
+  padding: 0;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.page-tabs-tool {
+  border-right: 0;
+  border-left: 1px solid var(--border);
+}
+
+.page-tabs-arrow:hover,
+.page-tabs-tool:hover {
+  background: var(--primary-1);
+  color: var(--primary-6);
+}
+
+.page-tabs-tool:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.page-tabs-arrow-left {
+  transform: rotate(90deg);
+}
+
+.page-tabs-arrow-right {
+  transform: rotate(-90deg);
+}
+
 .page-tab {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
   height: 100%;
-  padding: 0 15px;
+  padding: 0 8px 0 16px;
   border-right: 1px solid #f1f1f1;
   color: var(--text-secondary);
   font-size: 13px;
   white-space: nowrap;
+}
+
+.page-tab-link {
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+}
+
+.page-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-left: 5px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: currentColor;
+  cursor: pointer;
+}
+
+.page-tab-close:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.page-tab-close .icon {
+  width: 12px;
+  height: 12px;
+  flex-basis: 12px;
+}
+
+.page-tab.is-affix {
+  padding-right: 16px;
 }
 
 .page-tab:hover {
@@ -445,6 +536,16 @@ a {
   position: relative;
   background: var(--primary-1);
   color: var(--primary-6);
+}
+
+.page-tab.active::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: var(--primary-6);
+  content: "";
 }
 
 .content {
@@ -667,10 +768,15 @@ a {
 }
 
 .task-marker {
-  flex: 0 0 28px;
-  color: var(--primary-5);
-  font-size: 11px;
-  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  border-radius: 3px;
+  background: var(--primary-1);
+  color: var(--primary-6);
 }
 
 .task-copy {
@@ -1221,7 +1327,7 @@ a {
 .app-shell[data-sidebar="collapsed"] .menu-entry,
 .app-shell[data-sidebar="collapsed"] .menu-submenu-title {
   justify-content: center;
-  margin: 2px 0;
+  margin: 0;
   padding: 0;
 }
 
@@ -1278,8 +1384,13 @@ a {
   background: var(--primary-1);
 }
 
+.app-shell[data-theme="light"] .menu-group.current > .menu-submenu-title {
+  color: var(--primary-6);
+  background: var(--primary-1);
+}
+
 .app-shell[data-theme="light"] .submenu-inner {
-  background: #f2f7ff;
+  background: transparent;
 }
 
 .app-shell[data-theme="light"] .submenu-item {
@@ -1505,11 +1616,21 @@ a {
   height: 34px;
   flex: 0 0 34px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--primary-6), #69b1ff);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 650;
-  text-transform: uppercase;
+  background: var(--primary-1);
+  color: var(--primary-6);
+}
+
+.account-monogram > .icon {
+  width: 18px;
+  height: 18px;
+  flex-basis: 18px;
+}
+
+.account-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
 }
 
 .account-identity-copy {
@@ -2078,10 +2199,14 @@ a {
   height: 38px;
   flex: 0 0 38px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--primary-2), var(--primary-5));
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
+  background: var(--primary-1);
+  color: var(--primary-6);
+}
+
+.chat-avatar > .icon {
+  width: 19px;
+  height: 19px;
+  flex-basis: 19px;
 }
 
 .chat-list-copy {
@@ -2459,7 +2584,7 @@ a {
   }
 
   .accounts-table {
-    min-width: 680px;
+    min-width: 760px;
   }
 
   .dialog-card {
@@ -2467,11 +2592,11 @@ a {
   }
 
   .page-tabs {
-    padding: 0 4px;
+    padding: 0;
   }
 
   .page-tab {
-    padding: 0 11px;
+    padding: 0 6px 0 12px;
   }
 
   .content {

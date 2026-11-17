@@ -19,6 +19,7 @@ type pageData struct {
 	Section     string
 	Description string
 	ActivePath  string
+	TabPath     string
 	Page        string
 	Breadcrumbs []breadcrumb
 	Navigation  []navGroup
@@ -84,6 +85,7 @@ func (r *Renderer) Handler() http.Handler {
 	mux.HandleFunc("GET /", r.dashboard)
 	mux.HandleFunc("GET /login", r.login)
 	mux.HandleFunc("GET /accounts", r.accounts)
+	mux.HandleFunc("GET /accounts/{id}/web", r.accountWorkspace)
 	mux.HandleFunc("GET /accounts/{id}", r.accountDetail)
 	for _, page := range pages {
 		if page.Path == "/accounts" || page.Path == "/system" {
@@ -104,6 +106,7 @@ func (r *Renderer) dashboard(w http.ResponseWriter, req *http.Request) {
 		Title:      "工作台",
 		Section:    "工作台",
 		ActivePath: "/",
+		TabPath:    "/",
 		Page:       "dashboard",
 		Navigation: navigation("/"),
 		Breadcrumbs: []breadcrumb{
@@ -129,6 +132,7 @@ func (r *Renderer) accounts(w http.ResponseWriter, _ *http.Request) {
 		Title:       "账号列表",
 		Section:     "账号列表",
 		ActivePath:  "/accounts",
+		TabPath:     "/accounts",
 		Page:        "accounts",
 		Navigation:  navigation("/accounts"),
 		Breadcrumbs: []breadcrumb{{Label: "工作台", Path: "/"}, {Label: "账号管理"}, {Label: "账号列表"}},
@@ -146,9 +150,29 @@ func (r *Renderer) accountDetail(w http.ResponseWriter, req *http.Request) {
 		Title:       "账号详情",
 		Section:     "账号详情",
 		ActivePath:  "/accounts",
+		TabPath:     req.URL.Path,
 		Page:        "account-detail",
 		Navigation:  navigation("/accounts"),
 		Breadcrumbs: []breadcrumb{{Label: "工作台", Path: "/"}, {Label: "账号管理", Path: "/accounts"}, {Label: "聊天查看"}},
+		Account:     defaultAccount,
+		AccountID:   accountID,
+	})
+}
+
+func (r *Renderer) accountWorkspace(w http.ResponseWriter, req *http.Request) {
+	accountID, err := strconv.ParseInt(req.PathValue("id"), 10, 64)
+	if err != nil || accountID <= 0 {
+		r.notFound(w, req)
+		return
+	}
+	r.render(w, pageData{
+		Title:       "账号 Web",
+		Section:     "账号 Web",
+		ActivePath:  "/accounts",
+		TabPath:     req.URL.Path,
+		Page:        "account-web",
+		Navigation:  navigation("/accounts"),
+		Breadcrumbs: []breadcrumb{{Label: "工作台", Path: "/"}, {Label: "账号管理", Path: "/accounts"}, {Label: "账号 Web"}},
 		Account:     defaultAccount,
 		AccountID:   accountID,
 	})
@@ -160,6 +184,7 @@ func (r *Renderer) system(w http.ResponseWriter, _ *http.Request) {
 		Section:     "系统配置",
 		Description: "配置运行环境、Telegram 凭据、接码网络和服务监听地址",
 		ActivePath:  "/system",
+		TabPath:     "/system",
 		Page:        "system",
 		Navigation:  navigation("/system"),
 		Breadcrumbs: []breadcrumb{{Label: "工作台", Path: "/"}, {Label: "系统配置"}, {Label: "基础配置"}},
@@ -181,6 +206,7 @@ func (r *Renderer) placeholder(page pageDefinition) http.HandlerFunc {
 			Section:     page.Title,
 			Description: page.Description,
 			ActivePath:  path,
+			TabPath:     path,
 			Page:        "placeholder",
 			Navigation:  navigation(path),
 			Breadcrumbs: breadcrumbs,

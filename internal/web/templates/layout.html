@@ -90,13 +90,33 @@
           {{range $i, $crumb := .Breadcrumbs}}{{if $i}}<span class="breadcrumb-separator" aria-hidden="true">/</span>{{end}}{{if $crumb.Path}}<a href="{{$crumb.Path}}">{{$crumb.Label}}</a>{{else}}<span aria-current="page">{{$crumb.Label}}</span>{{end}}{{end}}
         </div>
 
-        <div class="page-tabs" role="tablist" aria-label="已打开页面">
-          <a class="page-tab{{if eq .Page "dashboard"}} active{{end}}" href="/" role="tab" {{if eq .Page "dashboard"}}aria-selected="true"{{end}}>工作台</a>
-          {{if ne .Page "dashboard"}}{{if ne .Page "notfound"}}<a class="page-tab active" href="{{.ActivePath}}" role="tab" aria-selected="true">{{.Section}}</a>{{end}}{{end}}
+        <div class="page-tabs" data-page-tabs data-current-path="{{.TabPath}}" data-current-title="{{.Title}}">
+          <button class="page-tabs-arrow" type="button" data-tabs-scroll="-1" aria-label="向左滚动页签">
+            <span class="icon icon-chevron-down page-tabs-arrow-left" aria-hidden="true"></span>
+          </button>
+          <div class="page-tabs-track" data-page-tabs-track role="tablist" aria-label="已打开页面">
+            <div class="page-tab is-affix{{if eq .TabPath "/"}} active{{end}}" data-tab-path="/">
+              <a class="page-tab-link" href="/" role="tab" aria-selected="{{if eq .TabPath "/"}}true{{else}}false{{end}}" {{if eq .TabPath "/"}}aria-current="page"{{end}}>工作台</a>
+            </div>
+            {{if and .TabPath (ne .TabPath "/")}}
+            <div class="page-tab active" data-tab-path="{{.TabPath}}">
+              <a class="page-tab-link" href="{{.TabPath}}" role="tab" aria-selected="true" aria-current="page">{{.Title}}</a>
+              <button class="page-tab-close" type="button" data-tab-close aria-label="关闭 {{.Title}}">
+                <span class="icon icon-x" aria-hidden="true"></span>
+              </button>
+            </div>
+            {{end}}
+          </div>
+          <button class="page-tabs-arrow" type="button" data-tabs-scroll="1" aria-label="向右滚动页签">
+            <span class="icon icon-chevron-down page-tabs-arrow-right" aria-hidden="true"></span>
+          </button>
+          <button class="page-tabs-tool" type="button" data-tabs-close-others aria-label="关闭其他页签">
+            <span class="icon icon-x" aria-hidden="true"></span>
+          </button>
         </div>
 
         <main class="content" id="main-content">
-          {{if eq .Page "dashboard"}}{{template "dashboard.html" .}}{{else if eq .Page "accounts"}}{{template "accounts.html" .}}{{else if eq .Page "account-detail"}}{{template "account_detail.html" .}}{{else if eq .Page "system"}}{{template "system.html" .}}{{else if eq .Page "placeholder"}}{{template "placeholder.html" .}}{{else}}{{template "notfound.html" .}}{{end}}
+          {{if eq .Page "dashboard"}}{{template "dashboard.html" .}}{{else if eq .Page "accounts"}}{{template "accounts.html" .}}{{else if eq .Page "account-detail"}}{{template "account_detail.html" .}}{{else if eq .Page "account-web"}}{{template "account_detail.html" .}}{{else if eq .Page "system"}}{{template "system.html" .}}{{else if eq .Page "placeholder"}}{{template "placeholder.html" .}}{{else}}{{template "notfound.html" .}}{{end}}
           <footer class="footer">TeleNexus · Telegram 多账号管理平台</footer>
         </main>
       </div>
