@@ -1,0 +1,202 @@
+{{define "telegram_client.html"}}
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="dark">
+    <title>Telegram · TeleNexus</title>
+    <link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/css/telegram_client.css">
+    <script src="/static/js/telegram_client.js" defer></script>
+  </head>
+  <body>
+    <div class="telegram-client" data-telegram-client data-account-id="{{.AccountID}}" data-mobile-view="list">
+      <nav class="tg-rail" aria-label="Telegram 快捷导航">
+        <a class="tg-rail-brand" href="/accounts" aria-label="返回 TeleNexus 账号列表">
+          <img src="/static/img/logo.svg" alt="">
+        </a>
+        <div class="tg-rail-actions">
+          <a class="tg-rail-button" href="/accounts" title="账号">
+            <span class="icon icon-users" aria-hidden="true"></span>
+            <span class="tg-visually-hidden">账号</span>
+          </a>
+          <button class="tg-rail-button tg-rail-button-active" type="button" title="聊天" aria-current="page">
+            <span class="icon icon-messages-square" aria-hidden="true"></span>
+            <span class="tg-visually-hidden">聊天</span>
+          </button>
+          <a class="tg-rail-button" href="/monitor" title="实时监控">
+            <span class="icon icon-activity" aria-hidden="true"></span>
+            <span class="tg-visually-hidden">实时监控</span>
+          </a>
+          <a class="tg-rail-button" href="/system" title="设置">
+            <span class="icon icon-settings" aria-hidden="true"></span>
+            <span class="tg-visually-hidden">设置</span>
+          </a>
+        </div>
+        <div class="tg-rail-footer">
+          <a class="tg-rail-button" href="/accounts" title="返回管理台">
+            <span class="icon icon-arrow-left" aria-hidden="true"></span>
+            <span class="tg-visually-hidden">返回管理台</span>
+          </a>
+          <span class="tg-account-avatar tg-avatar-small" data-account-avatar aria-hidden="true">TG</span>
+        </div>
+      </nav>
+
+      <section class="tg-chatlist-panel" data-chatlist-panel aria-label="会话列表">
+        <header class="tg-chatlist-header">
+          <button class="tg-icon-button tg-mobile-menu" type="button" data-open-list aria-label="显示会话列表">
+            <span class="icon icon-menu" aria-hidden="true"></span>
+          </button>
+          <label class="tg-search">
+            <span class="icon icon-search" aria-hidden="true"></span>
+            <input type="search" data-chat-search placeholder="搜索" autocomplete="off" aria-label="搜索会话">
+            <button class="tg-search-clear" type="button" data-clear-search aria-label="清空搜索" hidden>
+              <span class="icon icon-x" aria-hidden="true"></span>
+            </button>
+          </label>
+          <button class="tg-icon-button" type="button" data-refresh-chats aria-label="刷新会话" title="刷新会话">
+            <span class="icon icon-refresh-cw" aria-hidden="true"></span>
+          </button>
+        </header>
+
+        <div class="tg-folders" role="tablist" aria-label="会话筛选">
+          <button class="tg-folder tg-folder-active" type="button" role="tab" aria-selected="true" data-folder="all">
+            全部 <span data-folder-count="all">0</span>
+          </button>
+          <button class="tg-folder" type="button" role="tab" aria-selected="false" data-folder="unread">
+            未读 <span data-folder-count="unread">0</span>
+          </button>
+          <button class="tg-folder" type="button" role="tab" aria-selected="false" data-folder="private">
+            私聊
+          </button>
+          <button class="tg-folder" type="button" role="tab" aria-selected="false" data-folder="groups">
+            群组
+          </button>
+        </div>
+
+        <div class="tg-chatlist-state" data-chats-loading>
+          <span class="tg-spinner" aria-hidden="true"></span>
+          <span>正在读取 Telegram 会话</span>
+        </div>
+        <div class="tg-chat-list" data-chat-list role="list" hidden></div>
+        <div class="tg-chatlist-empty" data-chats-empty hidden>
+          <span class="tg-empty-icon"><span class="icon icon-messages-square" aria-hidden="true"></span></span>
+          <strong data-chats-empty-title>暂无会话</strong>
+          <span data-chats-empty-copy>这个账号暂时没有可显示的聊天。</span>
+        </div>
+        <p class="tg-notice tg-notice-error" data-chats-error hidden></p>
+
+        <footer class="tg-account-status">
+          <span class="tg-online-dot" data-account-status-dot aria-hidden="true"></span>
+          <span class="tg-account-status-copy">
+            <strong data-account-name>正在加载账号</strong>
+            <small data-account-meta>Telegram</small>
+          </span>
+          <button class="tg-icon-button" type="button" data-account-menu aria-label="账号信息" title="账号信息">
+            <span class="icon icon-info" aria-hidden="true"></span>
+          </button>
+        </footer>
+      </section>
+
+      <main class="tg-thread-panel" data-thread-panel aria-label="聊天内容">
+        <div class="tg-thread-empty" data-thread-empty>
+          <span class="tg-thread-empty-badge">
+            <span class="icon icon-messages-square" aria-hidden="true"></span>
+          </span>
+          <h1>选择一个聊天</h1>
+          <p>从左侧选择会话，查看 Telegram 消息记录。</p>
+        </div>
+
+        <section class="tg-conversation" data-conversation hidden>
+          <header class="tg-thread-header">
+            <button class="tg-icon-button tg-back-button" type="button" data-back-to-list aria-label="返回会话列表">
+              <span class="icon icon-arrow-left" aria-hidden="true"></span>
+            </button>
+            <button class="tg-peer-heading" type="button" data-toggle-profile>
+              <span class="tg-avatar tg-avatar-medium" data-conversation-avatar aria-hidden="true">TG</span>
+              <span class="tg-peer-copy">
+                <strong data-conversation-title>聊天</strong>
+                <small data-conversation-meta>正在加载...</small>
+              </span>
+            </button>
+            <div class="tg-thread-actions">
+              <button class="tg-icon-button" type="button" aria-label="语音通话（规划中）" title="语音通话（规划中）" disabled>
+                <span class="icon icon-phone" aria-hidden="true"></span>
+              </button>
+              <button class="tg-icon-button" type="button" aria-label="视频通话（规划中）" title="视频通话（规划中）" disabled>
+                <span class="icon icon-video" aria-hidden="true"></span>
+              </button>
+              <button class="tg-icon-button" type="button" data-toggle-profile aria-label="聊天信息" title="聊天信息">
+                <span class="icon icon-info" aria-hidden="true"></span>
+              </button>
+            </div>
+          </header>
+
+          <div class="tg-message-scroll" data-message-scroll>
+            <div class="tg-message-loading" data-messages-loading>
+              <span class="tg-spinner" aria-hidden="true"></span>
+            </div>
+            <button class="tg-load-older" type="button" data-load-older hidden>
+              <span class="icon icon-chevron-down" aria-hidden="true"></span>
+              加载更早消息
+            </button>
+            <div class="tg-message-list" data-message-list></div>
+            <p class="tg-notice tg-notice-error" data-messages-error hidden></p>
+          </div>
+
+          <form class="tg-composer" data-message-composer>
+            <button class="tg-composer-button" type="button" aria-label="添加附件（规划中）" title="添加附件（规划中）" disabled>
+              <span class="icon icon-paperclip" aria-hidden="true"></span>
+            </button>
+            <label class="tg-composer-field">
+              <span class="tg-visually-hidden">消息</span>
+              <textarea rows="1" placeholder="消息发送将在后续版本启用" readonly></textarea>
+              <span class="tg-composer-state">只读视图</span>
+            </label>
+            <button class="tg-composer-button" type="button" aria-label="表情（规划中）" title="表情（规划中）" disabled>
+              <span class="icon icon-smile" aria-hidden="true"></span>
+            </button>
+            <button class="tg-send-button" type="submit" aria-label="发送消息（规划中）" title="发送消息（规划中）" disabled>
+              <span class="icon icon-send" aria-hidden="true"></span>
+            </button>
+          </form>
+        </section>
+      </main>
+
+      <aside class="tg-profile-panel" data-profile-panel aria-label="聊天信息" hidden>
+        <header class="tg-profile-header">
+          <strong>聊天信息</strong>
+          <button class="tg-icon-button" type="button" data-close-profile aria-label="关闭聊天信息">
+            <span class="icon icon-x" aria-hidden="true"></span>
+          </button>
+        </header>
+        <div class="tg-profile-body">
+          <span class="tg-avatar tg-avatar-profile" data-profile-avatar aria-hidden="true">TG</span>
+          <h2 data-profile-title>聊天</h2>
+          <p data-profile-username>Telegram</p>
+          <dl class="tg-profile-list">
+            <div>
+              <dt>类型</dt>
+              <dd data-profile-type>会话</dd>
+            </div>
+            <div>
+              <dt>未读消息</dt>
+              <dd data-profile-unread>0</dd>
+            </div>
+            <div>
+              <dt>账号</dt>
+              <dd data-profile-account>Telegram</dd>
+            </div>
+          </dl>
+          <p class="tg-profile-note">
+            当前页面直接读取已授权的 Telegram 会话，仅用于浏览。
+          </p>
+        </div>
+      </aside>
+
+      <div class="tg-toast" data-toast role="status" aria-live="polite" hidden></div>
+    </div>
+  </body>
+</html>
+{{end}}

@@ -255,6 +255,9 @@ func (a *API) writeChatError(w http.ResponseWriter, accountID int64, err error) 
 			"Telegram 聊天服务尚未配置")
 	case errors.Is(err, telegramchat.ErrSessionMissing):
 		writeError(w, http.StatusNotFound, "session_not_found", "该账号的授权会话不存在，请重新登录")
+	case errors.Is(err, telegramchat.ErrSessionInvalid):
+		a.logger.Warn("Telegram session is no longer authorized", "account_id", accountID, "error", err)
+		writeError(w, http.StatusConflict, "session_invalid", "该账号的 Telegram 授权已失效，请重新登录后再查看会话")
 	case errors.Is(err, telegramchat.ErrPeerNotFound):
 		writeError(w, http.StatusNotFound, "chat_not_found", "未找到该聊天")
 	case errors.Is(err, telegramchat.ErrTelegram):

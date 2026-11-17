@@ -236,13 +236,22 @@ func TestAccountWorkspaceRendersStandaloneChatViewer(t *testing.T) {
 	}
 	body := recorder.Body.String()
 	for _, expected := range []string{
-		`data-current-path="/accounts/42/web"`,
-		`data-account-workspace="true"`,
-		"Telegram Account Workspace",
+		`class="telegram-client"`,
+		`data-account-id="42"`,
+		`data-telegram-client`,
 		`data-chat-list`,
+		`data-message-list`,
+		`data-profile-panel`,
+		`/static/css/telegram_client.css`,
+		`/static/js/telegram_client.js`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("account workspace missing %q", expected)
+		}
+	}
+	for _, unexpected := range []string{`class="sidebar"`, `class="topbar"`, `data-page-tabs`} {
+		if strings.Contains(body, unexpected) {
+			t.Errorf("account workspace must not include administration shell %q", unexpected)
 		}
 	}
 }

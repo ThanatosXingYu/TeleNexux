@@ -19,6 +19,7 @@ import (
 var (
 	ErrNotConfigured  = errors.New("Telegram chat service is not configured")
 	ErrSessionMissing = errors.New("Telegram account session is missing")
+	ErrSessionInvalid = errors.New("Telegram account session is invalid")
 	ErrPeerNotFound   = errors.New("Telegram chat was not found")
 	ErrTelegram       = errors.New("Telegram request failed")
 )
@@ -169,9 +170,30 @@ func (s *Service) withClient(
 		if errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Errorf("%w: request timed out", ErrTelegram)
 		}
+		if isInvalidSessionError(err) {
+			return fmt.Errorf("%w: %v", ErrSessionInvalid, err)
+		}
 		return fmt.Errorf("%w: %v", ErrTelegram, err)
 	}
 	return nil
+}
+
+func isInvalidSessionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToUpper(err.Error())
+	for _, marker := range []string{
+		"AUTH_KEY_UNREGISTERED",
+		"AUTH_KEY_INVALID",
+		"SESSION_REVOKED",
+		"USER_DEACTIVATED",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) sessionPath(accountID int64) (string, error) {

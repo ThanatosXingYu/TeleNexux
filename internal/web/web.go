@@ -165,17 +165,12 @@ func (r *Renderer) accountWorkspace(w http.ResponseWriter, req *http.Request) {
 		r.notFound(w, req)
 		return
 	}
-	r.render(w, pageData{
-		Title:       "账号 Web",
-		Section:     "账号 Web",
-		ActivePath:  "/accounts",
-		TabPath:     req.URL.Path,
-		Page:        "account-web",
-		Navigation:  navigation("/accounts"),
-		Breadcrumbs: []breadcrumb{{Label: "工作台", Path: "/"}, {Label: "账号管理", Path: "/accounts"}, {Label: "账号 Web"}},
-		Account:     defaultAccount,
-		AccountID:   accountID,
-	})
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := r.templates.ExecuteTemplate(w, "telegram_client.html", struct {
+		AccountID int64
+	}{AccountID: accountID}); err != nil {
+		http.Error(w, "render Telegram client", http.StatusInternalServerError)
+	}
 }
 
 func (r *Renderer) system(w http.ResponseWriter, _ *http.Request) {

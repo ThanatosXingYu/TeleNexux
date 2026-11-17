@@ -457,6 +457,26 @@ func TestListChatsSanitizesSessionErrors(t *testing.T) {
 	}
 }
 
+func TestListChatsReportsInvalidSession(t *testing.T) {
+	accounts := &fakeAccountService{created: account.Account{ID: 42, Status: account.StatusOnline}}
+	chats := &fakeTelegramChatService{chatsErr: telegramchat.ErrSessionInvalid}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/42/chats", nil)
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithDependencies(accounts, &fakeTelegramAuthService{}, chats, nil).
+		ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"session_invalid"`) {
+		t.Fatalf("response code = %s, want session_invalid", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "授权已失效") {
+		t.Fatalf("response message = %s, want an actionable message", recorder.Body.String())
+	}
+}
+
 func newTestHandlerWithDependencies(
 	accounts AccountService,
 	telegram TelegramAuthService,
