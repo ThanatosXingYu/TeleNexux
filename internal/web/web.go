@@ -177,7 +177,7 @@ func (r *Renderer) system(w http.ResponseWriter, _ *http.Request) {
 	r.render(w, pageData{
 		Title:       "系统配置",
 		Section:     "系统配置",
-		Description: "配置运行环境、Telegram 凭据、接码网络和服务监听地址",
+		Description: "配置运行环境、Telegram 凭据、页面布局和服务监听地址",
 		ActivePath:  "/system",
 		TabPath:     "/system",
 		Page:        "system",

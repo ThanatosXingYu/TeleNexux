@@ -289,7 +289,18 @@
               <span class="icon icon-x" aria-hidden="true"></span>
             </button>
           </header>
-          <p>确定删除选中的 <strong data-delete-count>0</strong> 条消息吗？此操作会同步到 Telegram。</p>
+          <p>确定删除选中的 <strong data-delete-count>0</strong> 条消息吗？</p>
+          <fieldset class="tg-delete-scope">
+            <legend>删除范围</legend>
+            <label>
+              <input type="radio" name="scope" value="me" checked>
+              <span><strong>仅为我删除</strong><small>只移除当前账号中的消息。</small></span>
+            </label>
+            <label>
+              <input type="radio" name="scope" value="all">
+              <span><strong>为所有人删除</strong><small>有权限时，对方也会看不到这些消息。</small></span>
+            </label>
+          </fieldset>
           <p class="tg-notice tg-notice-error" data-delete-error hidden></p>
           <footer>
             <button class="tg-text-button" type="button" data-close-dialog>取消</button>

@@ -437,6 +437,20 @@
   const accountsError = document.querySelector("[data-accounts-error]");
   const accountCounts = [...document.querySelectorAll("[data-account-count]")];
   const onlineCounts = [...document.querySelectorAll("[data-online-count]")];
+  const accountToast = document.querySelector("[data-account-toast]");
+  const profileDialog = document.getElementById("account-profile-dialog");
+  const profileForm = document.querySelector("[data-account-edit-form]");
+  const profileName = document.querySelector("[data-account-profile-name]");
+  const profileStatus = document.querySelector("[data-account-profile-status]");
+  const profileID = document.querySelector("[data-account-profile-id]");
+  const profileNotice = document.querySelector("[data-account-edit-notice]");
+  const profileWebLink = document.querySelector("[data-account-open-web]");
+  const deleteDialog = document.getElementById("account-delete-dialog");
+  const deleteForm = document.querySelector("[data-account-delete-form]");
+  const deleteName = document.querySelector("[data-account-delete-name]");
+  const deleteNotice = document.querySelector("[data-account-delete-notice]");
+  let managedAccount = null;
+  let accountToastTimer = 0;
 
   const showNotice = (element, message, isError = false) => {
     if (!element) {
@@ -472,9 +486,79 @@
     return payload;
   };
 
+  const countryCodes = [
+    "+886", "+852", "+853", "+971", "+966", "+972", "+351",
+    "+358", "+353", "+420", "+421", "+385", "+386", "+381", "+380",
+    "+61", "+62", "+63", "+64", "+65", "+66", "+60", "+49", "+44",
+    "+43", "+41", "+39", "+34", "+33", "+32", "+31", "+30", "+27",
+    "+20", "+1", "+7", "+86", "+81", "+82",
+  ];
+
   const formatPhone = (phone) => {
     const digits = String(phone || "").replace(/\D/g, "");
-    return digits ? `+${digits}` : "未设置";
+    if (!digits) {
+      return "未设置";
+    }
+    const normalized = `+${digits}`;
+    const countryCode = countryCodes.find((code) => normalized.startsWith(code)) || "";
+    if (!countryCode || normalized.length === countryCode.length) {
+      return normalized;
+    }
+    return `${countryCode} ${normalized.slice(countryCode.length)}`;
+  };
+
+  const splitPhone = (phone) => {
+    const normalized = `+${String(phone || "").replace(/\D/g, "")}`;
+    const countryCode = countryCodes.find((code) => normalized.startsWith(code)) || "+1";
+    return {
+      countryCode,
+      localNumber: normalized.slice(countryCode.length),
+    };
+  };
+
+  const showAccountToast = (message) => {
+    if (!accountToast) {
+      return;
+    }
+    window.clearTimeout(accountToastTimer);
+    accountToast.textContent = message;
+    accountToast.hidden = false;
+    accountToastTimer = window.setTimeout(() => {
+      accountToast.hidden = true;
+    }, 2400);
+  };
+
+  const copyText = async (value, successMessage) => {
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+      const area = document.createElement("textarea");
+      area.value = value;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.append(area);
+      area.select();
+      document.execCommand("copy");
+      area.remove();
+    }
+    showAccountToast(successMessage);
+  };
+
+  const copyValue = (value, label) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "copy-value";
+    button.title = `复制${label}`;
+    button.setAttribute("aria-label", `复制${label}：${value}`);
+    const text = document.createElement("span");
+    text.textContent = value;
+    const icon = document.createElement("span");
+    icon.className = "icon icon-copy";
+    icon.setAttribute("aria-hidden", "true");
+    button.append(text, icon);
+    button.addEventListener("click", () => copyText(value, `${label}已复制`));
+    return button;
   };
 
   const formatAccountDate = (value) => {
@@ -509,6 +593,52 @@
     return cell;
   };
 
+  const closeProfileDialog = () => {
+    profileDialog?.close();
+    managedAccount = null;
+  };
+
+  const openProfileDialog = (account) => {
+    if (!profileDialog || !profileForm) {
+      return;
+    }
+    managedAccount = account;
+    const name = account.display_name || account.username || "Telegram 账号";
+    if (profileName) {
+      profileName.textContent = name;
+    }
+    if (profileStatus) {
+      profileStatus.textContent = statusLabels[account.status] || account.status;
+    }
+    if (profileID) {
+      profileID.textContent = `Telegram ID ${account.id}`;
+    }
+    profileForm.elements.namedItem("display_name").value = account.display_name || "";
+    const phoneNumber = String(account.phone_number || "");
+    profileForm.elements.namedItem("phone_number").value = phoneNumber
+      ? `+${phoneNumber.replace(/\D/g, "")}`
+      : "";
+    profileForm.elements.namedItem("username").value = account.username ? `@${account.username}` : "";
+    profileWebLink?.toggleAttribute("hidden", account.status !== "online");
+    if (profileWebLink) {
+      profileWebLink.href = `/accounts/${encodeURIComponent(account.id)}/web`;
+    }
+    showNotice(profileNotice, "");
+    profileDialog.showModal();
+  };
+
+  const openDeleteDialog = (account) => {
+    if (!deleteDialog) {
+      return;
+    }
+    managedAccount = account;
+    if (deleteName) {
+      deleteName.textContent = account.display_name || account.username || `账号 ${account.id}`;
+    }
+    showNotice(deleteNotice, "");
+    deleteDialog.showModal();
+  };
+
   const renderAccounts = (items) => {
     if (!accountBody) {
       return;
@@ -533,7 +663,7 @@
     items.forEach((account) => {
       const row = document.createElement("tr");
       row.className = "account-row";
-      row.dataset.href = `/accounts/${encodeURIComponent(account.id)}`;
+      row.dataset.accountId = String(account.id);
 
       const identity = document.createElement("div");
       identity.className = "account-identity";
@@ -551,69 +681,122 @@
       telegramID.textContent = `Telegram ID ${account.id}`;
       identityCopy.append(name, telegramID);
       identity.append(monogram, identityCopy);
-      const identityLink = document.createElement("a");
-      identityLink.className = "account-detail-link";
-      identityLink.href = row.dataset.href;
-      identityLink.setAttribute("aria-label", `查看 ${name.textContent} 的聊天`);
-      identityLink.append(identity);
-
-      const phone = document.createElement("span");
-      phone.className = "table-secondary";
-      phone.textContent = formatPhone(account.phone_number);
-
-      const username = document.createElement("span");
-      username.className = "table-secondary";
-      username.textContent = account.username ? `@${account.username}` : "未设置";
+      const phone = copyValue(formatPhone(account.phone_number), "手机号");
+      const username = account.username
+        ? copyValue(`@${account.username}`, "用户名")
+        : "未设置";
 
       const status = document.createElement("span");
       status.className = `account-status account-status-${account.status}`;
       status.textContent = statusLabels[account.status] || account.status;
 
-      const chatAction = document.createElement("a");
-      chatAction.className = "button button-secondary button-compact";
-      chatAction.href = row.dataset.href;
-      chatAction.textContent = "查看聊天";
-
-      const webAction = document.createElement("a");
-      webAction.className = "button button-primary button-compact";
-      webAction.href = `${row.dataset.href}/web`;
-      webAction.target = "_blank";
-      webAction.rel = "noopener";
-      webAction.textContent = "打开 Web";
-
       const actionGroup = document.createElement("div");
       actionGroup.className = "account-actions";
-      if (account.status === "error") {
+      if (account.status !== "online") {
         const relogin = document.createElement("button");
         relogin.className = "button button-primary button-compact";
         relogin.type = "button";
         relogin.textContent = "重新登录";
-        relogin.addEventListener("click", () => openLoginDialog());
+        relogin.addEventListener("click", () => openLoginDialog(account));
         actionGroup.append(relogin);
       } else {
-        actionGroup.append(chatAction, webAction);
+        const webAction = document.createElement("a");
+        webAction.className = "button button-primary button-compact";
+        webAction.href = `/accounts/${encodeURIComponent(account.id)}/web`;
+        webAction.target = "_blank";
+        webAction.rel = "noopener";
+        webAction.textContent = "打开 Web";
+        actionGroup.append(webAction);
       }
+      const profileAction = document.createElement("button");
+      profileAction.className = "button button-secondary button-compact";
+      profileAction.type = "button";
+      profileAction.textContent = "资料";
+      profileAction.addEventListener("click", () => openProfileDialog(account));
+      const deleteAction = document.createElement("button");
+      deleteAction.className = "button button-danger-ghost button-compact";
+      deleteAction.type = "button";
+      deleteAction.textContent = "删除";
+      deleteAction.addEventListener("click", () => openDeleteDialog(account));
+      actionGroup.append(profileAction, deleteAction);
 
       row.append(
-        tableCell(identityLink),
+        tableCell(identity),
         tableCell(phone),
         tableCell(username),
         tableCell(status),
         tableCell(formatAccountDate(account.updated_at)),
         tableCell(actionGroup),
       );
-      row.addEventListener("click", (event) => {
-        if (!event.target.closest("a, button, input, select, textarea")) {
-          window.location.assign(row.dataset.href);
-        }
-      });
       accountBody.append(row);
     });
   };
 
+  document.querySelectorAll("[data-account-profile-close]").forEach((button) => {
+    button.addEventListener("click", closeProfileDialog);
+  });
+  document.querySelectorAll("[data-account-delete-close]").forEach((button) => {
+    button.addEventListener("click", () => {
+      deleteDialog?.close();
+      managedAccount = null;
+    });
+  });
+  profileForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!managedAccount) {
+      return;
+    }
+    const submit = profileForm.querySelector("button[type='submit']");
+    const data = new FormData(profileForm);
+    submit?.setAttribute("disabled", "");
+    showNotice(profileNotice, "");
+    try {
+      await requestJSON(
+        `/api/v1/accounts/${encodeURIComponent(managedAccount.id)}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            display_name: String(data.get("display_name") || "").trim(),
+            phone_number: String(data.get("phone_number") || "").trim(),
+            username: String(data.get("username") || "").trim(),
+          }),
+        },
+      );
+      closeProfileDialog();
+      showAccountToast("账号资料已保存");
+      await loadAccounts();
+    } catch (error) {
+      showNotice(profileNotice, error.message, true);
+    } finally {
+      submit?.removeAttribute("disabled");
+    }
+  });
+  deleteForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!managedAccount) {
+      return;
+    }
+    const submit = deleteForm.querySelector("button[type='submit']");
+    submit?.setAttribute("disabled", "");
+    showNotice(deleteNotice, "");
+    try {
+      await requestJSON(`/api/v1/accounts/${encodeURIComponent(managedAccount.id)}`, {
+        method: "DELETE",
+      });
+      deleteDialog?.close();
+      managedAccount = null;
+      showAccountToast("账号及本地授权会话已删除");
+      await loadAccounts();
+    } catch (error) {
+      showNotice(deleteNotice, error.message, true);
+    } finally {
+      submit?.removeAttribute("disabled");
+    }
+  });
+
   const loadAccounts = async (verifySessions = false) => {
     if (!accountBody) {
-      return;
+      return false;
     }
     if (!verifySessions) {
       accountsLoading?.removeAttribute("hidden");
@@ -626,9 +809,12 @@
         ? await requestJSON("/api/v1/accounts/refresh", {method: "POST", body: "{}"})
         : await requestJSON("/api/v1/accounts?limit=100");
       renderAccounts(Array.isArray(payload?.items) ? payload.items : []);
+      showNotice(accountsError, "");
+      return true;
     } catch (error) {
       accountsLoading?.setAttribute("hidden", "");
       showNotice(accountsError, error.message, true);
+      return false;
     }
   };
 
@@ -654,10 +840,12 @@
   document.querySelector("[data-accounts-refresh]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     button.disabled = true;
-    showNotice(accountsError, "正在验证 Telegram 授权状态...");
     try {
-      await loadAccounts(true);
-      showNotice(accountsError, "");
+      const refresh = loadAccounts(true);
+      showNotice(accountsError, "正在验证 Telegram 授权状态...");
+      if (await refresh) {
+        showAccountToast("账号状态已刷新");
+      }
     } finally {
       button.disabled = false;
     }
@@ -681,35 +869,64 @@
   const qrNotice = document.querySelector("[data-qr-notice]");
   const qrImage = document.querySelector("[data-qr-image]");
   const qrLoading = document.querySelector("[data-qr-loading]");
+  const qrCountdown = document.querySelector("[data-qr-countdown]");
   const loginModeButtons = [...document.querySelectorAll("[data-login-mode]")];
   const phoneHint = document.querySelector("[data-auth-phone-hint]");
   const codeType = document.querySelector("[data-auth-code-type]");
   const codeInput = codeForm?.querySelector("input[name='code']");
-  const fetchCodeButton = document.querySelector("[data-fetch-code]");
   const completeName = document.querySelector("[data-complete-name]");
   const viewChatButton = document.querySelector("[data-login-view-chat]");
   const viewWebButton = document.querySelector("[data-login-view-web]");
   const qrRestart = document.querySelector("[data-qr-restart]");
+  const loginKicker = document.querySelector("[data-login-kicker]");
+  const loginTitle = document.querySelector("[data-login-title]");
   let loginID = "";
-  let pollTimer = 0;
-  let pollAttempts = 0;
   let qrLoginID = "";
   let qrPollTimer = 0;
   let qrPollAttempts = 0;
+  let qrRefreshAt = 0;
+  let qrCountdownTimer = 0;
   let authCompleted = false;
-
-  const stopCodePolling = () => {
-    if (pollTimer) {
-      window.clearTimeout(pollTimer);
-      pollTimer = 0;
-    }
-  };
 
   const stopQRPolling = () => {
     if (qrPollTimer) {
       window.clearTimeout(qrPollTimer);
       qrPollTimer = 0;
     }
+  };
+
+  const stopQRCountdown = () => {
+    qrRefreshAt = 0;
+    if (qrCountdownTimer) {
+      window.clearInterval(qrCountdownTimer);
+      qrCountdownTimer = 0;
+    }
+    if (qrCountdown) {
+      qrCountdown.hidden = true;
+      qrCountdown.textContent = "";
+    }
+  };
+
+  const updateQRCountdown = () => {
+    if (!qrRefreshAt || !qrCountdown) {
+      return;
+    }
+    const seconds = Math.max(0, Math.ceil((qrRefreshAt - Date.now()) / 1000));
+    qrCountdown.hidden = false;
+    qrCountdown.textContent = seconds > 0
+      ? `距二维码刷新还有 ${seconds} 秒`
+      : "正在向 Telegram 获取新二维码...";
+  };
+
+  const setQRRefreshAt = (value) => {
+    const refreshAt = new Date(value || "").getTime();
+    stopQRCountdown();
+    if (!Number.isFinite(refreshAt) || refreshAt <= 0) {
+      return;
+    }
+    qrRefreshAt = refreshAt;
+    updateQRCountdown();
+    qrCountdownTimer = window.setInterval(updateQRCountdown, 1000);
   };
 
   const setAuthStep = (name) => {
@@ -759,8 +976,8 @@
   };
 
   const cancelLogin = () => {
-    stopCodePolling();
     stopQRPolling();
+    stopQRCountdown();
     const current = loginID;
     const currentQR = qrLoginID;
     loginID = "";
@@ -787,6 +1004,7 @@
     showNotice(qrNotice, "");
     qrImage?.setAttribute("hidden", "");
     qrLoading?.removeAttribute("hidden");
+    stopQRCountdown();
     if (qrRestart) {
       qrRestart.disabled = true;
     }
@@ -798,6 +1016,7 @@
     try {
       const challenge = await requestJSON("/api/v1/telegram/auth/qr", {method: "POST"});
       qrLoginID = challenge.login_id;
+      setQRRefreshAt(challenge.refresh_at);
       if (qrImage && challenge.image) {
         qrImage.src = challenge.image;
         qrImage.removeAttribute("hidden");
@@ -827,6 +1046,9 @@
         return;
       }
       qrPollAttempts = 0;
+      if (result.refresh_at) {
+        setQRRefreshAt(result.refresh_at);
+      }
       if (result.image && qrImage && result.image !== qrImage.src) {
         qrImage.src = result.image;
         qrImage.removeAttribute("hidden");
@@ -834,6 +1056,7 @@
       }
       if (result.next_step === "complete") {
         stopQRPolling();
+        stopQRCountdown();
         qrLoginID = "";
         finishAuth(result);
         return;
@@ -841,6 +1064,7 @@
     } catch (error) {
       if (error.code === "login_not_found") {
         stopQRPolling();
+        stopQRCountdown();
         qrLoginID = "";
         showNotice(qrNotice, "二维码已过期，请点击“重新生成二维码”。", true);
         return;
@@ -858,7 +1082,6 @@
   const resetLoginDialog = () => {
     cancelLogin();
     authCompleted = false;
-    pollAttempts = 0;
     phoneForm?.reset();
     usernameForm?.reset();
     codeForm?.reset();
@@ -889,11 +1112,37 @@
     }
   };
 
-  const openLoginDialog = () => {
+  const openLoginDialog = (account = null) => {
     if (!authDialog) {
       return;
     }
     resetLoginDialog();
+    const relogin = Boolean(account?.id);
+    if (loginKicker) {
+      loginKicker.textContent = relogin ? "恢复 Telegram 授权" : "官方 MTProto 登录";
+    }
+    if (loginTitle) {
+      loginTitle.textContent = relogin
+        ? `重新登录 ${account.display_name || account.username || "Telegram 账号"}`
+        : "登录 Telegram 账号";
+    }
+    if (relogin && phoneForm) {
+      const phone = splitPhone(account.phone_number);
+      const countrySelect = phoneForm.elements.namedItem("country_code");
+      const localNumberInput = phoneForm.elements.namedItem("phone_number");
+      if (countrySelect) {
+        if (![...countrySelect.options].some((option) => option.value === phone.countryCode)) {
+          countrySelect.add(new Option(`${phone.countryCode} 其他`, phone.countryCode));
+        }
+        countrySelect.value = phone.countryCode;
+      }
+      if (localNumberInput) {
+        localNumberInput.value = phone.localNumber;
+      }
+    }
+    if (relogin && usernameForm?.elements.namedItem("username") && account.username) {
+      usernameForm.elements.namedItem("username").value = `@${account.username}`;
+    }
     if (typeof authDialog.showModal === "function") {
       authDialog.showModal();
     } else {
@@ -905,7 +1154,7 @@
   };
 
   document.querySelectorAll("[data-open-login]").forEach((button) => {
-    button.addEventListener("click", openLoginDialog);
+    button.addEventListener("click", () => openLoginDialog());
   });
   loginModeButtons.forEach((button) => {
     button.addEventListener("click", () => setAuthMode(button.dataset.loginMode));
@@ -948,7 +1197,14 @@
     event.preventDefault();
     const button = phoneForm.querySelector("button[type='submit']");
     const formData = new FormData(phoneForm);
+    const countryCode = String(formData.get("country_code") || "").trim();
+    const localNumber = String(formData.get("phone_number") || "").replace(/\D/g, "");
+    const phoneNumber = `${countryCode}${localNumber}`;
     showNotice(phoneNotice, "");
+    if (!/^\+\d{7,15}$/.test(phoneNumber)) {
+      showNotice(phoneNotice, "请输入有效的国家区号和完整手机号。", true);
+      return;
+    }
     if (button) {
       button.disabled = true;
     }
@@ -956,14 +1212,14 @@
       const challenge = await requestJSON("/api/v1/telegram/auth/send-code", {
         method: "POST",
         body: JSON.stringify({
-          phone_number: formData.get("phone_number"),
-          code_url: formData.get("code_url"),
+          phone_number: phoneNumber,
         }),
       });
       loginID = challenge.login_id;
-      pollAttempts = 0;
       if (phoneHint) {
-        phoneHint.textContent = challenge.phone_hint || "Telegram 账号";
+        phoneHint.textContent = challenge.phone_hint
+          ? formatPhone(challenge.phone_hint)
+          : "Telegram 账号";
       }
       if (codeType) {
         codeType.textContent = challenge.code_type || "Telegram 验证码";
@@ -972,13 +1228,8 @@
         codeInput.maxLength = challenge.code_length > 0 ? challenge.code_length : 8;
         codeInput.value = "";
       }
-      fetchCodeButton?.toggleAttribute("hidden", !challenge.can_fetch_code);
       setAuthStep("code");
       codeInput?.focus();
-      if (challenge.can_fetch_code) {
-        pollAttempts = 1;
-        pollTimer = window.setTimeout(fetchCodeFromSource, 1800);
-      }
     } catch (error) {
       showNotice(phoneNotice, error.message, true);
     } finally {
@@ -995,15 +1246,14 @@
 
   const finishAuth = (result) => {
     if (result.next_step === "password") {
-      stopCodePolling();
       stopQRPolling();
       setAuthStep("password");
       passwordForm?.querySelector("input[name='password']")?.focus();
       return;
     }
     if (result.next_step === "complete") {
-      stopCodePolling();
       stopQRPolling();
+      stopQRCountdown();
       authCompleted = true;
       loginID = "";
       qrLoginID = "";
@@ -1011,7 +1261,9 @@
         completeName.textContent = result.account?.display_name || result.account?.username || "Telegram 账号";
       }
       if (viewChatButton && result.account?.id) {
-        viewChatButton.href = `/accounts/${encodeURIComponent(result.account.id)}`;
+        viewChatButton.href = `/accounts/${encodeURIComponent(result.account.id)}/web`;
+        viewChatButton.target = "_blank";
+        viewChatButton.rel = "noopener";
         viewChatButton.removeAttribute("hidden");
       }
       if (viewWebButton && result.account?.id) {
@@ -1027,7 +1279,6 @@
     event.preventDefault();
     const button = codeForm.querySelector("button[type='submit']");
     const formData = new FormData(codeForm);
-    stopCodePolling();
     showNotice(codeNotice, "");
     if (button) {
       button.disabled = true;
@@ -1077,42 +1328,6 @@
     }
   });
 
-  async function fetchCodeFromSource() {
-    if (!loginID || pollTimer === 0 && pollAttempts === 0) {
-      return;
-    }
-    stopCodePolling();
-    if (fetchCodeButton) {
-      fetchCodeButton.disabled = true;
-    }
-    showNotice(codeNotice, "正在从接码链接读取验证码...");
-    try {
-      const result = await requestJSON(
-        `/api/v1/telegram/auth/${encodeURIComponent(loginID)}/fetch-code`,
-        {method: "POST", body: "{}"},
-      );
-      showNotice(codeNotice, "");
-      finishAuth(result);
-    } catch (error) {
-      if (error.code === "code_not_ready" && pollAttempts < 30) {
-        pollAttempts += 1;
-        showNotice(codeNotice, "验证码尚未到达，正在等待...");
-        pollTimer = window.setTimeout(fetchCodeFromSource, 2000);
-      } else {
-        showNotice(codeNotice, error.message, true);
-      }
-    } finally {
-      if (fetchCodeButton) {
-        fetchCodeButton.disabled = false;
-      }
-    }
-  }
-
-  fetchCodeButton?.addEventListener("click", () => {
-    pollAttempts = 1;
-    fetchCodeFromSource();
-  });
-
   authDialog?.addEventListener("close", () => {
     if (!authCompleted) {
       cancelLogin();
@@ -1148,6 +1363,9 @@
     const messagesLoading = detailRoot.parentElement.querySelector("[data-messages-loading]");
     const messagesError = detailRoot.parentElement.querySelector("[data-messages-error]");
     const loadOlder = detailRoot.parentElement.querySelector("[data-load-older]");
+    const offlineState = detailRoot.parentElement.querySelector("[data-account-offline]");
+    const offlineCopy = detailRoot.parentElement.querySelector("[data-account-offline-copy]");
+    const chatWorkspace = detailRoot.parentElement.querySelector(".chat-workspace");
     let selectedChat = null;
     let nextBeforeID = 0;
 
@@ -1325,21 +1543,38 @@
       }
     };
 
-    requestJSON(`/api/v1/accounts/${encodeURIComponent(accountID)}`)
-      .then((account) => {
+    const initializeDetail = async () => {
+      try {
+        const account = await requestJSON(`/api/v1/accounts/${encodeURIComponent(accountID)}`);
         if (detailName) {
           detailName.textContent = account.display_name || account.username || "Telegram 账号";
         }
         if (detailMeta) {
           detailMeta.textContent = `${account.username ? `@${account.username} · ` : ""}${formatPhone(account.phone_number)} · ${statusLabels[account.status] || account.status}`;
         }
-      })
-      .catch((error) => {
+        const online = account.status === "online";
+        offlineState?.toggleAttribute("hidden", online);
+        chatWorkspace?.toggleAttribute("hidden", !online);
+        if (!online) {
+          chatsRefresh?.setAttribute("disabled", "");
+          if (offlineCopy) {
+            offlineCopy.textContent = "该账号的 Telegram 授权已失效。请返回账号列表重新扫码登录，登录成功后再查看会话。";
+          }
+          return;
+        }
+        await loadChats();
+      } catch (error) {
         if (detailMeta) {
           detailMeta.textContent = error.message;
         }
-      });
-    loadChats();
+        offlineState?.removeAttribute("hidden");
+        chatWorkspace?.setAttribute("hidden", "");
+        if (offlineCopy) {
+          offlineCopy.textContent = error.message;
+        }
+      }
+    };
+    initializeDetail();
     chatsRefresh?.addEventListener("click", loadChats);
     loadOlder?.addEventListener("click", () => loadMessages(selectedChat, false));
   }

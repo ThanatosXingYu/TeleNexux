@@ -95,6 +95,7 @@ textarea:focus-visible {
 .icon-activity { --icon-source: url("/static/img/icons/activity.svg"); }
 .icon-arrow-left { --icon-source: url("/static/img/icons/arrow-left.svg"); }
 .icon-check-check { --icon-source: url("/static/img/icons/check-check.svg"); }
+.icon-circle-check { --icon-source: url("/static/img/icons/circle-check.svg"); }
 .icon-chevron-down { --icon-source: url("/static/img/icons/chevron-down.svg"); }
 .icon-copy { --icon-source: url("/static/img/icons/copy.svg"); }
 .icon-forward { --icon-source: url("/static/img/icons/forward.svg"); }
@@ -953,10 +954,40 @@ textarea:focus-visible {
   transition: background-color 120ms ease, box-shadow 120ms ease;
 }
 
+.tg-message-row.is-selectable {
+  cursor: pointer;
+}
+
 .tg-message-row.is-selected {
   border-radius: 14px;
   background: rgba(54, 133, 250, 0.24);
   box-shadow: 0 0 0 2px rgba(54, 133, 250, 0.7);
+}
+
+.tg-select-control {
+  display: grid;
+  align-items: center;
+  justify-content: center;
+  width: 23px;
+  height: 23px;
+  flex: 0 0 23px;
+  align-self: center;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 50%;
+  background: rgba(12, 20, 28, 0.78);
+  color: #7e8b97;
+}
+
+.tg-message-row.is-selected .tg-select-control {
+  border-color: var(--tg-primary);
+  background: var(--tg-primary);
+  color: #fff;
+}
+
+.tg-select-control .icon {
+  width: 17px;
+  height: 17px;
+  flex-basis: 17px;
 }
 
 .tg-message-row.is-consecutive {
@@ -1436,7 +1467,10 @@ textarea:focus-visible {
   z-index: 30;
   position: fixed;
   width: 210px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
   padding: 6px;
+  overflow-y: auto;
   border: 1px solid var(--tg-border);
   border-radius: 12px;
   background: #202b38;
@@ -1479,7 +1513,9 @@ textarea:focus-visible {
 
 .tg-dialog {
   width: min(420px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
   padding: 0;
+  overflow: hidden;
   border: 1px solid var(--tg-border);
   border-radius: 18px;
   background: var(--tg-surface);
@@ -1493,7 +1529,9 @@ textarea:focus-visible {
 }
 
 .tg-dialog-card {
+  max-height: calc(100dvh - 32px);
   padding: 18px;
+  overflow-y: auto;
 }
 
 .tg-dialog-card header {
@@ -1517,6 +1555,53 @@ textarea:focus-visible {
 
 .tg-dialog-card .tg-dialog-field {
   margin: 18px 0;
+}
+
+.tg-delete-scope {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0;
+  padding: 0;
+  border: 0;
+}
+
+.tg-delete-scope legend {
+  margin-bottom: 7px;
+  color: var(--tg-secondary-text);
+  font-size: 12px;
+}
+
+.tg-delete-scope label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px;
+  border: 1px solid var(--tg-border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+}
+
+.tg-delete-scope label:has(input:checked) {
+  border-color: var(--tg-primary);
+  background: rgba(54, 133, 250, 0.12);
+}
+
+.tg-delete-scope input {
+  margin-top: 3px;
+  accent-color: var(--tg-primary);
+}
+
+.tg-delete-scope label > span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.tg-delete-scope small {
+  color: var(--tg-secondary-text);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .tg-notice {
@@ -1638,6 +1723,15 @@ textarea:focus-visible {
 
   .tg-message-row {
     max-width: calc(100% - 40px);
+  }
+
+  .tg-dialog {
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+  }
+
+  .tg-dialog-card {
+    max-height: calc(100dvh - 16px);
   }
 
   .tg-message-avatar {

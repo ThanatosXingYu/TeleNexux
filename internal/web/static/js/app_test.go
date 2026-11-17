@@ -39,16 +39,20 @@ func TestScriptUsesOnlyReferencedControls(t *testing.T) {
 		`setAuthMode`,
 		`data-auth-step`,
 		`requestJSON`,
-		`fetchCodeFromSource`,
 		`passwordForm?.addEventListener`,
 		`data-login-view-chat`,
 		`loadMessages(items[0])`,
 		`data-settings-tab`,
 		`data-settings-panel`,
 		`data-page-setting`,
-		`!event.target.closest("a, button, input, select, textarea")`,
-		`phone.textContent = formatPhone(account.phone_number)`,
+		`data-qr-countdown`,
+		`countryCode`,
+		`openLoginDialog(account)`,
+		`splitPhone(account.phone_number)`,
+		`copyValue(formatPhone(account.phone_number), "手机号")`,
+		`/api/v1/accounts/${encodeURIComponent(managedAccount.id)}`,
 		`relogin.textContent = "重新登录"`,
+		`data-account-offline`,
 	}
 	for _, behavior := range requiredBehavior {
 		if !strings.Contains(script, behavior) {
@@ -58,6 +62,11 @@ func TestScriptUsesOnlyReferencedControls(t *testing.T) {
 
 	if regexp.MustCompile(`\balert\(`).MatchString(script) {
 		t.Error("app.js must not block navigation with alert dialogs")
+	}
+	for _, removed := range []string{"code_url", "fetch-code", "data-fetch-code"} {
+		if strings.Contains(script, removed) {
+			t.Errorf("app.js must not use code receiving behavior %q", removed)
+		}
 	}
 }
 

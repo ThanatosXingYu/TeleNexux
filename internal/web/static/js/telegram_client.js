@@ -158,9 +158,25 @@
     }, 2800);
   };
 
+  const countryCodes = [
+    "+886", "+852", "+853", "+971", "+966", "+972", "+351", "+358",
+    "+353", "+420", "+421", "+385", "+386", "+381", "+380", "+61",
+    "+62", "+63", "+64", "+65", "+66", "+60", "+49", "+44", "+43",
+    "+41", "+39", "+34", "+33", "+32", "+31", "+30", "+27", "+20",
+    "+1", "+7", "+86", "+81", "+82",
+  ];
+
   const formatPhone = (phone) => {
     const digits = String(phone || "").replace(/\D/g, "");
-    return digits ? `+${digits}` : "未设置";
+    if (!digits) {
+      return "未设置";
+    }
+    const normalized = `+${digits}`;
+    const countryCode = countryCodes.find((code) => normalized.startsWith(code)) || "";
+    if (!countryCode || normalized.length === countryCode.length) {
+      return normalized;
+    }
+    return `${countryCode} ${normalized.slice(countryCode.length)}`;
   };
 
   const stableColorIndex = (value) => {
@@ -192,6 +208,59 @@
     `${encodeURIComponent(accountID)}/avatar`
   );
 
+  const avatarLoadConcurrency = 2;
+  const avatarLoadTimeout = 12000;
+  const avatarLoadQueue = [];
+  const activeAvatarLoads = new Set();
+
+  const completeAvatarLoad = (image) => {
+    if (!activeAvatarLoads.delete(image)) {
+      return;
+    }
+    window.clearTimeout(Number(image.dataset.avatarTimer) || 0);
+    delete image.dataset.avatarTimer;
+    while (activeAvatarLoads.size < avatarLoadConcurrency && avatarLoadQueue.length > 0) {
+      const next = avatarLoadQueue.shift();
+      startAvatarLoad(next.image, next.avatarURL);
+    }
+  };
+
+  const startAvatarLoad = (image, avatarURL) => {
+    if (!image.isConnected || activeAvatarLoads.has(image)) {
+      return;
+    }
+    activeAvatarLoads.add(image);
+    image.src = avatarURL;
+    image.dataset.avatarTimer = String(window.setTimeout(() => {
+      image.src = "";
+      completeAvatarLoad(image);
+    }, avatarLoadTimeout));
+  };
+
+  const queueAvatarLoad = (image, avatarURL) => {
+    if (activeAvatarLoads.size < avatarLoadConcurrency) {
+      startAvatarLoad(image, avatarURL);
+      return;
+    }
+    avatarLoadQueue.push({image, avatarURL});
+  };
+
+  const avatarObserver = typeof IntersectionObserver === "function"
+    ? new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) {
+          return;
+        }
+        const image = entry.target;
+        avatarObserver.unobserve(image);
+        if (image.dataset.avatarSrc) {
+          queueAvatarLoad(image, image.dataset.avatarSrc);
+          delete image.dataset.avatarSrc;
+        }
+      });
+    }, {rootMargin: "120px"})
+    : null;
+
   const applyAvatar = (element, title, extraClass = "", avatarURL = "") => {
     if (!element) {
       return;
@@ -203,13 +272,22 @@
       return;
     }
     const image = document.createElement("img");
-    image.src = avatarURL;
     image.alt = "";
+    image.loading = "lazy";
     image.decoding = "async";
+    image.addEventListener("load", () => completeAvatarLoad(image), {once: true});
     image.addEventListener("error", () => {
+      completeAvatarLoad(image);
+      avatarObserver?.unobserve(image);
       image.remove();
       element.textContent = initials(title);
     }, {once: true});
+    if (avatarObserver) {
+      image.dataset.avatarSrc = avatarURL;
+      avatarObserver.observe(image);
+    } else {
+      queueAvatarLoad(image, avatarURL);
+    }
     element.append(image);
   };
 
@@ -313,6 +391,11 @@
     const haystack = [chat.title, chat.username, chat.preview].filter(Boolean).join(" ").toLocaleLowerCase();
     return haystack.includes(state.query);
   };
+
+  const normalizeSearchQuery = (value) => String(value || "")
+    .trim()
+    .replace(/^@+/, "")
+    .toLocaleLowerCase();
 
   const updateFolderCounts = () => {
     const unreadChats = state.chats.filter((chat) => Number(chat.unread_count) > 0).length;
@@ -781,7 +864,18 @@
     );
     elements.messageList?.querySelectorAll("[data-message-id]").forEach((row) => {
       const selected = state.selectedMessageIDs.has(Number(row.dataset.messageId));
+      row.querySelector(".tg-select-control")?.remove();
+      if (state.selectionMode) {
+        const control = document.createElement("span");
+        control.className = "tg-select-control";
+        control.setAttribute("aria-hidden", "true");
+        const icon = document.createElement("span");
+        icon.className = `icon ${selected ? "icon-circle-check" : "icon-check-check"}`;
+        control.append(icon);
+        row.prepend(control);
+      }
       row.classList.toggle("is-selected", selected);
+      row.classList.toggle("is-selectable", state.selectionMode);
       row.setAttribute("aria-selected", String(selected));
     });
   };
@@ -893,6 +987,10 @@
     state.actionMessageIDs = ids;
     if (elements.deleteCount) {
       elements.deleteCount.textContent = String(ids.length);
+    }
+    const safeScope = elements.deleteForm?.querySelector('input[name="scope"][value="me"]');
+    if (safeScope) {
+      safeScope.checked = true;
     }
     showNotice(elements.deleteError, "");
     elements.deleteDialog.showModal();
@@ -1061,6 +1159,20 @@
       if (elements.profileAccount) {
         elements.profileAccount.textContent = `${name} · ${formatPhone(account.phone_number)}`;
       }
+      if (!online) {
+        elements.refreshChats?.setAttribute("disabled", "");
+        elements.chatsLoading?.setAttribute("hidden", "");
+        elements.chatList?.setAttribute("hidden", "");
+        elements.chatsEmpty?.removeAttribute("hidden");
+        if (elements.chatsEmptyTitle) {
+          elements.chatsEmptyTitle.textContent = "账号已掉线";
+        }
+        if (elements.chatsEmptyCopy) {
+          elements.chatsEmptyCopy.textContent = "请返回账号列表重新登录后再查看会话。";
+        }
+        showNotice(elements.chatsError, "该账号的 Telegram 授权已失效，未发送任何聊天请求。");
+      }
+      return online;
     } catch (error) {
       if (elements.accountName) {
         elements.accountName.textContent = "账号读取失败";
@@ -1069,6 +1181,9 @@
         elements.accountMeta.textContent = error.message;
       }
       elements.accountStatusDot?.classList.add("is-offline");
+      elements.chatsLoading?.setAttribute("hidden", "");
+      showNotice(elements.chatsError, error.message);
+      return false;
     }
   };
 
@@ -1248,6 +1363,7 @@
     }
     submit?.setAttribute("disabled", "");
     showNotice(elements.deleteError, "");
+    const scope = String(new FormData(elements.deleteForm).get("scope") || "me");
     try {
       await requestJSON(
         `/api/v1/accounts/${encodeURIComponent(accountID)}/chats/` +
@@ -1256,7 +1372,7 @@
         {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({message_ids: state.actionMessageIDs}),
+          body: JSON.stringify({message_ids: state.actionMessageIDs, scope}),
         },
       );
       const deleted = new Set(state.actionMessageIDs);
@@ -1291,7 +1407,7 @@
   });
 
   elements.search?.addEventListener("input", () => {
-    state.query = elements.search.value.trim().toLocaleLowerCase();
+    state.query = normalizeSearchQuery(elements.search.value);
     elements.clearSearch?.toggleAttribute("hidden", !elements.search.value);
     state.searchResults = null;
     renderChats();
@@ -1349,6 +1465,9 @@
     }
   });
 
-  loadAccount();
-  loadChats();
+  loadAccount().then((online) => {
+    if (online) {
+      loadChats();
+    }
+  });
 })();

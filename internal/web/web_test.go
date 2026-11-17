@@ -164,6 +164,12 @@ func TestAccountsPageRendersTelegramLoginFlow(t *testing.T) {
 		`data-auth-step="code"`,
 		`data-auth-step="password"`,
 		`data-accounts-body`,
+		`name="country_code"`,
+		`data-login-title`,
+		`id="account-profile-dialog"`,
+		`data-account-edit-form`,
+		`id="account-delete-dialog"`,
+		`data-qr-countdown`,
 		`data-login-view-chat`,
 		`data-login-view-web`,
 		`class="menu-group current"`,
@@ -178,6 +184,11 @@ func TestAccountsPageRendersTelegramLoginFlow(t *testing.T) {
 	}
 	if strings.Contains(body, "TELEGRAM ACCOUNT OPERATIONS") {
 		t.Error("accounts page must not repeat the page title in the content header")
+	}
+	for _, removed := range []string{`name="code_url"`, `data-fetch-code`, "接码链接读取"} {
+		if strings.Contains(body, removed) {
+			t.Errorf("accounts page still renders code receiving control %q", removed)
+		}
 	}
 }
 
@@ -255,6 +266,8 @@ func TestAccountWorkspaceRendersStandaloneChatViewer(t *testing.T) {
 		`data-chat-list`,
 		`data-message-list`,
 		`data-profile-panel`,
+		`仅为我删除`,
+		`name="scope" value="me"`,
 		`class="tg-rail-folders"`,
 		`class="tg-composer"`,
 		`/static/css/telegram_client.css`,
