@@ -44,6 +44,8 @@ func TestScriptUsesOnlyReferencedControls(t *testing.T) {
 		`loadMessages(items[0])`,
 		`data-settings-tab`,
 		`data-settings-panel`,
+		`data-settings-actions`,
+		`readOnlySettingsTabs`,
 		`data-page-setting`,
 		`data-qr-countdown`,
 		`countryCode`,

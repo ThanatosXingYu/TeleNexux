@@ -185,6 +185,9 @@ func TestAccountsPageRendersTelegramLoginFlow(t *testing.T) {
 	if strings.Contains(body, "TELEGRAM ACCOUNT OPERATIONS") {
 		t.Error("accounts page must not repeat the page title in the content header")
 	}
+	if strings.Contains(body, "<h2>已接入账号</h2>") {
+		t.Error("accounts page must not repeat a content title above the account list")
+	}
 	for _, removed := range []string{`name="code_url"`, `data-fetch-code`, "接码链接读取"} {
 		if strings.Contains(body, removed) {
 			t.Errorf("accounts page still renders code receiving control %q", removed)
@@ -212,6 +215,7 @@ func TestSystemPageRendersEditableSettings(t *testing.T) {
 		`name="http_addr"`,
 		`data-settings-tab="page"`,
 		`data-settings-panel="page"`,
+		`data-settings-actions`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("system page missing %q", expected)

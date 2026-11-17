@@ -1842,6 +1842,7 @@ a {
 .dialog-header h2 {
   margin: 0;
   font-size: 22px;
+  overflow-wrap: anywhere;
 }
 
 .login-mode-tabs {
@@ -2086,6 +2087,7 @@ a {
   margin: 0 0 14px;
   color: var(--text-secondary);
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .auth-complete .button {
@@ -2120,6 +2122,7 @@ a {
   color: var(--text-secondary);
   font-size: 11px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .account-monogram-large {
@@ -2132,6 +2135,12 @@ a {
   color: var(--text-secondary);
   font-size: 13px;
   line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.form-notice,
+.field-hint {
+  overflow-wrap: anywhere;
 }
 
 .account-toast {

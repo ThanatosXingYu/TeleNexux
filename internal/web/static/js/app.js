@@ -1639,6 +1639,8 @@
     const telegramLoginState = document.querySelector("[data-telegram-login-state]");
     const settingsTabs = [...document.querySelectorAll("[data-settings-tab]")];
     const settingsPanels = [...document.querySelectorAll("[data-settings-panel]")];
+    const settingsActions = document.querySelector("[data-settings-actions]");
+    const readOnlySettingsTabs = new Set(["page", "device", "security", "status"]);
 
     const activateSettingsTab = (name) => {
       settingsTabs.forEach((button) => {
@@ -1649,6 +1651,7 @@
       settingsPanels.forEach((panel) => {
         panel.hidden = panel.dataset.settingsPanel !== name;
       });
+      settingsActions?.toggleAttribute("hidden", readOnlySettingsTabs.has(name));
     };
 
     settingsTabs.forEach((button) => {
