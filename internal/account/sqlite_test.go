@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -88,7 +89,8 @@ func TestSQLiteRepositoryReturnsNotFound(t *testing.T) {
 
 func TestSQLiteRepositoryUpsertsAuthorizedAccount(t *testing.T) {
 	ctx := context.Background()
-	repository, err := NewSQLiteRepository(ctx, filepath.Join(t.TempDir(), "accounts.db"))
+	path := filepath.Join(t.TempDir(), "accounts.db")
+	repository, err := NewSQLiteRepository(ctx, path)
 	if err != nil {
 		t.Fatalf("NewSQLiteRepository() error = %v", err)
 	}
@@ -110,5 +112,12 @@ func TestSQLiteRepositoryUpsertsAuthorizedAccount(t *testing.T) {
 	}
 	if item.DisplayName != "Updated" || item.Status != StatusOnline {
 		t.Fatalf("UpsertAuthorized() = %+v, want updated online account", item)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat database: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("database mode = %o, want 600", info.Mode().Perm())
 	}
 }

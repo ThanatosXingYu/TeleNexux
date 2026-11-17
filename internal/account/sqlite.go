@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -25,6 +26,10 @@ func NewSQLiteRepository(ctx context.Context, path string) (*SQLiteRepository, e
 	if err := repository.migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("secure account database %q: %w", path, err)
 	}
 	return repository, nil
 }
