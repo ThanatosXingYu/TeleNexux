@@ -30,6 +30,8 @@
     conversationAvatar: root.querySelector("[data-conversation-avatar]"),
     conversationTitle: root.querySelector("[data-conversation-title]"),
     conversationMeta: root.querySelector("[data-conversation-meta]"),
+    stickyDate: root.querySelector("[data-sticky-date]"),
+    stickyDateLabel: root.querySelector("[data-sticky-date-label]"),
     messageScroll: root.querySelector("[data-message-scroll]"),
     messageList: root.querySelector("[data-message-list]"),
     messagesLoading: root.querySelector("[data-messages-loading]"),
@@ -56,6 +58,7 @@
     query: "",
     toastTimer: 0,
     messagesRequest: 0,
+    dateFrame: 0,
   };
 
   const typeLabels = {
@@ -298,7 +301,17 @@
     time.className = "tg-chat-time";
     time.dateTime = chat.last_message_at || "";
     time.textContent = formatListTime(chat.last_message_at);
-    top.append(title, time);
+    const timeDetails = document.createElement("span");
+    timeDetails.className = "tg-chat-time-details";
+    if (chat.pinned) {
+      timeDetails.classList.add("is-pinned");
+      const pin = document.createElement("span");
+      pin.className = "icon icon-pin tg-pin";
+      pin.setAttribute("aria-label", "已置顶");
+      timeDetails.append(pin);
+    }
+    timeDetails.append(time);
+    top.append(title, timeDetails);
 
     const bottom = document.createElement("span");
     bottom.className = "tg-chat-bottom";
@@ -307,12 +320,6 @@
     preview.textContent = chat.preview || (chat.username ? `@${chat.username}` : "暂无消息");
     const badges = document.createElement("span");
     badges.className = "tg-chat-badges";
-    if (chat.pinned) {
-      const pin = document.createElement("span");
-      pin.className = "icon icon-pin tg-pin";
-      pin.setAttribute("aria-label", "已置顶");
-      badges.append(pin);
-    }
     const unreadCount = Number(chat.unread_count) || 0;
     if (unreadCount > 0) {
       const badge = document.createElement("span");
@@ -396,18 +403,27 @@
     loadMessages(true);
   };
 
-  function createMessageRow(message, previous, chat) {
+  const sameMessageGroup = (left, right) => {
+    const leftDate = parseDate(left?.sent_at)?.getTime() || 0;
+    const rightDate = parseDate(right?.sent_at)?.getTime() || 0;
+    return Boolean(
+      left &&
+      right &&
+      left.sender === right.sender &&
+      left.outgoing === right.outgoing &&
+      dateKey(left.sent_at) === dateKey(right.sent_at) &&
+      Math.abs(rightDate - leftDate) < 5 * 60 * 1000,
+    );
+  };
+
+  function createMessageRow(message, previous, next, chat) {
     const row = document.createElement("article");
     row.className = `tg-message-row${message.outgoing ? " is-outgoing" : ""}`;
-    const previousDate = previous ? parseDate(previous.sent_at)?.getTime() || 0 : 0;
-    const currentDate = parseDate(message.sent_at)?.getTime() || 0;
-    const consecutive = Boolean(
-      previous &&
-      previous.sender === message.sender &&
-      previous.outgoing === message.outgoing &&
-      currentDate - previousDate < 5 * 60 * 1000,
-    );
+    const consecutive = sameMessageGroup(previous, message);
+    const nextConsecutive = sameMessageGroup(message, next);
     row.classList.toggle("is-consecutive", consecutive);
+    row.classList.toggle("is-group-first", !consecutive);
+    row.classList.toggle("is-group-last", !nextConsecutive);
 
     if (!message.outgoing && (chat.type === "chat" || chat.type === "channel")) {
       const avatar = document.createElement("span");
@@ -464,19 +480,20 @@
     const nodes = [];
     let previous = null;
     let previousDateKey = "";
-    state.messages.forEach((message) => {
+    state.messages.forEach((message, index) => {
       const currentDateKey = dateKey(message.sent_at);
       if (currentDateKey !== previousDateKey) {
         const divider = document.createElement("div");
         divider.className = "tg-date-divider";
         const label = document.createElement("span");
         label.textContent = formatDateDivider(message.sent_at);
+        divider.dataset.dateLabel = label.textContent;
         divider.append(label);
         nodes.push(divider);
         previousDateKey = currentDateKey;
         previous = null;
       }
-      nodes.push(createMessageRow(message, previous, state.selectedChat));
+      nodes.push(createMessageRow(message, previous, state.messages[index + 1], state.selectedChat));
       previous = message;
     });
     if (nodes.length === 0) {
@@ -486,7 +503,32 @@
       nodes.push(empty);
     }
     elements.messageList.replaceChildren(...nodes);
+    scheduleStickyDate();
   };
+
+  const updateStickyDate = () => {
+    state.dateFrame = 0;
+    if (!elements.stickyDate || !elements.stickyDateLabel || !elements.messageScroll || !elements.messageList) {
+      return;
+    }
+    const visibleTop = elements.messageScroll.getBoundingClientRect().top +
+      parseFloat(getComputedStyle(elements.messageScroll).paddingTop || "0");
+    let activeDivider = null;
+    elements.messageList.querySelectorAll(".tg-date-divider").forEach((divider) => {
+      if (divider.getBoundingClientRect().top <= visibleTop + 1) {
+        activeDivider = divider;
+      }
+    });
+    elements.stickyDate.hidden = !activeDivider;
+    elements.stickyDateLabel.textContent = activeDivider?.dataset.dateLabel || "";
+  };
+
+  function scheduleStickyDate() {
+    if (state.dateFrame) {
+      return;
+    }
+    state.dateFrame = window.requestAnimationFrame(updateStickyDate);
+  }
 
   const mergeMessages = (items) => {
     const byID = new Map(state.messages.map((message) => [message.id, message]));
@@ -521,6 +563,7 @@
       state.messages = [];
       state.nextBeforeID = 0;
       elements.messageList?.replaceChildren();
+      elements.stickyDate?.setAttribute("hidden", "");
     }
 
     try {
@@ -545,6 +588,7 @@
       } else if (elements.messageScroll) {
         elements.messageScroll.scrollTop = elements.messageScroll.scrollHeight - previousHeight + previousTop;
       }
+      scheduleStickyDate();
     } catch (error) {
       if (requestID === state.messagesRequest) {
         showNotice(elements.messagesError, error.message);
@@ -662,7 +706,7 @@
       state.activeFolder = button.dataset.folder || "all";
       root.querySelectorAll("[data-folder]").forEach((item) => {
         const active = item === button;
-        item.classList.toggle("tg-folder-active", active);
+        item.classList.toggle("tg-rail-folder-active", active);
         item.setAttribute("aria-selected", String(active));
       });
       renderChats();
@@ -688,6 +732,8 @@
 
   elements.refreshChats?.addEventListener("click", () => loadChats(true));
   elements.loadOlder?.addEventListener("click", () => loadMessages(false));
+  elements.messageScroll?.addEventListener("scroll", scheduleStickyDate, {passive: true});
+  window.addEventListener("resize", scheduleStickyDate, {passive: true});
   root.querySelector("[data-message-composer]")?.addEventListener("submit", (event) => {
     event.preventDefault();
     showToast("当前是只读视图，消息发送功能尚未启用");
