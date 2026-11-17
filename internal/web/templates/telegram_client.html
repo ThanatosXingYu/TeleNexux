@@ -201,12 +201,17 @@
           </dl>
           <form class="tg-profile-form" data-profile-form hidden>
             <label>
-              <span>显示名称</span>
-              <input name="display_name" type="text" maxlength="64" required>
+              <span>名字</span>
+              <input name="first_name" type="text" maxlength="64" autocomplete="given-name" required>
+            </label>
+            <label>
+              <span>姓氏</span>
+              <input name="last_name" type="text" maxlength="64" autocomplete="family-name">
             </label>
             <label>
               <span>用户名</span>
               <input name="username" type="text" maxlength="33" placeholder="@username">
+              <small class="tg-field-hint">留空并保存可清除用户名。</small>
             </label>
             <label>
               <span>个人简介</span>

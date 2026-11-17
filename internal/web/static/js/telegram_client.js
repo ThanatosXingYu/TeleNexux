@@ -692,7 +692,8 @@
     if (!state.profile?.can_edit || !elements.profileForm) {
       return;
     }
-    elements.profileForm.elements.namedItem("display_name").value = state.profile.display_name || "";
+    elements.profileForm.elements.namedItem("first_name").value = state.profile.first_name || "";
+    elements.profileForm.elements.namedItem("last_name").value = state.profile.last_name || "";
     elements.profileForm.elements.namedItem("username").value = state.profile.username
       ? `@${state.profile.username}`
       : "";
@@ -700,7 +701,7 @@
     elements.profileForm.removeAttribute("hidden");
     elements.profileNote?.setAttribute("hidden", "");
     showNotice(elements.profileError, "");
-    elements.profileForm.elements.namedItem("display_name")?.focus();
+    elements.profileForm.elements.namedItem("first_name")?.focus();
   };
 
   const selectChat = (chat) => {
@@ -1276,7 +1277,8 @@
           method: "PUT",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({
-            display_name: String(data.get("display_name") || "").trim(),
+            first_name: String(data.get("first_name") || "").trim(),
+            last_name: String(data.get("last_name") || "").trim(),
             username: String(data.get("username") || "").trim(),
             bio: String(data.get("bio") || "").trim(),
           }),

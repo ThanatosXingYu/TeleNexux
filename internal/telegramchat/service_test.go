@@ -38,6 +38,52 @@ func TestNormalizeSearchQueryAcceptsUsernamePrefix(t *testing.T) {
 	}
 }
 
+func TestFilterSearchChatsMatchesTitlesAndUsernames(t *testing.T) {
+	chats := []Chat{
+		{ID: "channel:1", Title: "Project Updates", Username: "project_news"},
+		{ID: "chat:2", Title: "Support Group"},
+		{ID: "user:3", Title: "Alice", Username: "example_user"},
+	}
+
+	got := filterSearchChats(chats, "@EXAMPLE_USER", 2)
+	if len(got) != 1 || got[0].ID != "user:3" || got[0].Preview != "最近会话" {
+		t.Fatalf("filterSearchChats() = %+v, want matching user chat", got)
+	}
+	if got := filterSearchChats(chats, "SUPPORT", 2); len(got) != 1 || got[0].ID != "chat:2" {
+		t.Fatalf("filterSearchChats() title result = %+v, want support chat", got)
+	}
+}
+
+func TestNormalizeProfileInputPreservesNamesAndUsernameActions(t *testing.T) {
+	username := "@valid_user"
+	firstName, lastName, gotUsername, _, err := normalizeProfileInput(UpdateProfileInput{
+		FirstName: "  Alice ",
+		LastName:  "Smith  Jones ",
+		Username:  &username,
+	})
+	if err != nil {
+		t.Fatalf("normalizeProfileInput() error = %v", err)
+	}
+	if firstName != "Alice" || lastName != "Smith Jones" {
+		t.Fatalf("names = %q %q, want preserved first and last names", firstName, lastName)
+	}
+	if gotUsername == nil || *gotUsername != "valid_user" {
+		t.Fatalf("username = %v, want valid_user", gotUsername)
+	}
+
+	emptyUsername := ""
+	_, _, gotUsername, _, err = normalizeProfileInput(UpdateProfileInput{
+		FirstName: "Alice",
+		Username:  &emptyUsername,
+	})
+	if err != nil {
+		t.Fatalf("normalizeProfileInput(clear) error = %v", err)
+	}
+	if gotUsername == nil || *gotUsername != "" {
+		t.Fatalf("username = %v, want explicit empty value", gotUsername)
+	}
+}
+
 func TestDeleteSessionRemovesOnlyAccountFiles(t *testing.T) {
 	root := t.TempDir()
 	accountDirectory := filepath.Join(root, "accounts")

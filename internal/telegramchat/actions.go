@@ -48,9 +48,11 @@ type Profile struct {
 }
 
 type UpdateProfileInput struct {
-	DisplayName string `json:"display_name"`
-	Username    string `json:"username"`
-	Bio         string `json:"bio"`
+	FirstName   string  `json:"first_name"`
+	LastName    string  `json:"last_name"`
+	DisplayName string  `json:"display_name"`
+	Username    *string `json:"username"`
+	Bio         string  `json:"bio"`
 }
 
 type Avatar struct {
@@ -88,11 +90,31 @@ func (s *Service) SearchChats(
 
 	var page ChatPage
 	err := s.withClient(ctx, accountID, func(ctx context.Context, client *telegram.Client) error {
+		localChats := make([]Chat, 0, limit)
+		dialogs, dialogsErr := client.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+			OffsetPeer: &tg.InputPeerEmpty{},
+			Limit:      100,
+		})
+		if dialogsErr == nil {
+			s.cacheDialogsResult(accountID, dialogs, time.Now())
+			localPage, mapErr := mapDialogs(dialogs, 100)
+			if mapErr == nil {
+				localChats = filterSearchChats(localPage.Items, query, limit)
+			}
+		}
+
 		result, err := client.API().ContactsSearch(ctx, &tg.ContactsSearchRequest{
 			Q:     query,
 			Limit: limit,
 		})
 		if err != nil {
+			if len(localChats) > 0 {
+				page = ChatPage{Items: localChats, Total: len(localChats), Limit: limit}
+				return nil
+			}
+			if dialogsErr != nil {
+				return dialogsErr
+			}
 			return err
 		}
 		now := time.Now()
@@ -113,8 +135,11 @@ func (s *Service) SearchChats(
 			}
 		}
 
-		items := make([]Chat, 0, len(result.Results))
-		seen := make(map[string]struct{}, len(result.Results))
+		items := append([]Chat(nil), localChats...)
+		seen := make(map[string]struct{}, len(items)+len(result.Results))
+		for _, item := range items {
+			seen[item.ID] = struct{}{}
+		}
 		for _, rawPeer := range result.Results {
 			identity, ok := identityFromPeer(rawPeer)
 			if !ok {
@@ -147,6 +172,27 @@ func (s *Service) SearchChats(
 
 func normalizeSearchQuery(query string) string {
 	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(query), "@"))
+}
+
+func filterSearchChats(chats []Chat, query string, limit int) []Chat {
+	query = strings.ToLower(normalizeSearchQuery(query))
+	if query == "" {
+		return nil
+	}
+	matches := make([]Chat, 0, min(limit, len(chats)))
+	for _, chat := range chats {
+		title := strings.ToLower(chat.Title)
+		username := strings.ToLower(chat.Username)
+		if !strings.Contains(title, query) && !strings.Contains(username, query) {
+			continue
+		}
+		chat.Preview = "最近会话"
+		matches = append(matches, chat)
+		if len(matches) == limit {
+			break
+		}
+	}
+	return matches
 }
 
 func (s *Service) CurrentProfile(ctx context.Context, accountID int64) (Profile, error) {
@@ -187,8 +233,8 @@ func (s *Service) UpdateCurrentProfile(
 		if _, err := client.API().AccountUpdateProfile(ctx, update); err != nil {
 			return fmt.Errorf("update Telegram profile: %w", err)
 		}
-		if username != "" {
-			if _, err := client.API().AccountUpdateUsername(ctx, username); err != nil {
+		if username != nil {
+			if _, err := client.API().AccountUpdateUsername(ctx, *username); err != nil {
 				return fmt.Errorf("update Telegram username: %w", err)
 			}
 		}
@@ -819,24 +865,35 @@ func profileDisplayName(firstName, lastName, username string, userID int64) stri
 	return fmt.Sprintf("用户 %d", userID)
 }
 
-func normalizeProfileInput(input UpdateProfileInput) (string, string, string, string, error) {
-	displayName := strings.Join(strings.Fields(strings.TrimSpace(input.DisplayName)), " ")
-	username := strings.TrimPrefix(strings.TrimSpace(input.Username), "@")
+func normalizeProfileInput(input UpdateProfileInput) (string, string, *string, string, error) {
+	firstName := strings.Join(strings.Fields(input.FirstName), " ")
+	lastName := strings.Join(strings.Fields(input.LastName), " ")
+	if firstName == "" && lastName == "" {
+		displayName := strings.Join(strings.Fields(input.DisplayName), " ")
+		parts := strings.SplitN(displayName, " ", 2)
+		firstName = parts[0]
+		if len(parts) == 2 {
+			lastName = parts[1]
+		}
+	}
+	if firstName == "" && lastName == "" {
+		return "", "", nil, "", fmt.Errorf("%w: name must contain 1 to 64 characters", ErrInvalidInput)
+	}
+	if utf8.RuneCountInString(firstName) > 64 || utf8.RuneCountInString(lastName) > 64 {
+		return "", "", nil, "", fmt.Errorf("%w: first and last name must contain at most 64 characters", ErrInvalidInput)
+	}
+
+	var username *string
+	if input.Username != nil {
+		normalized := strings.TrimPrefix(strings.TrimSpace(*input.Username), "@")
+		if normalized != "" && !usernamePattern.MatchString(normalized) {
+			return "", "", nil, "", fmt.Errorf("%w: username must contain 5 to 32 letters, digits, or underscores", ErrInvalidInput)
+		}
+		username = &normalized
+	}
 	bio := strings.TrimSpace(input.Bio)
-	if displayName == "" || utf8.RuneCountInString(displayName) > 64 {
-		return "", "", "", "", fmt.Errorf("%w: display name must contain 1 to 64 characters", ErrInvalidInput)
-	}
-	if username != "" && !usernamePattern.MatchString(username) {
-		return "", "", "", "", fmt.Errorf("%w: username must contain 5 to 32 letters, digits, or underscores", ErrInvalidInput)
-	}
 	if utf8.RuneCountInString(bio) > 70 {
-		return "", "", "", "", fmt.Errorf("%w: bio must contain at most 70 characters", ErrInvalidInput)
-	}
-	parts := strings.SplitN(displayName, " ", 2)
-	firstName := parts[0]
-	lastName := ""
-	if len(parts) == 2 {
-		lastName = parts[1]
+		return "", "", nil, "", fmt.Errorf("%w: bio must contain at most 70 characters", ErrInvalidInput)
 	}
 	return firstName, lastName, username, bio, nil
 }
