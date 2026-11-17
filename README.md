@@ -1,8 +1,9 @@
 # TeleNexus
 
 TeleNexus 是使用 Go 开发的 Telegram 多账号管理服务。当前提供管理台、
-账号元数据管理、SQLite 持久化、MTProto 手机号登录、可选两步验证、
-接码链接轮询、账号聊天查看、系统配置、健康检查和 REST API。
+账号元数据管理、SQLite 持久化、MTProto 二维码/手机号登录、可选两步验证、
+临时接码链接轮询、账号会话搜索、个人资料编辑、消息转发/删除、系统配置、
+健康检查和 REST API。
 
 ## 环境要求
 
@@ -20,8 +21,9 @@ go run ./cmd/telenexus
 ```
 
 服务默认仅监听 `http://127.0.0.1:9487`。打开
-`http://localhost:9487/accounts`，点击“登录 Telegram 账号”，按页面提示
-输入手机号、验证码及可选的云密码。
+`http://localhost:9487/accounts`，点击“添加账号”。默认使用二维码登录，
+也可以切换到手机号登录；用户名方式用于核对账号，最终仍须使用该账号扫描
+二维码完成授权。
 
 健康检查：
 
@@ -40,8 +42,8 @@ curl http://localhost:9487/healthz
 
 登录流程使用 Telegram MTProto：
 
-1. 发送验证码并创建短期登录会话。
-2. 手动输入验证码，或从白名单接码地址轮询读取。
+1. 默认为 Telegram 二维码授权；二维码过期后可在页面重新生成。
+2. 手机号方式会创建短期登录会话，可手动输入验证码或临时填写接码链接。
 3. 账号启用两步验证时，继续输入 Telegram 云密码。
 4. 登录成功后按 Telegram 用户 ID 幂等写入账号列表，并保存授权会话。
 
@@ -51,20 +53,18 @@ curl http://localhost:9487/healthz
 版本和 Telegram iOS 版本中随机选择设备信息，并保存到 `.session.device`
 sidecar；后续连接沿用同一资料，不会使用项目名称作为设备型号。
 
-接码地址必须使用 HTTPS 默认端口，且主机必须出现在
-`TELEGRAM_CODE_FETCH_HOSTS` 中。服务会在请求和重定向时校验 URL，并在
-TCP 连接阶段拒绝环回、私网、链路本地、保留地址及非 443 端口，以降低
-SSRF 和 DNS 重绑定风险。接码域名通过 `TELEGRAM_CODE_DNS_SERVER` 指定的
-公共 DNS 解析，避免本地透明代理返回保留地址；网络错误日志不会记录完整
-接码链接。
+接码链接只在单次登录中临时使用，不进入系统设置、浏览器存储或长期配置。
+服务端仍会限制允许的 HTTPS 主机、端口、重定向和解析地址，以降低 SSRF
+风险；网络日志不会记录完整接码链接。
 
 ## 配置
 
 配置从进程环境变量、系统配置页或 `.env` 读取。优先级为进程环境变量 →
 系统配置 → `.env` → 默认值。系统配置在 `SETTINGS_PATH` 指定的本地 JSON
 文件中保存，文件权限为 `0600`；页面保存后需重启服务。API Hash 只写不回显。
-“系统配置 → 基础配置”可修改运行环境、日志级别、Telegram API 凭据、
-接码网络、服务监听地址和接码 DNS。
+“系统配置 → 基础配置”可修改运行环境和服务监听地址；“Telegram 应用”
+子标签管理 API 凭据，“运行参数”调整日志级别。其他子标签分别展示页面
+布局、设备身份、登录安全和只读服务状态。
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -96,6 +96,9 @@ curl http://localhost:9487/api/v1/accounts/10001
 
 ```text
 GET    /api/v1/telegram/auth/config
+POST   /api/v1/telegram/auth/qr
+GET    /api/v1/telegram/auth/qr/{login_id}
+DELETE /api/v1/telegram/auth/qr/{login_id}
 POST   /api/v1/telegram/auth/send-code
 POST   /api/v1/telegram/auth/{login_id}/code
 POST   /api/v1/telegram/auth/{login_id}/password
@@ -108,14 +111,24 @@ DELETE /api/v1/telegram/auth/{login_id}
 ```text
 GET    /api/v1/settings
 PUT    /api/v1/settings
+POST   /api/v1/accounts/refresh
+POST   /api/v1/accounts/{id}/refresh
 GET    /api/v1/accounts/{id}/chats
+GET    /api/v1/accounts/{id}/search?q={username}
 GET    /api/v1/accounts/{id}/chats/{type}/{peer_id}/messages
+POST   /api/v1/accounts/{id}/chats/{type}/{peer_id}/messages/forward
+POST   /api/v1/accounts/{id}/chats/{type}/{peer_id}/messages/delete
+GET    /api/v1/accounts/{id}/profile
+PUT    /api/v1/accounts/{id}/profile
+GET    /api/v1/accounts/{id}/chats/{type}/{peer_id}/profile
+GET    /api/v1/accounts/{id}/chats/{type}/{peer_id}/avatar
 ```
 
 聊天接口只读取账号目录中与 `{id}` 对应的授权会话，`type` 支持 `user`、
-`chat` 和 `channel`。消息历史使用 `before_id` 和 `limit` 分页。在账号列表
-点击账号行或“查看聊天”按钮进入会话查看页，页面会自动打开最近的会话；
-切换左侧会话即可在浏览器中查看消息，无需下载会话文件。
+`chat` 和 `channel`。消息历史使用 `before_id` 和 `limit` 分页。点击
+“打开 Web”进入独立客户端后，可搜索用户名、查看真实头像、打开消息右键
+菜单、多选后转发或删除消息，并查看或编辑当前账号资料。头像按需在浏览器
+读取，不会下载为本地会话归档。
 
 错误响应统一为：
 
