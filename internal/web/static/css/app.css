@@ -1638,6 +1638,10 @@ a {
   overflow-x: auto;
 }
 
+.accounts-mobile-list {
+  display: none;
+}
+
 .accounts-table {
   width: 100%;
   min-width: 1080px;
@@ -2924,6 +2928,84 @@ a {
 
   .accounts-table {
     min-width: 760px;
+  }
+
+  .accounts-table-wrap {
+    display: none;
+  }
+
+  .accounts-mobile-list {
+    display: grid;
+    gap: 10px;
+  }
+
+  .accounts-mobile-list > .account-mobile-card {
+    display: grid;
+    gap: 14px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+  }
+
+  .account-mobile-card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .account-mobile-card-header .account-identity {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .account-mobile-details {
+    display: grid;
+    gap: 9px;
+    margin: 0;
+    padding: 12px 0;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .account-mobile-details > div {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .account-mobile-details dt {
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
+  .account-mobile-details dd {
+    min-width: 0;
+    margin: 0;
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  .account-mobile-details .copy-value {
+    max-width: 100%;
+  }
+
+  .account-mobile-details .copy-value > span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .account-mobile-card > .account-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .account-mobile-card > .account-actions .button {
+    justify-content: center;
   }
 
   .dialog-card {

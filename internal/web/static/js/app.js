@@ -432,6 +432,7 @@
 
   const accountBody = document.querySelector("[data-accounts-body]");
   const accountsTable = document.querySelector("[data-accounts-table]");
+  const accountsMobile = document.querySelector("[data-accounts-mobile]");
   const accountsEmpty = document.querySelector("[data-accounts-empty]");
   const accountsLoading = document.querySelector("[data-accounts-loading]");
   const accountsError = document.querySelector("[data-accounts-error]");
@@ -593,6 +594,97 @@
     return cell;
   };
 
+  const createAccountIdentity = (account) => {
+    const identity = document.createElement("div");
+    identity.className = "account-identity";
+    const monogram = document.createElement("span");
+    monogram.className = "account-monogram";
+    const monogramIcon = document.createElement("span");
+    monogramIcon.className = "icon icon-user-round";
+    monogramIcon.setAttribute("aria-hidden", "true");
+    monogram.append(monogramIcon);
+    const identityCopy = document.createElement("span");
+    identityCopy.className = "account-identity-copy";
+    const name = document.createElement("strong");
+    name.textContent = account.display_name || "未设置姓名";
+    const telegramID = document.createElement("small");
+    telegramID.textContent = `Telegram ID ${account.id}`;
+    identityCopy.append(name, telegramID);
+    identity.append(monogram, identityCopy);
+    return identity;
+  };
+
+  const createAccountActions = (account) => {
+    const actionGroup = document.createElement("div");
+    actionGroup.className = "account-actions";
+    if (account.status !== "online") {
+      const relogin = document.createElement("button");
+      relogin.className = "button button-primary button-compact";
+      relogin.type = "button";
+      relogin.textContent = "重新登录";
+      relogin.addEventListener("click", () => openLoginDialog(account));
+      actionGroup.append(relogin);
+    } else {
+      const webAction = document.createElement("a");
+      webAction.className = "button button-primary button-compact";
+      webAction.href = `/accounts/${encodeURIComponent(account.id)}/web`;
+      webAction.target = "_blank";
+      webAction.rel = "noopener";
+      webAction.textContent = "打开 Web";
+      actionGroup.append(webAction);
+    }
+    const profileAction = document.createElement("button");
+    profileAction.className = "button button-secondary button-compact";
+    profileAction.type = "button";
+    profileAction.textContent = "资料";
+    profileAction.addEventListener("click", () => openProfileDialog(account));
+    const deleteAction = document.createElement("button");
+    deleteAction.className = "button button-danger-ghost button-compact";
+    deleteAction.type = "button";
+    deleteAction.textContent = "删除";
+    deleteAction.addEventListener("click", () => openDeleteDialog(account));
+    actionGroup.append(profileAction, deleteAction);
+    return actionGroup;
+  };
+
+  const createAccountMobileCard = (account) => {
+    const card = document.createElement("article");
+    card.className = "account-mobile-card";
+    card.dataset.accountId = String(account.id);
+
+    const header = document.createElement("div");
+    header.className = "account-mobile-card-header";
+    const status = document.createElement("span");
+    status.className = `account-status account-status-${account.status}`;
+    status.textContent = statusLabels[account.status] || account.status;
+    header.append(createAccountIdentity(account), status);
+
+    const details = document.createElement("dl");
+    details.className = "account-mobile-details";
+    const addDetail = (label, content) => {
+      const wrapper = document.createElement("div");
+      const term = document.createElement("dt");
+      const description = document.createElement("dd");
+      term.textContent = label;
+      if (content instanceof Node) {
+        description.append(content);
+      } else {
+        description.textContent = content;
+      }
+      wrapper.append(term, description);
+      details.append(wrapper);
+    };
+    addDetail("手机号", copyValue(formatPhone(account.phone_number), "手机号"));
+    addDetail(
+      "用户名",
+      account.username ? copyValue(`@${account.username}`, "用户名") : "未设置",
+    );
+    addDetail("最近更新", formatAccountDate(account.updated_at));
+
+    card.append(header, details, createAccountActions(account));
+    return card;
+  };
+
   const closeProfileDialog = () => {
     profileDialog?.close();
     managedAccount = null;
@@ -640,10 +732,11 @@
   };
 
   const renderAccounts = (items) => {
-    if (!accountBody) {
+    if (!accountBody || !accountsMobile) {
       return;
     }
     accountBody.replaceChildren();
+    accountsMobile.replaceChildren();
     const online = items.filter((item) => item.status === "online").length;
     accountCounts.forEach((element) => {
       element.textContent = String(items.length);
@@ -654,6 +747,7 @@
 
     const hasItems = items.length > 0;
     accountsTable?.toggleAttribute("hidden", !hasItems);
+    accountsMobile.toggleAttribute("hidden", !hasItems);
     accountsEmpty?.toggleAttribute("hidden", hasItems);
     accountsLoading?.setAttribute("hidden", "");
     if (!hasItems) {
@@ -665,22 +759,7 @@
       row.className = "account-row";
       row.dataset.accountId = String(account.id);
 
-      const identity = document.createElement("div");
-      identity.className = "account-identity";
-      const monogram = document.createElement("span");
-      monogram.className = "account-monogram";
-      const monogramIcon = document.createElement("span");
-      monogramIcon.className = "icon icon-user-round";
-      monogramIcon.setAttribute("aria-hidden", "true");
-      monogram.append(monogramIcon);
-      const identityCopy = document.createElement("span");
-      identityCopy.className = "account-identity-copy";
-      const name = document.createElement("strong");
-      name.textContent = account.display_name || "未设置姓名";
-      const telegramID = document.createElement("small");
-      telegramID.textContent = `Telegram ID ${account.id}`;
-      identityCopy.append(name, telegramID);
-      identity.append(monogram, identityCopy);
+      const identity = createAccountIdentity(account);
       const phone = copyValue(formatPhone(account.phone_number), "手机号");
       const username = account.username
         ? copyValue(`@${account.username}`, "用户名")
@@ -690,45 +769,16 @@
       status.className = `account-status account-status-${account.status}`;
       status.textContent = statusLabels[account.status] || account.status;
 
-      const actionGroup = document.createElement("div");
-      actionGroup.className = "account-actions";
-      if (account.status !== "online") {
-        const relogin = document.createElement("button");
-        relogin.className = "button button-primary button-compact";
-        relogin.type = "button";
-        relogin.textContent = "重新登录";
-        relogin.addEventListener("click", () => openLoginDialog(account));
-        actionGroup.append(relogin);
-      } else {
-        const webAction = document.createElement("a");
-        webAction.className = "button button-primary button-compact";
-        webAction.href = `/accounts/${encodeURIComponent(account.id)}/web`;
-        webAction.target = "_blank";
-        webAction.rel = "noopener";
-        webAction.textContent = "打开 Web";
-        actionGroup.append(webAction);
-      }
-      const profileAction = document.createElement("button");
-      profileAction.className = "button button-secondary button-compact";
-      profileAction.type = "button";
-      profileAction.textContent = "资料";
-      profileAction.addEventListener("click", () => openProfileDialog(account));
-      const deleteAction = document.createElement("button");
-      deleteAction.className = "button button-danger-ghost button-compact";
-      deleteAction.type = "button";
-      deleteAction.textContent = "删除";
-      deleteAction.addEventListener("click", () => openDeleteDialog(account));
-      actionGroup.append(profileAction, deleteAction);
-
       row.append(
         tableCell(identity),
         tableCell(phone),
         tableCell(username),
         tableCell(status),
         tableCell(formatAccountDate(account.updated_at)),
-        tableCell(actionGroup),
+        tableCell(createAccountActions(account)),
       );
       accountBody.append(row);
+      accountsMobile.append(createAccountMobileCard(account));
     });
   };
 
