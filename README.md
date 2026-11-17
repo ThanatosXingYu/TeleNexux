@@ -15,10 +15,10 @@ cp .env.example .env
 go run ./cmd/telenexus
 ```
 
-服务默认监听 `http://localhost:8080`。检查运行状态：
+服务默认监听 `http://localhost:9487`。检查运行状态：
 
 ```sh
-curl http://localhost:8080/healthz
+curl http://localhost:9487/healthz
 ```
 
 ## API
@@ -26,7 +26,7 @@ curl http://localhost:8080/healthz
 创建账号；`id` 为 Telegram 用户 ID，不是数据库自增 ID：
 
 ```sh
-curl -X POST http://localhost:8080/api/v1/accounts \
+curl -X POST http://localhost:9487/api/v1/accounts \
   -H 'Content-Type: application/json' \
   -d '{"id":10001,"phone_number":"+8613800138000","username":"demo","display_name":"Demo Account"}'
 ```
@@ -34,8 +34,8 @@ curl -X POST http://localhost:8080/api/v1/accounts \
 查询账号：
 
 ```sh
-curl 'http://localhost:8080/api/v1/accounts?status=pending&limit=20'
-curl http://localhost:8080/api/v1/accounts/10001
+curl 'http://localhost:9487/api/v1/accounts?status=pending&limit=20'
+curl http://localhost:9487/api/v1/accounts/10001
 ```
 
 错误响应统一为：
@@ -51,7 +51,7 @@ curl http://localhost:8080/api/v1/accounts/10001
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `APP_ENV` | `development` | 运行环境 |
-| `HTTP_ADDR` | `:8080` | HTTP 监听地址 |
+| `HTTP_ADDR` | `:9487` | HTTP 监听地址 |
 | `LOG_LEVEL` | `info` | `debug`、`info`、`warn` 或 `error` |
 | `DATABASE_PATH` | `./data/telenexus.db` | SQLite 数据文件 |
 | `SHUTDOWN_TIMEOUT` | `10s` | HTTP 启动检查与关闭超时 |

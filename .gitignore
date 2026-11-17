@@ -4,6 +4,12 @@ temp/
 .env.*
 !.env.example
 .DS_Store
+**/.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
 
 # Runtime output
 bin/

@@ -20,7 +20,7 @@ type Config struct {
 func Load() (Config, error) {
 	cfg := Config{
 		Environment:     envOrDefault("APP_ENV", "development"),
-		HTTPAddr:        envOrDefault("HTTP_ADDR", ":8080"),
+		HTTPAddr:        envOrDefault("HTTP_ADDR", ":9487"),
 		LogLevel:        envOrDefault("LOG_LEVEL", "info"),
 		DatabasePath:    envOrDefault("DATABASE_PATH", "./data/telenexus.db"),
 		ShutdownTimeout: 10 * time.Second,

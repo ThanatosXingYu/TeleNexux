@@ -17,8 +17,8 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.HTTPAddr != ":8080" {
-		t.Errorf("HTTPAddr = %q, want :8080", cfg.HTTPAddr)
+	if cfg.HTTPAddr != ":9487" {
+		t.Errorf("HTTPAddr = %q, want :9487", cfg.HTTPAddr)
 	}
 	if cfg.ShutdownTimeout != 10*time.Second {
 		t.Errorf("ShutdownTimeout = %v, want 10s", cfg.ShutdownTimeout)
