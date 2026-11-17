@@ -1,0 +1,49 @@
+package static
+
+import (
+	"os"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+func TestScriptUsesOnlyReferencedControls(t *testing.T) {
+	content, err := os.ReadFile("app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	script := string(content)
+
+	requiredBehavior := []string{
+		`sidebarToggle?.addEventListener`,
+		`sidebar?.classList.toggle("is-open"`,
+		`sidebar?.classList.remove("is-open")`,
+		`userTrigger?.addEventListener`,
+		`document.querySelector("[data-open-search]")`,
+		`document.querySelector("[data-toggle-breadcrumb]")`,
+		`document.querySelector("[data-toggle-tabs]")`,
+		`document.querySelector("[data-login-form]")`,
+	}
+	for _, behavior := range requiredBehavior {
+		if !strings.Contains(script, behavior) {
+			t.Errorf("app.js missing behavior %q", behavior)
+		}
+	}
+
+	if regexp.MustCompile(`\balert\(`).MatchString(script) {
+		t.Error("app.js must not block navigation with alert dialogs")
+	}
+}
+
+func TestScriptAvoidsUnsafeDOMAPIs(t *testing.T) {
+	content, err := os.ReadFile("app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	script := string(content)
+	for _, forbidden := range []string{"innerHTML", "eval(", "document.write(", "localStorage"} {
+		if strings.Contains(script, forbidden) {
+			t.Errorf("app.js must not use %q", forbidden)
+		}
+	}
+}

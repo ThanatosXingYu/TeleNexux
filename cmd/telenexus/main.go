@@ -14,6 +14,7 @@ import (
 	"github.com/ThanatosXingYu/TeleNexux/internal/account"
 	"github.com/ThanatosXingYu/TeleNexux/internal/config"
 	"github.com/ThanatosXingYu/TeleNexux/internal/httpapi"
+	"github.com/ThanatosXingYu/TeleNexux/internal/web"
 )
 
 func main() {
@@ -50,9 +51,13 @@ func run() error {
 		}
 	}()
 
+	webRenderer, err := web.New()
+	if err != nil {
+		return fmt.Errorf("initialize web interface: %w", err)
+	}
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.New(account.NewService(repository), logger).Handler(),
+		Handler:           httpapi.New(account.NewService(repository), webRenderer.Handler(), logger).Handler(),
 		ReadHeaderTimeout: cfg.ShutdownTimeout,
 	}
 	serverErrors := make(chan error, 1)

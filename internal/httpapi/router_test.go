@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ThanatosXingYu/TeleNexux/internal/account"
+	"github.com/ThanatosXingYu/TeleNexux/internal/web"
 )
 
 type fakeAccountService struct {
@@ -51,7 +52,11 @@ func (s *fakeAccountService) Get(_ context.Context, _ int64) (account.Account, e
 }
 
 func newTestHandler(service AccountService) http.Handler {
-	return New(service, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler()
+	webHandler, err := web.New()
+	if err != nil {
+		panic(err)
+	}
+	return New(service, webHandler.Handler(), slog.New(slog.NewTextHandler(io.Discard, nil))).Handler()
 }
 
 func TestCreateAccount(t *testing.T) {

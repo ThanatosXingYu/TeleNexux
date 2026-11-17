@@ -1,0 +1,50 @@
+{{define "login.html"}}
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>登录 · TeleNexus</title>
+    <link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/css/app.css">
+    <script src="/static/js/app.js" defer></script>
+  </head>
+  <body class="login-page">
+    <main class="login-shell">
+      <section class="login-brand" aria-label="TeleNexus 简介">
+        <div class="login-brand-content">
+          <a class="login-logo" href="/"><img src="/static/img/logo.svg" alt=""><span>TeleNexus</span></a>
+          <p class="eyebrow">Telegram Account Operations</p>
+          <h1>在一个控制台中<br>管理所有 Telegram 账号。</h1>
+          <p>集中管理账号、配置监控规则，并为后续消息采集与告警预留可扩展的后台框架。</p>
+          <div class="login-features">
+            <span>多账号管理</span><span>实时监控</span><span>统一告警</span>
+          </div>
+        </div>
+        <p class="login-copyright">TeleNexus · Go control plane</p>
+      </section>
+      <section class="login-form-area">
+        <div class="login-card">
+          <div class="login-intro">
+            <p class="eyebrow">管理控制台</p>
+            <h2>登录 TeleNexus</h2>
+            <p>账号登录将在后续阶段接入。</p>
+          </div>
+          <form class="login-form" data-login-form>
+            <label class="field"><span>账号</span><input name="account" autocomplete="username" placeholder="请输入管理员账号"></label>
+            <label class="field"><span>密码</span><input name="password" type="password" autocomplete="current-password" placeholder="请输入密码"></label>
+            <div class="login-form-row">
+              <label class="checkbox-label"><input type="checkbox" checked> 自动登录</label>
+              <span class="text-link disabled-link">忘记密码</span>
+            </div>
+            <button class="button button-primary login-submit" type="submit">登录</button>
+            <p class="form-notice" data-login-notice hidden></p>
+          </form>
+          <div class="login-divider"><span>当前版本</span></div>
+          <a class="button button-secondary button-block" href="/">直接查看管理台</a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
+{{end}}

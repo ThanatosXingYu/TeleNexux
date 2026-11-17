@@ -24,15 +24,18 @@ type AccountService interface {
 
 type API struct {
 	accounts AccountService
+	web      http.Handler
 	logger   *slog.Logger
 }
 
-func New(accounts AccountService, logger *slog.Logger) *API {
-	return &API{accounts: accounts, logger: logger}
+func New(accounts AccountService, webHandler http.Handler, logger *slog.Logger) *API {
+	return &API{accounts: accounts, web: webHandler, logger: logger}
 }
 
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.Handle("GET /static/", a.web)
+	mux.Handle("GET /", a.web)
 	mux.HandleFunc("GET /healthz", a.health)
 	mux.HandleFunc("GET /api/v1/accounts", a.listAccounts)
 	mux.HandleFunc("POST /api/v1/accounts", a.createAccount)

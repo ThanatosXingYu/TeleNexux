@@ -1,0 +1,49 @@
+{{define "placeholder.html"}}
+<section class="page-heading">
+  <div>
+    <p class="eyebrow">TeleNexus 管理控制台</p>
+    <h1>{{.Section}}</h1>
+  </div>
+  <span class="badge badge-neutral">功能占位</span>
+</section>
+
+<div class="page-layout">
+  <aside class="filter-card card" aria-label="筛选与导航">
+    <div class="card-header"><h2>筛选</h2></div>
+    <label class="field">
+      <span>关键词</span>
+      <input type="search" placeholder="输入关键词" disabled>
+    </label>
+    <label class="field">
+      <span>状态</span>
+      <select disabled><option>全部状态</option></select>
+    </label>
+    <label class="field">
+      <span>时间范围</span>
+      <select disabled><option>最近 7 天</option></select>
+    </label>
+    <button class="button button-primary" type="button" disabled>查询（待接入）</button>
+  </aside>
+
+  <div class="page-main">
+    <section class="card content-card">
+      <div class="card-header">
+        <h2>数据概览</h2>
+        <span class="muted">等待业务模块接入</span>
+      </div>
+      <div class="placeholder-actions">
+        <span class="button button-primary button-disabled">新建</span>
+        <span class="button button-secondary button-disabled">导出</span>
+        <span class="button button-secondary button-disabled">批量操作</span>
+      </div>
+      <div class="empty-state">
+        <span class="empty-icon"><span class="icon icon-monitor" aria-hidden="true"></span></span>
+        <h2>{{.Section}}尚未接入</h2>
+        <p>{{.Description}}。当前版本已完成管理台布局，并保留列表、筛选与操作入口，
+          后续可直接替换为真实业务数据。</p>
+        <a class="button button-primary" href="/">返回工作台</a>
+      </div>
+    </section>
+  </div>
+</div>
+{{end}}
