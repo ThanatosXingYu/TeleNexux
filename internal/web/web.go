@@ -156,13 +156,13 @@ func (r *Renderer) accountDetail(w http.ResponseWriter, req *http.Request) {
 
 func (r *Renderer) system(w http.ResponseWriter, _ *http.Request) {
 	r.render(w, pageData{
-		Title:       "系统设置",
-		Section:     "系统设置",
-		Description: "配置 Telegram 应用凭据、接码网络和服务监听地址",
+		Title:       "系统配置",
+		Section:     "系统配置",
+		Description: "配置运行环境、Telegram 凭据、接码网络和服务监听地址",
 		ActivePath:  "/system",
 		Page:        "system",
 		Navigation:  navigation("/system"),
-		Breadcrumbs: []breadcrumb{{Label: "工作台", Path: "/"}, {Label: "系统管理"}, {Label: "系统设置"}},
+		Breadcrumbs: []breadcrumb{{Label: "工作台", Path: "/"}, {Label: "系统配置"}, {Label: "基础配置"}},
 		Account:     defaultAccount,
 	})
 }
@@ -197,7 +197,7 @@ var pages = []pageDefinition{
 	{Path: "/monitor/alerts", Group: "monitor", Title: "告警记录", Description: "查看已触发的监控告警"},
 	{Path: "/messages", Group: "data", Title: "消息记录", Description: "检索已采集的 Telegram 消息"},
 	{Path: "/reports", Group: "data", Title: "数据报表", Description: "查看账号活跃度和监控趋势"},
-	{Path: "/system", Group: "system", Title: "系统设置", Description: "配置服务、日志与通知渠道"},
+	{Path: "/system", Group: "system", Title: "系统配置", Description: "配置运行环境、Telegram 凭据与服务参数"},
 	{Path: "/system/health", Group: "system", Title: "服务状态", Description: "查看 Go 服务与基础设施状态"},
 }
 
@@ -234,10 +234,10 @@ func navigation(activePath string) []navGroup {
 		},
 		{
 			ID:    "system",
-			Label: "系统管理",
+			Label: "系统配置",
 			Icon:  "settings",
 			Items: []navItem{
-				{Label: "系统设置", Path: "/system"},
+				{Label: "基础配置", Path: "/system"},
 				{Label: "服务状态", Path: "/system/health"},
 			},
 		},

@@ -366,6 +366,8 @@ func TestTelegramInvalidPasswordIsSanitized(t *testing.T) {
 
 func TestSettingsResponseNeverEchoesAPIHash(t *testing.T) {
 	settingsService := &fakeSettingsService{values: settings.Values{
+		AppEnvironment:  "production",
+		LogLevel:        "warn",
 		TelegramAPIID:   12345,
 		TelegramAPIHash: "highly-secret-hash",
 	}}
@@ -388,6 +390,10 @@ func TestSettingsResponseNeverEchoesAPIHash(t *testing.T) {
 	if !strings.Contains(recorder.Body.String(), `"telegram_api_hash_configured":true`) {
 		t.Fatalf("response = %s, want configured indicator", recorder.Body.String())
 	}
+	if !strings.Contains(recorder.Body.String(), `"app_env":"production"`) ||
+		!strings.Contains(recorder.Body.String(), `"log_level":"warn"`) {
+		t.Fatalf("response = %s, want runtime configuration", recorder.Body.String())
+	}
 }
 
 func TestUpdateSettingsRequiresJSON(t *testing.T) {
@@ -403,6 +409,34 @@ func TestUpdateSettingsRequiresJSON(t *testing.T) {
 
 	if recorder.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("status = %d, want 415", recorder.Code)
+	}
+}
+
+func TestUpdateSettingsSavesRuntimeConfiguration(t *testing.T) {
+	settingsService := &fakeSettingsService{values: settings.Values{LogLevel: "info"}}
+	request := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/settings",
+		strings.NewReader(`{"app_env":"staging","log_level":"warn"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithDependencies(
+		&fakeAccountService{},
+		&fakeTelegramAuthService{},
+		nil,
+		settingsService,
+	).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if settingsService.values.AppEnvironment != "staging" || settingsService.values.LogLevel != "warn" {
+		t.Fatalf("saved settings = %+v, want staging/warn", settingsService.values)
+	}
+	if !settingsService.restartRequired {
+		t.Fatal("saving settings must require a restart")
 	}
 }
 

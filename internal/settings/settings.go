@@ -18,6 +18,8 @@ import (
 const maxSettingsFileSize = 64 << 10
 
 type Values struct {
+	AppEnvironment        string   `json:"app_env,omitempty"`
+	LogLevel              string   `json:"log_level,omitempty"`
 	HTTPAddr              string   `json:"http_addr,omitempty"`
 	TelegramAPIID         int      `json:"telegram_api_id,omitempty"`
 	TelegramAPIHash       string   `json:"telegram_api_hash,omitempty"`
@@ -78,6 +80,12 @@ func NewStore(path string) (*Store, error) {
 func (s *Store) UseDefaults(defaults Values) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.values.AppEnvironment == "" {
+		s.values.AppEnvironment = defaults.AppEnvironment
+	}
+	if s.values.LogLevel == "" {
+		s.values.LogLevel = defaults.LogLevel
+	}
 	if s.values.HTTPAddr == "" {
 		s.values.HTTPAddr = defaults.HTTPAddr
 	}
@@ -130,6 +138,10 @@ func (s *Store) RestartRequired() bool {
 
 func (v Values) Lookup(key string) (string, bool) {
 	switch key {
+	case "APP_ENV":
+		return v.AppEnvironment, v.AppEnvironment != ""
+	case "LOG_LEVEL":
+		return v.LogLevel, v.LogLevel != ""
 	case "HTTP_ADDR":
 		return v.HTTPAddr, v.HTTPAddr != ""
 	case "TELEGRAM_API_ID":
@@ -149,6 +161,8 @@ func (v Values) Lookup(key string) (string, bool) {
 }
 
 func Normalize(values Values) (Values, error) {
+	values.AppEnvironment = strings.TrimSpace(values.AppEnvironment)
+	values.LogLevel = strings.ToLower(strings.TrimSpace(values.LogLevel))
 	values.HTTPAddr = strings.TrimSpace(values.HTTPAddr)
 	values.TelegramAPIHash = strings.TrimSpace(values.TelegramAPIHash)
 	values.TelegramCodeDNSServer = strings.TrimSpace(values.TelegramCodeDNSServer)
@@ -174,6 +188,14 @@ func Normalize(values Values) (Values, error) {
 }
 
 func Validate(values Values) error {
+	if len(values.AppEnvironment) > 32 {
+		return errors.New("APP_ENV must contain at most 32 characters")
+	}
+	switch values.LogLevel {
+	case "", "debug", "info", "warn", "error":
+	default:
+		return errors.New("LOG_LEVEL must be debug, info, warn, or error")
+	}
 	if values.HTTPAddr != "" {
 		if _, _, err := net.SplitHostPort(values.HTTPAddr); err != nil {
 			return fmt.Errorf("HTTP_ADDR is invalid: %w", err)

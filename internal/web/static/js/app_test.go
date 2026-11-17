@@ -31,6 +31,8 @@ func TestScriptUsesOnlyReferencedControls(t *testing.T) {
 		`requestJSON`,
 		`fetchCodeFromSource`,
 		`passwordForm?.addEventListener`,
+		`data-login-view-chat`,
+		`loadMessages(items[0])`,
 	}
 	for _, behavior := range requiredBehavior {
 		if !strings.Contains(script, behavior) {

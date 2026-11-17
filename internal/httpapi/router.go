@@ -283,6 +283,8 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
+		AppEnvironment        *string   `json:"app_env"`
+		LogLevel              *string   `json:"log_level"`
 		HTTPAddr              *string   `json:"http_addr"`
 		TelegramAPIID         *int      `json:"telegram_api_id"`
 		TelegramAPIHash       *string   `json:"telegram_api_hash"`
@@ -293,6 +295,12 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := a.settings.Snapshot()
+	if input.AppEnvironment != nil {
+		next.AppEnvironment = *input.AppEnvironment
+	}
+	if input.LogLevel != nil {
+		next.LogLevel = *input.LogLevel
+	}
 	if input.HTTPAddr != nil {
 		next.HTTPAddr = *input.HTTPAddr
 	}
@@ -319,6 +327,8 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 type settingsAPIResponse struct {
+	AppEnvironment            string   `json:"app_env"`
+	LogLevel                  string   `json:"log_level"`
 	HTTPAddr                  string   `json:"http_addr"`
 	TelegramAPIID             int      `json:"telegram_api_id"`
 	TelegramAPIHashConfigured bool     `json:"telegram_api_hash_configured"`
@@ -332,6 +342,8 @@ type settingsAPIResponse struct {
 func settingsResponse(service SettingsService) settingsAPIResponse {
 	values := service.Snapshot()
 	response := settingsAPIResponse{
+		AppEnvironment:         values.AppEnvironment,
+		LogLevel:               values.LogLevel,
 		HTTPAddr:               values.HTTPAddr,
 		TelegramAPIID:          values.TelegramAPIID,
 		TelegramCodeFetchHosts: values.TelegramCodeHosts,
@@ -343,6 +355,8 @@ func settingsResponse(service SettingsService) settingsAPIResponse {
 		response.TelegramAPIHashHint = "已配置（不会回显）"
 	}
 	for _, key := range []string{
+		"APP_ENV",
+		"LOG_LEVEL",
 		"HTTP_ADDR",
 		"TELEGRAM_API_ID",
 		"TELEGRAM_API_HASH",

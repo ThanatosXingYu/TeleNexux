@@ -342,12 +342,18 @@
       status.className = `account-status account-status-${account.status}`;
       status.textContent = statusLabels[account.status] || account.status;
 
+      const chatAction = document.createElement("a");
+      chatAction.className = "button button-secondary button-compact";
+      chatAction.href = row.dataset.href;
+      chatAction.textContent = "查看聊天";
+
       row.append(
         tableCell(identityLink),
         tableCell(phone),
         tableCell(username),
         tableCell(status),
         tableCell(formatAccountDate(account.updated_at)),
+        tableCell(chatAction),
       );
       row.addEventListener("click", (event) => {
         if (!event.target.closest("a")) {
@@ -414,6 +420,7 @@
   const codeInput = codeForm?.querySelector("input[name='code']");
   const fetchCodeButton = document.querySelector("[data-fetch-code]");
   const completeName = document.querySelector("[data-complete-name]");
+  const viewChatButton = document.querySelector("[data-login-view-chat]");
   let loginID = "";
   let pollTimer = 0;
   let pollAttempts = 0;
@@ -458,6 +465,8 @@
     showNotice(phoneNotice, "");
     showNotice(codeNotice, "");
     showNotice(passwordNotice, "");
+    viewChatButton?.setAttribute("hidden", "");
+    viewChatButton?.removeAttribute("href");
     setAuthStep("phone");
     const submit = phoneForm?.querySelector("button[type='submit']");
     if (submit) {
@@ -561,6 +570,10 @@
       loginID = "";
       if (completeName) {
         completeName.textContent = result.account?.display_name || result.account?.username || "Telegram 账号";
+      }
+      if (viewChatButton && result.account?.id) {
+        viewChatButton.href = `/accounts/${encodeURIComponent(result.account.id)}`;
+        viewChatButton.removeAttribute("hidden");
       }
       setAuthStep("complete");
       loadAccounts();
@@ -854,6 +867,10 @@
         if (chatCount) {
           chatCount.textContent = `${items.length} / ${payload?.total ?? items.length} 个会话`;
         }
+        if (items.length > 0) {
+          chatList?.querySelector(".chat-list-item")?.classList.add("active");
+          loadMessages(items[0]);
+        }
       } catch (error) {
         showNotice(chatsError, error.message, true);
       } finally {
@@ -896,6 +913,8 @@
           input.value = value;
         }
       };
+      setValue("app_env", settings.app_env || "");
+      setValue("log_level", settings.log_level || "info");
       setValue("telegram_api_id", settings.telegram_api_id || "");
       setValue("telegram_api_hash", "");
       setValue("telegram_code_fetch_hosts", Array.isArray(settings.telegram_code_fetch_hosts)
@@ -939,6 +958,8 @@
       const button = settingsForm.querySelector("button[type='submit']");
       const data = new FormData(settingsForm);
       const payload = {
+        app_env: String(data.get("app_env") || "").trim(),
+        log_level: String(data.get("log_level") || "").trim(),
         http_addr: String(data.get("http_addr") || "").trim(),
         telegram_api_id: Number(data.get("telegram_api_id") || 0),
         telegram_code_fetch_hosts: String(data.get("telegram_code_fetch_hosts") || "")

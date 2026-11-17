@@ -13,6 +13,8 @@ func TestStoreSavesPrivateSettings(t *testing.T) {
 		t.Fatalf("NewStore() error = %v", err)
 	}
 	want := Values{
+		AppEnvironment:        "production",
+		LogLevel:              "INFO",
 		HTTPAddr:              "127.0.0.1:9487",
 		TelegramAPIID:         12345,
 		TelegramAPIHash:       "test-hash",
@@ -30,8 +32,21 @@ func TestStoreSavesPrivateSettings(t *testing.T) {
 		t.Fatalf("settings mode = %o, want 600", info.Mode().Perm())
 	}
 	got := store.Snapshot()
+	if got.AppEnvironment != "production" || got.LogLevel != "info" {
+		t.Fatalf("runtime settings = %q/%q, want normalized production/info", got.AppEnvironment, got.LogLevel)
+	}
 	if len(got.TelegramCodeHosts) != 1 || got.TelegramCodeHosts[0] != "api.didiapi.uk" {
 		t.Fatalf("hosts = %#v, want normalized unique host", got.TelegramCodeHosts)
+	}
+}
+
+func TestStoreRejectsInvalidLogLevel(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "settings.json"))
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	if err := store.Save(Values{LogLevel: "verbose"}); err == nil {
+		t.Fatal("Save() accepted an unsupported log level")
 	}
 }
 
@@ -62,11 +77,16 @@ func TestUseDefaultsSeedsMissingValuesWithoutWriting(t *testing.T) {
 		t.Fatalf("NewStore() error = %v", err)
 	}
 	store.UseDefaults(Values{
+		AppEnvironment:  "development",
+		LogLevel:        "info",
 		HTTPAddr:        "127.0.0.1:9487",
 		TelegramAPIID:   123,
 		TelegramAPIHash: "hash",
 	})
-	if got := store.Snapshot(); got.HTTPAddr != "127.0.0.1:9487" || got.TelegramAPIID != 123 {
+	if got := store.Snapshot(); got.AppEnvironment != "development" ||
+		got.LogLevel != "info" ||
+		got.HTTPAddr != "127.0.0.1:9487" ||
+		got.TelegramAPIID != 123 {
 		t.Fatalf("Snapshot() = %+v, want seeded defaults", got)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {

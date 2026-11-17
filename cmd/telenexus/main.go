@@ -64,6 +64,8 @@ func run() error {
 		return fmt.Errorf("initialize system settings: %w", err)
 	}
 	settingsStore.UseDefaults(settings.Values{
+		AppEnvironment:        cfg.Environment,
+		LogLevel:              cfg.LogLevel,
 		HTTPAddr:              cfg.HTTPAddr,
 		TelegramAPIID:         cfg.TelegramAPIID,
 		TelegramAPIHash:       cfg.TelegramAPIHash,

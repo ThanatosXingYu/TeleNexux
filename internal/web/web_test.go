@@ -159,6 +159,7 @@ func TestAccountsPageRendersTelegramLoginFlow(t *testing.T) {
 		`data-auth-step="code"`,
 		`data-auth-step="password"`,
 		`data-accounts-body`,
+		`data-login-view-chat`,
 		`class="menu-group current"`,
 		`class="submenu-item active" href="/accounts"`,
 	} {
@@ -184,6 +185,8 @@ func TestSystemPageRendersEditableSettings(t *testing.T) {
 	body := recorder.Body.String()
 	for _, expected := range []string{
 		`data-settings-form`,
+		`name="app_env"`,
+		`name="log_level"`,
 		`name="telegram_api_id"`,
 		`name="telegram_api_hash"`,
 		`name="telegram_code_fetch_hosts"`,
