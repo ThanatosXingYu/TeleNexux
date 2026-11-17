@@ -208,7 +208,7 @@
     `${encodeURIComponent(accountID)}/avatar`
   );
 
-  const avatarLoadConcurrency = 2;
+  const avatarLoadConcurrency = 1;
   const avatarLoadTimeout = 12000;
   const avatarLoadQueue = [];
   const activeAvatarLoads = new Set();
@@ -229,6 +229,7 @@
     if (!image.isConnected || activeAvatarLoads.has(image)) {
       return;
     }
+    avatarObservers.forEach((observer) => observer.unobserve(image));
     activeAvatarLoads.add(image);
     image.src = avatarURL;
     image.dataset.avatarTimer = String(window.setTimeout(() => {
@@ -245,21 +246,40 @@
     avatarLoadQueue.push({image, avatarURL});
   };
 
-  const avatarObserver = typeof IntersectionObserver === "function"
-    ? new IntersectionObserver((entries) => {
+  const createAvatarObserver = (root) => {
+    if (typeof IntersectionObserver !== "function") {
+      return null;
+    }
+    let observer;
+    observer = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
         if (!entry.isIntersecting) {
           return;
         }
         const image = entry.target;
-        avatarObserver.unobserve(image);
+        observer.unobserve(image);
         if (image.dataset.avatarSrc) {
           queueAvatarLoad(image, image.dataset.avatarSrc);
           delete image.dataset.avatarSrc;
         }
       });
-    }, {rootMargin: "120px"})
-    : null;
+    }, {root, rootMargin: "120px"});
+    return observer;
+  };
+  const avatarObserver = createAvatarObserver(null);
+  const chatAvatarObserver = createAvatarObserver(elements.chatList);
+  const messageAvatarObserver = createAvatarObserver(elements.messageScroll);
+  const avatarObservers = [avatarObserver, chatAvatarObserver, messageAvatarObserver].filter(Boolean);
+
+  const avatarObserverFor = (element) => {
+    if (elements.messageScroll?.contains(element)) {
+      return messageAvatarObserver;
+    }
+    if (elements.chatList?.contains(element)) {
+      return chatAvatarObserver;
+    }
+    return avatarObserver;
+  };
 
   const applyAvatar = (element, title, extraClass = "", avatarURL = "") => {
     if (!element) {
@@ -267,28 +287,40 @@
     }
     element.className = `tg-avatar ${extraClass} tg-avatar-color-${stableColorIndex(title)}`.replace(/\s+/g, " ").trim();
     element.replaceChildren();
+    const fallback = document.createElement("span");
+    fallback.className = "tg-avatar-fallback";
+    fallback.textContent = initials(title);
+    element.append(fallback);
     if (!avatarURL) {
-      element.textContent = initials(title);
       return;
     }
     const image = document.createElement("img");
     image.alt = "";
     image.loading = "lazy";
     image.decoding = "async";
-    image.addEventListener("load", () => completeAvatarLoad(image), {once: true});
+    image.addEventListener("load", () => {
+      completeAvatarLoad(image);
+      element.classList.add("has-image");
+    }, {once: true});
     image.addEventListener("error", () => {
       completeAvatarLoad(image);
-      avatarObserver?.unobserve(image);
+      avatarObservers.forEach((observer) => observer.unobserve(image));
+      element.classList.remove("has-image");
       image.remove();
-      element.textContent = initials(title);
     }, {once: true});
-    if (avatarObserver) {
-      image.dataset.avatarSrc = avatarURL;
-      avatarObserver.observe(image);
-    } else {
-      queueAvatarLoad(image, avatarURL);
-    }
     element.append(image);
+    window.requestAnimationFrame(() => {
+      if (!image.isConnected) {
+        return;
+      }
+      const observer = avatarObserverFor(element);
+      if (observer) {
+        image.dataset.avatarSrc = avatarURL;
+        observer.observe(image);
+      } else {
+        queueAvatarLoad(image, avatarURL);
+      }
+    });
   };
 
   const parseDate = (value) => {

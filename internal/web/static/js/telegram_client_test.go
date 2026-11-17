@@ -33,9 +33,16 @@ func TestTelegramClientScriptBehaviors(t *testing.T) {
 		`/profile`,
 		`formatPhone`,
 		`avatarObserver`,
+		`createAvatarObserver(elements.chatList)`,
+		`createAvatarObserver(elements.messageScroll)`,
 		`avatarLoadConcurrency`,
+		`const avatarLoadConcurrency = 1`,
 		`queueAvatarLoad`,
+		`window.requestAnimationFrame`,
+		`element.append(image)`,
 		`image.loading = "lazy"`,
+		`tg-avatar-fallback`,
+		`classList.add("has-image")`,
 		`normalizeSearchQuery`,
 		`.replace(/^@+/, "")`,
 		`tg-select-control`,
@@ -52,6 +59,31 @@ func TestTelegramClientScriptBehaviors(t *testing.T) {
 		if strings.Contains(script, forbidden) {
 			t.Errorf("telegram_client.js must not use %q", forbidden)
 		}
+	}
+}
+
+func TestTelegramClientAvatarObserverUsesOwnInstance(t *testing.T) {
+	content, err := os.ReadFile("telegram_client.js")
+	if err != nil {
+		t.Fatalf("read telegram_client.js: %v", err)
+	}
+	script := string(content)
+
+	if !strings.Contains(script, "observer.unobserve(image)") {
+		t.Fatal("avatar observer must unobserve through its own instance")
+	}
+	applyAvatar := strings.Index(script, "const applyAvatar =")
+	if applyAvatar < 0 {
+		t.Fatal("avatar application behavior is missing")
+	}
+	applyAvatarBody := script[applyAvatar:]
+	appendImage := strings.Index(applyAvatarBody, "element.append(image)")
+	requestFrame := strings.Index(applyAvatarBody, "window.requestAnimationFrame")
+	if appendImage < 0 || requestFrame < 0 {
+		t.Fatal("avatar mounting or observation behavior is missing")
+	}
+	if appendImage > requestFrame {
+		t.Fatal("avatar image must be mounted before scheduling observation")
 	}
 }
 

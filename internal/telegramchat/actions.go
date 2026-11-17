@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -22,6 +23,7 @@ const (
 	peerCacheTTL     = time.Hour
 	avatarCacheTTL   = 15 * time.Minute
 	maxAvatarBytes   = 5 << 20
+	avatarThumbWidth = 160
 	maxMessageAction = 100
 )
 
@@ -93,11 +95,12 @@ func (s *Service) SearchChats(
 		if err != nil {
 			return err
 		}
+		now := time.Now()
+		s.cachePeerLists(accountID, result.Users, result.Chats, now)
 		users := make(map[int64]*tg.User, len(result.Users))
 		for _, item := range result.Users {
 			if user, ok := item.(*tg.User); ok {
 				users[user.GetID()] = user
-				s.cachePeer(accountID, "user", user.GetID(), user.AsInputPeer(), time.Now())
 			}
 		}
 		chats := make(map[int64]tg.ChatClass, len(result.Chats))
@@ -105,10 +108,8 @@ func (s *Service) SearchChats(
 			switch chat := item.(type) {
 			case *tg.Chat:
 				chats[chat.GetID()] = chat
-				s.cachePeer(accountID, "chat", chat.GetID(), chat.AsInputPeer(), time.Now())
 			case *tg.Channel:
 				chats[chat.GetID()] = chat
-				s.cachePeer(accountID, "channel", chat.GetID(), channelInputPeer(chat), time.Now())
 			}
 		}
 
@@ -310,10 +311,11 @@ func (s *Service) Avatar(
 		if _, err := downloader.NewDownloader().Download(client.API(), location).Stream(ctx, &output); err != nil {
 			return fmt.Errorf("download Telegram avatar: %w", err)
 		}
-		avatar = Avatar{
-			Data:        append([]byte(nil), output.Bytes()...),
-			ContentType: http.DetectContentType(output.Bytes()),
+		parsedAvatar, parseErr := newAvatar(output.Bytes())
+		if parseErr != nil {
+			return parseErr
 		}
+		avatar = parsedAvatar
 		return nil
 	})
 	if err != nil {
@@ -444,6 +446,44 @@ func (s *Service) resolveInputPeer(
 		return nil, ErrPeerNotFound
 	}
 	now := time.Now()
+	s.cachePeerLists(accountID, users, chats, now)
+	if peerType == "user" && peerID == accountID {
+		peer := &tg.InputPeerUser{UserID: accountID}
+		s.cachePeer(accountID, peerType, peerID, peer, now)
+		return peer, nil
+	}
+	if peer, ok := s.readPeer(accountID, peerType, peerID, now); ok {
+		return peer, nil
+	}
+	return nil, ErrPeerNotFound
+}
+
+func (s *Service) cacheDialogsResult(accountID int64, result tg.MessagesDialogsClass, now time.Time) {
+	switch value := result.(type) {
+	case *tg.MessagesDialogs:
+		s.cachePeerLists(accountID, value.Users, value.Chats, now)
+	case *tg.MessagesDialogsSlice:
+		s.cachePeerLists(accountID, value.Users, value.Chats, now)
+	}
+}
+
+func (s *Service) cacheMessagesResult(accountID int64, result tg.MessagesMessagesClass, now time.Time) {
+	switch value := result.(type) {
+	case *tg.MessagesMessages:
+		s.cachePeerLists(accountID, value.Users, value.Chats, now)
+	case *tg.MessagesMessagesSlice:
+		s.cachePeerLists(accountID, value.Users, value.Chats, now)
+	case *tg.MessagesChannelMessages:
+		s.cachePeerLists(accountID, value.Users, value.Chats, now)
+	}
+}
+
+func (s *Service) cachePeerLists(
+	accountID int64,
+	users []tg.UserClass,
+	chats []tg.ChatClass,
+	now time.Time,
+) {
 	for _, item := range users {
 		if user, ok := item.(*tg.User); ok {
 			s.cachePeer(accountID, "user", user.GetID(), user.AsInputPeer(), now)
@@ -457,15 +497,6 @@ func (s *Service) resolveInputPeer(
 			s.cachePeer(accountID, "channel", chat.GetID(), channelInputPeer(chat), now)
 		}
 	}
-	if peerType == "user" && peerID == accountID {
-		peer := &tg.InputPeerUser{UserID: accountID}
-		s.cachePeer(accountID, peerType, peerID, peer, now)
-		return peer, nil
-	}
-	if peer, ok := s.readPeer(accountID, peerType, peerID, now); ok {
-		return peer, nil
-	}
-	return nil, ErrPeerNotFound
 }
 
 func (s *Service) cachePeer(
@@ -690,30 +721,71 @@ func bestPhoto(photos ...tg.PhotoClass) *tg.Photo {
 }
 
 func avatarLocation(photo *tg.Photo) (*tg.InputPhotoFileLocation, error) {
-	bestType := ""
-	bestWidth := 0
+	type candidate struct {
+		thumbType string
+		width     int
+		size      int
+	}
+	candidates := make([]candidate, 0, len(photo.GetSizes()))
 	for _, raw := range photo.GetSizes() {
 		switch size := raw.(type) {
 		case *tg.PhotoSize:
-			if size.GetW() > bestWidth {
-				bestWidth = size.GetW()
-				bestType = size.GetType()
+			if size.GetType() != "" && size.GetW() > 0 {
+				candidates = append(candidates, candidate{
+					thumbType: size.GetType(),
+					width:     size.GetW(),
+					size:      size.GetSize(),
+				})
 			}
 		case *tg.PhotoSizeProgressive:
-			if size.GetW() > bestWidth {
-				bestWidth = size.GetW()
-				bestType = size.GetType()
+			if size.GetType() != "" && size.GetW() > 0 {
+				fileSize := 0
+				if sizes := size.GetSizes(); len(sizes) > 0 {
+					fileSize = sizes[len(sizes)-1]
+				}
+				candidates = append(candidates, candidate{
+					thumbType: size.GetType(),
+					width:     size.GetW(),
+					size:      fileSize,
+				})
 			}
 		}
 	}
-	if bestType == "" {
+	if len(candidates) == 0 {
 		return nil, ErrNoAvatar
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].width == candidates[j].width {
+			return candidates[i].size < candidates[j].size
+		}
+		return candidates[i].width < candidates[j].width
+	})
+	selected := candidates[len(candidates)-1]
+	for _, size := range candidates {
+		if size.width >= avatarThumbWidth {
+			selected = size
+			break
+		}
 	}
 	return &tg.InputPhotoFileLocation{
 		ID:            photo.GetID(),
 		AccessHash:    photo.GetAccessHash(),
 		FileReference: photo.GetFileReference(),
-		ThumbSize:     bestType,
+		ThumbSize:     selected.thumbType,
+	}, nil
+}
+
+func newAvatar(data []byte) (Avatar, error) {
+	if len(data) == 0 {
+		return Avatar{}, ErrNoAvatar
+	}
+	contentType := http.DetectContentType(data)
+	if !strings.HasPrefix(contentType, "image/") {
+		return Avatar{}, fmt.Errorf("%w: Telegram returned a non-image payload", ErrTelegram)
+	}
+	return Avatar{
+		Data:        append([]byte(nil), data...),
+		ContentType: contentType,
 	}, nil
 }
 

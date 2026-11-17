@@ -144,6 +144,7 @@ func (s *Service) Chats(ctx context.Context, accountID int64, limit int) (ChatPa
 		if err != nil {
 			return err
 		}
+		s.cacheDialogsResult(accountID, result, time.Now())
 		page, err = mapDialogs(result, limit)
 		return err
 	})
@@ -182,6 +183,7 @@ func (s *Service) Messages(
 		if err != nil {
 			return err
 		}
+		s.cacheMessagesResult(accountID, result, time.Now())
 		page, err = mapMessages(result, limit)
 		return err
 	})

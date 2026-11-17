@@ -580,13 +580,28 @@ textarea:focus-visible {
 }
 
 .tg-avatar img {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
   width: 100%;
   height: 100%;
   border-radius: inherit;
   object-fit: cover;
 }
 
+.tg-avatar-fallback {
+  display: grid;
+  position: absolute;
+  inset: 0;
+  place-items: center;
+}
+
+.tg-avatar.has-image .tg-avatar-fallback {
+  visibility: hidden;
+}
+
 .tg-avatar::after {
+  z-index: 2;
   position: absolute;
   inset: 0;
   border-radius: inherit;
