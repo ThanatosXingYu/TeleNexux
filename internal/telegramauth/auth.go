@@ -22,17 +22,15 @@ const (
 )
 
 var (
-	ErrNotConfigured    = errors.New("Telegram API credentials are not configured")
-	ErrInvalidPhone     = errors.New("phone number is invalid")
-	ErrInvalidCode      = errors.New("verification code is invalid")
-	ErrCodeExpired      = errors.New("verification code has expired")
-	ErrInvalidPassword  = errors.New("two-step verification password is invalid")
-	ErrLoginNotFound    = errors.New("login attempt was not found or has expired")
-	ErrLoginStage       = errors.New("login attempt is not at the requested step")
-	ErrCodeSourceReject = errors.New("code source is not allowed")
-	ErrCodeNotReady     = errors.New("verification code is not available yet")
-	ErrFloodWait        = errors.New("Telegram rate limit reached")
-	ErrTelegram         = errors.New("Telegram authentication failed")
+	ErrNotConfigured   = errors.New("Telegram API credentials are not configured")
+	ErrInvalidPhone    = errors.New("phone number is invalid")
+	ErrInvalidCode     = errors.New("verification code is invalid")
+	ErrCodeExpired     = errors.New("verification code has expired")
+	ErrInvalidPassword = errors.New("two-step verification password is invalid")
+	ErrLoginNotFound   = errors.New("login attempt was not found or has expired")
+	ErrLoginStage      = errors.New("login attempt is not at the requested step")
+	ErrFloodWait       = errors.New("Telegram rate limit reached")
+	ErrTelegram        = errors.New("Telegram authentication failed")
 )
 
 var (
@@ -59,11 +57,6 @@ type Driver interface {
 	Password(ctx context.Context, sessionPath, password string) (*Profile, error)
 }
 
-type CodeFetcher interface {
-	Validate(source string) error
-	Fetch(ctx context.Context, source string, expectedLength int) (string, error)
-}
-
 type ServiceConfig struct {
 	SessionDir       string
 	LoginTTL         time.Duration
@@ -74,12 +67,11 @@ type ServiceConfig struct {
 }
 
 type Challenge struct {
-	LoginID      string    `json:"login_id"`
-	PhoneHint    string    `json:"phone_hint"`
-	CodeType     string    `json:"code_type"`
-	CodeLength   int       `json:"code_length"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	CanFetchCode bool      `json:"can_fetch_code"`
+	LoginID    string    `json:"login_id"`
+	PhoneHint  string    `json:"phone_hint"`
+	CodeType   string    `json:"code_type"`
+	CodeLength int       `json:"code_length"`
+	ExpiresAt  time.Time `json:"expires_at"`
 }
 
 type Result struct {
@@ -101,7 +93,6 @@ func (e *FloodWaitError) Unwrap() error {
 
 type Service struct {
 	driver           Driver
-	fetcher          CodeFetcher
 	sessionDir       string
 	loginTTL         time.Duration
 	operationTimeout time.Duration
@@ -118,13 +109,11 @@ type loginState struct {
 	phone       string
 	codeHash    string
 	sessionPath string
-	codeSource  string
-	codeLength  int
 	stage       string
 	expiresAt   time.Time
 }
 
-func NewService(driver Driver, fetcher CodeFetcher, config ServiceConfig) (*Service, error) {
+func NewService(driver Driver, config ServiceConfig) (*Service, error) {
 	config.SessionDir = strings.TrimSpace(config.SessionDir)
 	if config.SessionDir == "" {
 		return nil, errors.New("Telegram session directory must not be empty")
@@ -154,7 +143,6 @@ func NewService(driver Driver, fetcher CodeFetcher, config ServiceConfig) (*Serv
 	}
 	service := &Service{
 		driver:           driver,
-		fetcher:          fetcher,
 		sessionDir:       config.SessionDir,
 		loginTTL:         config.LoginTTL,
 		operationTimeout: config.OperationTimeout,
@@ -214,22 +202,13 @@ func (s *Service) CancelQR(loginID string) error {
 	return s.qr.Cancel(loginID)
 }
 
-func (s *Service) SendCode(ctx context.Context, phone, codeSource string) (Challenge, error) {
+func (s *Service) SendCode(ctx context.Context, phone string) (Challenge, error) {
 	if !s.Configured() {
 		return Challenge{}, ErrNotConfigured
 	}
 	phone, err := normalizePhone(phone)
 	if err != nil {
 		return Challenge{}, err
-	}
-	codeSource = strings.TrimSpace(codeSource)
-	if codeSource != "" {
-		if s.fetcher == nil {
-			return Challenge{}, ErrCodeSourceReject
-		}
-		if err := s.fetcher.Validate(codeSource); err != nil {
-			return Challenge{}, fmt.Errorf("%w: %v", ErrCodeSourceReject, err)
-		}
 	}
 
 	loginID, err := newLoginID()
@@ -259,8 +238,6 @@ func (s *Service) SendCode(ctx context.Context, phone, codeSource string) (Chall
 		phone:       phone,
 		codeHash:    sent.CodeHash,
 		sessionPath: sessionPath,
-		codeSource:  codeSource,
-		codeLength:  sent.CodeLength,
 		stage:       StepCode,
 		expiresAt:   s.now().Add(s.loginTTL),
 	}
@@ -276,12 +253,11 @@ func (s *Service) SendCode(ctx context.Context, phone, codeSource string) (Chall
 	s.mu.Unlock()
 
 	return Challenge{
-		LoginID:      loginID,
-		PhoneHint:    phone,
-		CodeType:     sent.CodeType,
-		CodeLength:   sent.CodeLength,
-		ExpiresAt:    state.expiresAt,
-		CanFetchCode: codeSource != "",
+		LoginID:    loginID,
+		PhoneHint:  phone,
+		CodeType:   sent.CodeType,
+		CodeLength: sent.CodeLength,
+		ExpiresAt:  state.expiresAt,
 	}, nil
 }
 
@@ -318,7 +294,6 @@ func (s *Service) SubmitCode(ctx context.Context, loginID, code string) (Result,
 	if passwordRequired {
 		state.stage = StepPassword
 		state.codeHash = ""
-		state.codeSource = ""
 		state.expiresAt = s.now().Add(s.loginTTL)
 		return Result{NextStep: StepPassword}, nil
 	}
@@ -346,32 +321,6 @@ func (s *Service) SubmitPassword(ctx context.Context, loginID, password string) 
 		return Result{}, err
 	}
 	return s.complete(state, profile)
-}
-
-func (s *Service) FetchCode(ctx context.Context, loginID string) (Result, error) {
-	state, err := s.state(loginID)
-	if err != nil {
-		return Result{}, err
-	}
-	state.mu.Lock()
-	if state.stage != StepCode {
-		state.mu.Unlock()
-		return Result{}, ErrLoginStage
-	}
-	source := state.codeSource
-	length := state.codeLength
-	state.mu.Unlock()
-	if source == "" || s.fetcher == nil {
-		return Result{}, ErrCodeSourceReject
-	}
-
-	operationCtx, cancel := s.operationContext(ctx)
-	defer cancel()
-	code, err := s.fetcher.Fetch(operationCtx, source, length)
-	if err != nil {
-		return Result{}, err
-	}
-	return s.SubmitCode(ctx, loginID, code)
 }
 
 func (s *Service) Cancel(loginID string) error {

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,13 +17,17 @@ import (
 const maxSettingsFileSize = 64 << 10
 
 type Values struct {
-	AppEnvironment        string   `json:"app_env,omitempty"`
-	LogLevel              string   `json:"log_level,omitempty"`
-	HTTPAddr              string   `json:"http_addr,omitempty"`
-	TelegramAPIID         int      `json:"telegram_api_id,omitempty"`
-	TelegramAPIHash       string   `json:"telegram_api_hash,omitempty"`
-	TelegramCodeHosts     []string `json:"telegram_code_fetch_hosts,omitempty"`
-	TelegramCodeDNSServer string   `json:"telegram_code_dns_server,omitempty"`
+	AppEnvironment  string `json:"app_env,omitempty"`
+	LogLevel        string `json:"log_level,omitempty"`
+	HTTPAddr        string `json:"http_addr,omitempty"`
+	TelegramAPIID   int    `json:"telegram_api_id,omitempty"`
+	TelegramAPIHash string `json:"telegram_api_hash,omitempty"`
+}
+
+type persistedValues struct {
+	Values
+	TelegramCodeHosts     json.RawMessage `json:"telegram_code_fetch_hosts,omitempty"`
+	TelegramCodeDNSServer json.RawMessage `json:"telegram_code_dns_server,omitempty"`
 }
 
 type Store struct {
@@ -48,14 +51,14 @@ func Load(path string) (Values, error) {
 
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	var values Values
-	if err := decoder.Decode(&values); err != nil {
+	var persisted persistedValues
+	if err := decoder.Decode(&persisted); err != nil {
 		return Values{}, fmt.Errorf("decode settings file %q: %w", path, err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return Values{}, fmt.Errorf("settings file %q must contain one JSON object", path)
 	}
-	values, err = Normalize(values)
+	values, err := Normalize(persisted.Values)
 	if err != nil {
 		return Values{}, fmt.Errorf("validate settings file %q: %w", path, err)
 	}
@@ -95,18 +98,12 @@ func (s *Store) UseDefaults(defaults Values) {
 	if s.values.TelegramAPIHash == "" {
 		s.values.TelegramAPIHash = defaults.TelegramAPIHash
 	}
-	if len(s.values.TelegramCodeHosts) == 0 {
-		s.values.TelegramCodeHosts = append([]string(nil), defaults.TelegramCodeHosts...)
-	}
-	if s.values.TelegramCodeDNSServer == "" {
-		s.values.TelegramCodeDNSServer = defaults.TelegramCodeDNSServer
-	}
 }
 
 func (s *Store) Snapshot() Values {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return clone(s.values)
+	return s.values
 }
 
 func (s *Store) Save(values Values) error {
@@ -151,10 +148,6 @@ func (v Values) Lookup(key string) (string, bool) {
 		return fmt.Sprintf("%d", v.TelegramAPIID), true
 	case "TELEGRAM_API_HASH":
 		return v.TelegramAPIHash, v.TelegramAPIHash != ""
-	case "TELEGRAM_CODE_FETCH_HOSTS":
-		return strings.Join(v.TelegramCodeHosts, ","), len(v.TelegramCodeHosts) > 0
-	case "TELEGRAM_CODE_DNS_SERVER":
-		return v.TelegramCodeDNSServer, v.TelegramCodeDNSServer != ""
 	default:
 		return "", false
 	}
@@ -165,22 +158,6 @@ func Normalize(values Values) (Values, error) {
 	values.LogLevel = strings.ToLower(strings.TrimSpace(values.LogLevel))
 	values.HTTPAddr = strings.TrimSpace(values.HTTPAddr)
 	values.TelegramAPIHash = strings.TrimSpace(values.TelegramAPIHash)
-	values.TelegramCodeDNSServer = strings.TrimSpace(values.TelegramCodeDNSServer)
-
-	hosts := make([]string, 0, len(values.TelegramCodeHosts))
-	seen := make(map[string]struct{}, len(values.TelegramCodeHosts))
-	for _, host := range values.TelegramCodeHosts {
-		host = strings.ToLower(strings.TrimSpace(host))
-		if host == "" {
-			continue
-		}
-		if _, ok := seen[host]; ok {
-			continue
-		}
-		seen[host] = struct{}{}
-		hosts = append(hosts, host)
-	}
-	values.TelegramCodeHosts = hosts
 	if err := Validate(values); err != nil {
 		return Values{}, err
 	}
@@ -207,29 +184,7 @@ func Validate(values Values) error {
 	if (values.TelegramAPIID == 0) != (values.TelegramAPIHash == "") {
 		return errors.New("Telegram API ID and API hash must be configured together")
 	}
-	for _, host := range values.TelegramCodeHosts {
-		if strings.ContainsAny(host, `/\:`) || net.ParseIP(host) != nil || host == "localhost" {
-			return fmt.Errorf("code fetch host %q is invalid", host)
-		}
-	}
-	if values.TelegramCodeDNSServer != "" {
-		host, port, err := net.SplitHostPort(values.TelegramCodeDNSServer)
-		if err != nil {
-			return fmt.Errorf("code fetch DNS server is invalid: %w", err)
-		}
-		if _, err := netip.ParseAddr(host); err != nil {
-			return errors.New("code fetch DNS server must be an IP address")
-		}
-		if port != "53" {
-			return errors.New("code fetch DNS server must use port 53")
-		}
-	}
 	return nil
-}
-
-func clone(values Values) Values {
-	values.TelegramCodeHosts = append([]string(nil), values.TelegramCodeHosts...)
-	return values
 }
 
 func writePrivateFile(path string, data []byte) (err error) {

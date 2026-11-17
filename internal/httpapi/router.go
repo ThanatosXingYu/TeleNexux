@@ -37,10 +37,9 @@ type AccountService interface {
 
 type TelegramAuthService interface {
 	Configured() bool
-	SendCode(ctx context.Context, phone, codeSource string) (telegramauth.Challenge, error)
+	SendCode(ctx context.Context, phone string) (telegramauth.Challenge, error)
 	SubmitCode(ctx context.Context, loginID, code string) (telegramauth.Result, error)
 	SubmitPassword(ctx context.Context, loginID, password string) (telegramauth.Result, error)
-	FetchCode(ctx context.Context, loginID string) (telegramauth.Result, error)
 	Cancel(loginID string) error
 	StartQR(ctx context.Context) (telegramauth.QRChallenge, error)
 	PollQR(loginID string) (telegramauth.QRResult, error)
@@ -155,7 +154,6 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/telegram/auth/qr/{loginID}", a.cancelTelegramQR)
 	mux.HandleFunc("POST /api/v1/telegram/auth/{loginID}/code", a.submitTelegramCode)
 	mux.HandleFunc("POST /api/v1/telegram/auth/{loginID}/password", a.submitTelegramPassword)
-	mux.HandleFunc("POST /api/v1/telegram/auth/{loginID}/fetch-code", a.fetchTelegramCode)
 	mux.HandleFunc("DELETE /api/v1/telegram/auth/{loginID}", a.cancelTelegramLogin)
 	return a.recoverPanic(a.logRequests(mux))
 }
@@ -769,12 +767,11 @@ func (a *API) sendTelegramCode(w http.ResponseWriter, r *http.Request) {
 	}
 	var input struct {
 		PhoneNumber string `json:"phone_number"`
-		CodeSource  string `json:"code_url"`
 	}
 	if !decodeJSONBody(w, r, &input) {
 		return
 	}
-	challenge, err := a.telegram.SendCode(r.Context(), input.PhoneNumber, input.CodeSource)
+	challenge, err := a.telegram.SendCode(r.Context(), input.PhoneNumber)
 	if err != nil {
 		a.writeTelegramError(w, err)
 		return
@@ -856,18 +853,6 @@ func (a *API) submitTelegramPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := a.telegram.SubmitPassword(r.Context(), r.PathValue("loginID"), input.Password)
-	if err != nil {
-		a.writeTelegramError(w, err)
-		return
-	}
-	a.writeTelegramResult(w, r, result)
-}
-
-func (a *API) fetchTelegramCode(w http.ResponseWriter, r *http.Request) {
-	if !a.prepareAuthRequest(w, r) {
-		return
-	}
-	result, err := a.telegram.FetchCode(r.Context(), r.PathValue("loginID"))
 	if err != nil {
 		a.writeTelegramError(w, err)
 		return
@@ -968,11 +953,6 @@ func (a *API) writeTelegramError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "login_not_found", "登录会话不存在或已过期")
 	case errors.Is(err, telegramauth.ErrLoginStage):
 		writeError(w, http.StatusConflict, "invalid_login_step", "当前登录步骤不允许此操作")
-	case errors.Is(err, telegramauth.ErrCodeSourceReject):
-		writeError(w, http.StatusUnprocessableEntity, "code_source_rejected",
-			"接码链接不在允许的主机列表中")
-	case errors.Is(err, telegramauth.ErrCodeNotReady):
-		writeError(w, http.StatusConflict, "code_not_ready", "验证码尚未到达")
 	case errors.Is(err, telegramauth.ErrTelegram):
 		a.logger.Warn("Telegram authentication failed", "error", err)
 		writeError(w, http.StatusBadGateway, "telegram_error", "Telegram 登录失败，请稍后重试")

@@ -116,7 +116,6 @@ type fakeTelegramAuthService struct {
 	result     telegramauth.Result
 	sendErr    error
 	submitErr  error
-	fetchErr   error
 }
 
 func (s *fakeTelegramAuthService) Configured() bool {
@@ -125,7 +124,6 @@ func (s *fakeTelegramAuthService) Configured() bool {
 
 func (s *fakeTelegramAuthService) SendCode(
 	_ context.Context,
-	_ string,
 	_ string,
 ) (telegramauth.Challenge, error) {
 	return s.challenge, s.sendErr
@@ -145,13 +143,6 @@ func (s *fakeTelegramAuthService) SubmitPassword(
 	_ string,
 ) (telegramauth.Result, error) {
 	return s.result, s.submitErr
-}
-
-func (s *fakeTelegramAuthService) FetchCode(
-	_ context.Context,
-	_ string,
-) (telegramauth.Result, error) {
-	return s.result, s.fetchErr
 }
 
 func (s *fakeTelegramAuthService) Cancel(_ string) error {

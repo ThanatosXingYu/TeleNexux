@@ -64,28 +64,18 @@ func run() error {
 		return fmt.Errorf("initialize system settings: %w", err)
 	}
 	settingsStore.UseDefaults(settings.Values{
-		AppEnvironment:        cfg.Environment,
-		LogLevel:              cfg.LogLevel,
-		HTTPAddr:              cfg.HTTPAddr,
-		TelegramAPIID:         cfg.TelegramAPIID,
-		TelegramAPIHash:       cfg.TelegramAPIHash,
-		TelegramCodeHosts:     cfg.TelegramCodeHosts,
-		TelegramCodeDNSServer: cfg.TelegramDNSServer,
+		AppEnvironment:  cfg.Environment,
+		LogLevel:        cfg.LogLevel,
+		HTTPAddr:        cfg.HTTPAddr,
+		TelegramAPIID:   cfg.TelegramAPIID,
+		TelegramAPIHash: cfg.TelegramAPIHash,
 	})
 
-	codeFetcher, err := telegramauth.NewHTTPCodeFetcher(
-		cfg.TelegramCodeHosts,
-		cfg.TelegramDNSServer,
-		10*time.Second,
-	)
-	if err != nil {
-		return fmt.Errorf("initialize Telegram code fetcher: %w", err)
-	}
 	var telegramDriver telegramauth.Driver
 	if cfg.TelegramAPIID > 0 {
 		telegramDriver = telegramauth.NewGotdDriver(cfg.TelegramAPIID, cfg.TelegramAPIHash)
 	}
-	telegramAuth, err := telegramauth.NewService(telegramDriver, codeFetcher, telegramauth.ServiceConfig{
+	telegramAuth, err := telegramauth.NewService(telegramDriver, telegramauth.ServiceConfig{
 		SessionDir:       cfg.TelegramSessionDir,
 		LoginTTL:         10 * time.Minute,
 		OperationTimeout: 45 * time.Second,

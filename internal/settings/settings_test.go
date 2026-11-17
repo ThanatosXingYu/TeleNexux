@@ -13,13 +13,11 @@ func TestStoreSavesPrivateSettings(t *testing.T) {
 		t.Fatalf("NewStore() error = %v", err)
 	}
 	want := Values{
-		AppEnvironment:        "production",
-		LogLevel:              "INFO",
-		HTTPAddr:              "127.0.0.1:9487",
-		TelegramAPIID:         12345,
-		TelegramAPIHash:       "test-hash",
-		TelegramCodeHosts:     []string{"API.didiapi.uk", "api.didiapi.uk"},
-		TelegramCodeDNSServer: "1.1.1.1:53",
+		AppEnvironment:  "production",
+		LogLevel:        "INFO",
+		HTTPAddr:        "127.0.0.1:9487",
+		TelegramAPIID:   12345,
+		TelegramAPIHash: "test-hash",
 	}
 	if err := store.Save(want); err != nil {
 		t.Fatalf("Save() error = %v", err)
@@ -35,8 +33,24 @@ func TestStoreSavesPrivateSettings(t *testing.T) {
 	if got.AppEnvironment != "production" || got.LogLevel != "info" {
 		t.Fatalf("runtime settings = %q/%q, want normalized production/info", got.AppEnvironment, got.LogLevel)
 	}
-	if len(got.TelegramCodeHosts) != 1 || got.TelegramCodeHosts[0] != "api.didiapi.uk" {
-		t.Fatalf("hosts = %#v, want normalized unique host", got.TelegramCodeHosts)
+}
+
+func TestLoadIgnoresRemovedCodeFetchSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte(`{
+		"telegram_api_id": 12345,
+		"telegram_api_hash": "test-hash",
+		"telegram_code_fetch_hosts": ["legacy.example"],
+		"telegram_code_dns_server": "1.1.1.1:53"
+	}`), 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	values, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if values.TelegramAPIID != 12345 || values.TelegramAPIHash != "test-hash" {
+		t.Fatalf("Load() = %+v, want retained Telegram credentials", values)
 	}
 }
 

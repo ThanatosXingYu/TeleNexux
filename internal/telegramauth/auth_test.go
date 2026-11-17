@@ -47,35 +47,23 @@ func (d *fakeDriver) Password(_ context.Context, _ string, password string) (*Pr
 	return &d.profile, nil
 }
 
-type fakeFetcher struct {
-	code string
-}
-
-func (f fakeFetcher) Validate(string) error {
-	return nil
-}
-
-func (f fakeFetcher) Fetch(context.Context, string, int) (string, error) {
-	return f.code, nil
-}
-
 func TestServiceCompletesCodeLoginAndPersistsSession(t *testing.T) {
 	sessionDir := t.TempDir()
 	driver := &fakeDriver{profile: Profile{
 		ID:          42,
 		DisplayName: "Test Account",
 	}}
-	service, err := NewService(driver, nil, ServiceConfig{SessionDir: sessionDir})
+	service, err := NewService(driver, ServiceConfig{SessionDir: sessionDir})
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
 	}
 
-	challenge, err := service.SendCode(context.Background(), "+15550001001", "")
+	challenge, err := service.SendCode(context.Background(), "+15550001001")
 	if err != nil {
 		t.Fatalf("SendCode() error = %v", err)
 	}
-	if challenge.CodeLength != 5 || challenge.CanFetchCode {
-		t.Fatalf("SendCode() challenge = %+v, want code length 5 without auto fetch", challenge)
+	if challenge.CodeLength != 5 {
+		t.Fatalf("SendCode() challenge = %+v, want code length 5", challenge)
 	}
 
 	result, err := service.SubmitCode(context.Background(), challenge.LoginID, "12345")
@@ -107,11 +95,11 @@ func TestServiceSupportsTwoStepPassword(t *testing.T) {
 			DisplayName: "Protected Account",
 		},
 	}
-	service, err := NewService(driver, nil, ServiceConfig{SessionDir: t.TempDir()})
+	service, err := NewService(driver, ServiceConfig{SessionDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
 	}
-	challenge, err := service.SendCode(context.Background(), "+15550001002", "")
+	challenge, err := service.SendCode(context.Background(), "+15550001002")
 	if err != nil {
 		t.Fatalf("SendCode() error = %v", err)
 	}
@@ -134,40 +122,12 @@ func TestServiceSupportsTwoStepPassword(t *testing.T) {
 	}
 }
 
-func TestServiceFetchesCodeSource(t *testing.T) {
-	driver := &fakeDriver{profile: Profile{ID: 44, PhoneNumber: "+15550001003"}}
-	service, err := NewService(driver, fakeFetcher{code: "12345"}, ServiceConfig{
-		SessionDir: t.TempDir(),
-	})
-	if err != nil {
-		t.Fatalf("NewService() error = %v", err)
-	}
-	challenge, err := service.SendCode(
-		context.Background(),
-		"+15550001003",
-		"https://api.didiapi.uk/getcode?id=test",
-	)
-	if err != nil {
-		t.Fatalf("SendCode() error = %v", err)
-	}
-	if !challenge.CanFetchCode {
-		t.Fatal("SendCode() should mark code fetching available")
-	}
-	result, err := service.FetchCode(context.Background(), challenge.LoginID)
-	if err != nil {
-		t.Fatalf("FetchCode() error = %v", err)
-	}
-	if result.NextStep != StepComplete {
-		t.Fatalf("FetchCode() next step = %q, want complete", result.NextStep)
-	}
-}
-
 func TestServiceRejectsInvalidPhone(t *testing.T) {
-	service, err := NewService(&fakeDriver{}, nil, ServiceConfig{SessionDir: t.TempDir()})
+	service, err := NewService(&fakeDriver{}, ServiceConfig{SessionDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
 	}
-	_, err = service.SendCode(context.Background(), "not-a-phone", "")
+	_, err = service.SendCode(context.Background(), "not-a-phone")
 	if !errors.Is(err, ErrInvalidPhone) {
 		t.Fatalf("SendCode() error = %v, want ErrInvalidPhone", err)
 	}
@@ -184,7 +144,7 @@ func TestNewServiceCleansStalePendingSessions(t *testing.T) {
 		t.Fatalf("write stale session: %v", err)
 	}
 
-	if _, err := NewService(&fakeDriver{}, nil, ServiceConfig{SessionDir: sessionDir}); err != nil {
+	if _, err := NewService(&fakeDriver{}, ServiceConfig{SessionDir: sessionDir}); err != nil {
 		t.Fatalf("NewService() error = %v", err)
 	}
 	if _, err := os.Stat(stalePath); !errors.Is(err, os.ErrNotExist) {
