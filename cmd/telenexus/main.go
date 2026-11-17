@@ -58,7 +58,11 @@ func run() error {
 		return fmt.Errorf("initialize web interface: %w", err)
 	}
 
-	codeFetcher, err := telegramauth.NewHTTPCodeFetcher(cfg.TelegramCodeHosts, 10*time.Second)
+	codeFetcher, err := telegramauth.NewHTTPCodeFetcher(
+		cfg.TelegramCodeHosts,
+		cfg.TelegramDNSServer,
+		10*time.Second,
+	)
 	if err != nil {
 		return fmt.Errorf("initialize Telegram code fetcher: %w", err)
 	}

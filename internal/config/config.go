@@ -21,6 +21,7 @@ type Config struct {
 	TelegramAPIHash    string
 	TelegramSessionDir string
 	TelegramCodeHosts  []string
+	TelegramDNSServer  string
 }
 
 func Load() (Config, error) {
@@ -45,6 +46,7 @@ func Load() (Config, error) {
 		TelegramAPIHash:    strings.TrimSpace(lookup("TELEGRAM_API_HASH")),
 		TelegramSessionDir: valueOrDefault(lookup("TELEGRAM_SESSION_DIR"), "./data/telegram-sessions"),
 		TelegramCodeHosts:  splitList(lookup("TELEGRAM_CODE_FETCH_HOSTS")),
+		TelegramDNSServer:  valueOrDefault(lookup("TELEGRAM_CODE_DNS_SERVER"), "1.1.1.1:53"),
 	}
 
 	if raw := strings.TrimSpace(lookup("TELEGRAM_API_ID")); raw != "" {
@@ -89,6 +91,9 @@ func (c Config) validate() error {
 	}
 	if c.TelegramSessionDir == "" {
 		return errors.New("TELEGRAM_SESSION_DIR must not be empty")
+	}
+	if c.TelegramDNSServer == "" {
+		return errors.New("TELEGRAM_CODE_DNS_SERVER must not be empty")
 	}
 	return nil
 }

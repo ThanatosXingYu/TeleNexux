@@ -18,6 +18,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("TELEGRAM_API_HASH", "")
 	t.Setenv("TELEGRAM_SESSION_DIR", "")
 	t.Setenv("TELEGRAM_CODE_FETCH_HOSTS", "")
+	t.Setenv("TELEGRAM_CODE_DNS_SERVER", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -31,6 +32,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.TelegramSessionDir != "./data/telegram-sessions" {
 		t.Errorf("TelegramSessionDir = %q, want default session directory", cfg.TelegramSessionDir)
+	}
+	if cfg.TelegramDNSServer != "1.1.1.1:53" {
+		t.Errorf("TelegramDNSServer = %q, want default DNS server", cfg.TelegramDNSServer)
 	}
 }
 
@@ -63,6 +67,7 @@ func TestLoadTelegramConfiguration(t *testing.T) {
 	t.Setenv("TELEGRAM_API_ID", "12345")
 	t.Setenv("TELEGRAM_API_HASH", "test-hash")
 	t.Setenv("TELEGRAM_CODE_FETCH_HOSTS", "tgok.cc, API.didiapi.uk")
+	t.Setenv("TELEGRAM_CODE_DNS_SERVER", "8.8.8.8:53")
 
 	cfg, err := Load()
 	if err != nil {
@@ -73,6 +78,9 @@ func TestLoadTelegramConfiguration(t *testing.T) {
 	}
 	if len(cfg.TelegramCodeHosts) != 2 || cfg.TelegramCodeHosts[1] != "api.didiapi.uk" {
 		t.Fatalf("TelegramCodeHosts = %#v, want normalized hosts", cfg.TelegramCodeHosts)
+	}
+	if cfg.TelegramDNSServer != "8.8.8.8:53" {
+		t.Fatalf("TelegramDNSServer = %q, want configured DNS server", cfg.TelegramDNSServer)
 	}
 }
 

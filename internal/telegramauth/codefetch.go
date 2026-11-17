@@ -19,12 +19,19 @@ import (
 const maxCodeResponse = 128 << 10
 
 var (
-	codeContextPattern = regexp.MustCompile(`(?is)(?:code|verification|sms|验证码|驗證碼)[^0-9]{0,80}([0-9]{4,8})`)
-	codeJSONPattern    = regexp.MustCompile(`(?is)"(?:code|sms_code|verification_code)"\s*:\s*"?([0-9]{4,8})"?`)
-	codeOnlyPattern    = regexp.MustCompile(`(?s)^\s*([0-9]{4,8})\s*$`)
-	codeAnyPattern     = regexp.MustCompile(`\b([0-9]{4,8})\b`)
-	htmlTagPattern     = regexp.MustCompile(`(?s)<[^>]+>`)
-	blockedIPRanges    = []netip.Prefix{
+	codeJSONPattern  = regexp.MustCompile(`(?is)"(?:code|sms_code|verification_code)"\s*:\s*"?([0-9]{4,8})"?`)
+	codeInputIDFirst = regexp.MustCompile(
+		`(?is)<input\b[^>]*\bid\s*=\s*["']code["'][^>]*\bvalue\s*=\s*["']([0-9]{4,8})["'][^>]*>`,
+	)
+	codeInputValueFirst = regexp.MustCompile(
+		`(?is)<input\b[^>]*\bvalue\s*=\s*["']([0-9]{4,8})["'][^>]*\bid\s*=\s*["']code["'][^>]*>`,
+	)
+	codeLabelPattern = regexp.MustCompile(
+		`(?is)(?:登录验证码|设备验证码|验证码|驗證碼|verification\s+code|login\s+code)\s*[:：]?(?:\s|<[^>]*>){0,12}([0-9]{4,8})`,
+	)
+	codeOnlyPattern = regexp.MustCompile(`(?s)^\s*([0-9]{4,8})\s*$`)
+	htmlTagPattern  = regexp.MustCompile(`(?s)<[^>]+>`)
+	blockedIPRanges = []netip.Prefix{
 		netip.MustParsePrefix("0.0.0.0/8"),
 		netip.MustParsePrefix("100.64.0.0/10"),
 		netip.MustParsePrefix("192.0.0.0/24"),
@@ -39,10 +46,16 @@ var (
 
 type HTTPCodeFetcher struct {
 	allowedHosts map[string]struct{}
+	resolver     *net.Resolver
+	dialer       *net.Dialer
 	client       *http.Client
 }
 
-func NewHTTPCodeFetcher(hosts []string, timeout time.Duration) (*HTTPCodeFetcher, error) {
+func NewHTTPCodeFetcher(
+	hosts []string,
+	dnsServer string,
+	timeout time.Duration,
+) (*HTTPCodeFetcher, error) {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
@@ -57,6 +70,22 @@ func NewHTTPCodeFetcher(hosts []string, timeout time.Duration) (*HTTPCodeFetcher
 		}
 		allowed[host] = struct{}{}
 	}
+
+	dnsServer = strings.TrimSpace(dnsServer)
+	if dnsServer == "" {
+		return nil, errors.New("code fetch DNS server must not be empty")
+	}
+	if err := validateDNSServer(dnsServer); err != nil {
+		return nil, err
+	}
+
+	resolverDialer := &net.Dialer{Timeout: timeout}
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return resolverDialer.DialContext(ctx, network, dnsServer)
+		},
+	}
 	dialer := &net.Dialer{
 		Timeout:   timeout,
 		KeepAlive: 30 * time.Second,
@@ -68,11 +97,15 @@ func NewHTTPCodeFetcher(hosts []string, timeout time.Duration) (*HTTPCodeFetcher
 		return validateDialAddress(address)
 	}
 
-	fetcher := &HTTPCodeFetcher{allowedHosts: allowed}
+	fetcher := &HTTPCodeFetcher{
+		allowedHosts: allowed,
+		resolver:     resolver,
+		dialer:       dialer,
+	}
 	fetcher.client = &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
-			DialContext:           dialer.DialContext,
+			DialContext:           fetcher.dialContext,
 			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          4,
 			IdleConnTimeout:       30 * time.Second,
@@ -88,6 +121,42 @@ func NewHTTPCodeFetcher(hosts []string, timeout time.Duration) (*HTTPCodeFetcher
 		},
 	}
 	return fetcher, nil
+}
+
+func (f *HTTPCodeFetcher) dialContext(
+	ctx context.Context,
+	network string,
+	address string,
+) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("parse code fetch address: %w", err)
+	}
+	if port != "443" {
+		return nil, fmt.Errorf("code fetch must use HTTPS port 443, got %q", port)
+	}
+
+	addresses, err := f.resolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return nil, fmt.Errorf("resolve code fetch host %q: %w", host, err)
+	}
+	var lastErr error
+	for _, ip := range addresses {
+		ip = ip.Unmap()
+		if !isPublicIP(ip) {
+			continue
+		}
+		target := net.JoinHostPort(ip.String(), port)
+		connection, err := f.dialer.DialContext(ctx, network, target)
+		if err == nil {
+			return connection, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("connect to code fetch host %q: %w", host, lastErr)
+	}
+	return nil, fmt.Errorf("code fetch host %q resolved only to non-public addresses", host)
 }
 
 func (f *HTTPCodeFetcher) Validate(source string) error {
@@ -163,7 +232,7 @@ func (f *HTTPCodeFetcher) Fetch(
 
 	response, err := f.client.Do(request)
 	if err != nil {
-		return "", fmt.Errorf("fetch verification code: %w", err)
+		return "", sanitizeRequestError(err)
 	}
 	defer func() {
 		if closeErr := response.Body.Close(); closeErr != nil && err == nil {
@@ -188,11 +257,36 @@ func (f *HTTPCodeFetcher) Fetch(
 	return code, nil
 }
 
+func sanitizeRequestError(err error) error {
+	var requestErr *url.Error
+	if errors.As(err, &requestErr) && requestErr.Err != nil {
+		return fmt.Errorf("fetch verification code request: %w", requestErr.Err)
+	}
+	return errors.New("fetch verification code request failed")
+}
+
+func validateDNSServer(server string) error {
+	host, port, err := net.SplitHostPort(server)
+	if err != nil {
+		return fmt.Errorf("parse code fetch DNS server: %w", err)
+	}
+	if _, err := netip.ParseAddr(host); err != nil {
+		return fmt.Errorf("code fetch DNS server must be an IP address: %w", err)
+	}
+	if port != "53" {
+		return fmt.Errorf("code fetch DNS server must use port 53, got %q", port)
+	}
+	return nil
+}
+
 func extractCode(raw string, expectedLength int) (string, error) {
-	text := html.UnescapeString(htmlTagPattern.ReplaceAllString(raw, " "))
-	patterns := []*regexp.Regexp{codeJSONPattern, codeContextPattern, codeOnlyPattern}
-	for _, pattern := range patterns {
-		for _, match := range pattern.FindAllStringSubmatch(text, -1) {
+	structuredPatterns := []*regexp.Regexp{
+		codeJSONPattern,
+		codeInputIDFirst,
+		codeInputValueFirst,
+	}
+	for _, pattern := range structuredPatterns {
+		for _, match := range pattern.FindAllStringSubmatch(raw, -1) {
 			code := match[1]
 			if codeMatchesLength(code, expectedLength) {
 				return code, nil
@@ -200,22 +294,20 @@ func extractCode(raw string, expectedLength int) (string, error) {
 		}
 	}
 
-	matches := codeAnyPattern.FindAllStringSubmatch(text, -1)
-	var unique string
-	for _, match := range matches {
-		code := match[1]
-		if !codeMatchesLength(code, expectedLength) {
-			continue
-		}
-		if unique != "" && unique != code {
-			return "", ErrCodeNotReady
-		}
-		unique = code
+	text := html.UnescapeString(htmlTagPattern.ReplaceAllString(raw, " "))
+	textPatterns := []*regexp.Regexp{
+		codeLabelPattern,
+		codeOnlyPattern,
 	}
-	if unique == "" {
-		return "", ErrCodeNotReady
+	for _, pattern := range textPatterns {
+		for _, match := range pattern.FindAllStringSubmatch(text, -1) {
+			code := match[1]
+			if codeMatchesLength(code, expectedLength) {
+				return code, nil
+			}
+		}
 	}
-	return unique, nil
+	return "", ErrCodeNotReady
 }
 
 func codeMatchesLength(code string, expected int) bool {

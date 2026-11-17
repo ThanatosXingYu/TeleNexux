@@ -52,7 +52,9 @@ curl http://localhost:9487/healthz
 接码地址必须使用 HTTPS 默认端口，且主机必须出现在
 `TELEGRAM_CODE_FETCH_HOSTS` 中。服务会在请求和重定向时校验 URL，并在
 TCP 连接阶段拒绝环回、私网、链路本地、保留地址及非 443 端口，以降低
-SSRF 和 DNS 重绑定风险。
+SSRF 和 DNS 重绑定风险。接码域名通过 `TELEGRAM_CODE_DNS_SERVER` 指定的
+公共 DNS 解析，避免本地透明代理返回保留地址；网络错误日志不会记录完整
+接码链接。
 
 ## 配置
 
@@ -69,6 +71,7 @@ SSRF 和 DNS 重绑定风险。
 | `TELEGRAM_API_HASH` | 空 | Telegram 应用 Hash |
 | `TELEGRAM_SESSION_DIR` | `./data/telegram-sessions` | 授权会话目录 |
 | `TELEGRAM_CODE_FETCH_HOSTS` | 空 | 允许的接码主机，逗号分隔 |
+| `TELEGRAM_CODE_DNS_SERVER` | `1.1.1.1:53` | 接码域名使用的 DNS 服务器 |
 
 `.env`、API 凭据、手机号、验证码、云密码、接码链接、授权会话、数据库和
 `temp/` 均不得提交到 Git。`.env.example` 仅包含空模板。
