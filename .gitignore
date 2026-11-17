@@ -1,0 +1,13 @@
+# Local development material and secrets
+temp/
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# Runtime output
+bin/
+data/
+*.log
+*.out
+coverage.*
