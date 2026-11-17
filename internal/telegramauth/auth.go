@@ -142,6 +142,13 @@ func NewService(driver Driver, fetcher CodeFetcher, config ServiceConfig) (*Serv
 	if err := os.Chmod(config.SessionDir, 0o700); err != nil {
 		return nil, fmt.Errorf("secure Telegram session directory: %w", err)
 	}
+	pendingDir := filepath.Join(config.SessionDir, "pending")
+	if err := os.MkdirAll(pendingDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create pending session directory: %w", err)
+	}
+	if err := cleanupPendingSessions(pendingDir); err != nil {
+		return nil, err
+	}
 	return &Service{
 		driver:           driver,
 		fetcher:          fetcher,
@@ -151,6 +158,23 @@ func NewService(driver Driver, fetcher CodeFetcher, config ServiceConfig) (*Serv
 		now:              config.Now,
 		logins:           make(map[string]*loginState),
 	}, nil
+}
+
+func cleanupPendingSessions(directory string) error {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return fmt.Errorf("list pending Telegram sessions: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".session") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(directory, entry.Name())); err != nil &&
+			!errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove stale Telegram session %q: %w", entry.Name(), err)
+		}
+	}
+	return nil
 }
 
 func (s *Service) Configured() bool {

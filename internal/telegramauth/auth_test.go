@@ -172,3 +172,22 @@ func TestServiceRejectsInvalidPhone(t *testing.T) {
 		t.Fatalf("SendCode() error = %v, want ErrInvalidPhone", err)
 	}
 }
+
+func TestNewServiceCleansStalePendingSessions(t *testing.T) {
+	sessionDir := t.TempDir()
+	pendingDir := filepath.Join(sessionDir, "pending")
+	if err := os.MkdirAll(pendingDir, 0o700); err != nil {
+		t.Fatalf("create pending directory: %v", err)
+	}
+	stalePath := filepath.Join(pendingDir, "stale.session")
+	if err := os.WriteFile(stalePath, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("write stale session: %v", err)
+	}
+
+	if _, err := NewService(&fakeDriver{}, nil, ServiceConfig{SessionDir: sessionDir}); err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	if _, err := os.Stat(stalePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale session still exists: %v", err)
+	}
+}
