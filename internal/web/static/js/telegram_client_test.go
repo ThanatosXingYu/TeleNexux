@@ -24,6 +24,15 @@ func TestTelegramClientScriptBehaviors(t *testing.T) {
 		`element.hidden = count === 0`,
 		`classList.toggle("tg-rail-folder-active", active)`,
 		`showToast("当前是只读视图，消息发送功能尚未启用")`,
+		`/search?`,
+		`chatAvatarURL`,
+		`contextmenu`,
+		`/messages/forward`,
+		`/messages/delete`,
+		`openProfileEditor`,
+		`/profile`,
+		`formatPhone`,
+		`error: "已掉线"`,
 		`textContent`,
 	} {
 		if !strings.Contains(script, behavior) {

@@ -1,11 +1,11 @@
 {{define "account_detail.html"}}
-<section class="page-heading account-detail-heading" data-account-detail data-account-id="{{.AccountID}}" data-account-workspace="{{if eq .Page "account-web"}}true{{else}}false{{end}}">
-  <div>
-    <p class="eyebrow">{{if eq .Page "account-web"}}Telegram Account Workspace{{else}}Telegram Conversation Viewer{{end}}</p>
-    <h1 data-detail-name>{{if eq .Page "account-web"}}账号 Web{{else}}账号聊天{{end}}</h1>
-    <p class="page-subtitle">
-      <span data-detail-meta>正在加载账号信息...</span>
-    </p>
+<section class="account-detail-toolbar" data-account-detail data-account-id="{{.AccountID}}" data-account-workspace="{{if eq .Page "account-web"}}true{{else}}false{{end}}">
+  <div class="account-detail-identity">
+    <span class="account-avatar-fallback" data-detail-avatar aria-hidden="true">TG</span>
+    <span>
+      <strong data-detail-name>正在加载账号...</strong>
+      <small data-detail-meta>正在加载账号信息...</small>
+    </span>
   </div>
   <div class="heading-actions">
     <a class="button button-secondary" href="/accounts">

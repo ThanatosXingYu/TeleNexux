@@ -125,6 +125,9 @@
               <button class="tg-icon-button" type="button" data-toggle-profile aria-label="聊天信息" title="聊天信息">
                 <span class="icon icon-info" aria-hidden="true"></span>
               </button>
+              <button class="tg-icon-button" type="button" data-toggle-selection aria-label="多选消息" title="多选消息">
+                <span class="icon icon-check-check" aria-hidden="true"></span>
+              </button>
             </div>
           </header>
 
@@ -165,19 +168,27 @@
 
       <aside class="tg-profile-panel" data-profile-panel aria-label="聊天信息" hidden>
         <header class="tg-profile-header">
-          <strong>聊天信息</strong>
-          <button class="tg-icon-button" type="button" data-close-profile aria-label="关闭聊天信息">
-            <span class="icon icon-x" aria-hidden="true"></span>
-          </button>
+          <strong data-profile-heading>聊天信息</strong>
+          <span class="tg-profile-header-actions">
+            <button class="tg-profile-edit" type="button" data-profile-edit hidden>编辑资料</button>
+            <button class="tg-icon-button" type="button" data-close-profile aria-label="关闭聊天信息">
+              <span class="icon icon-x" aria-hidden="true"></span>
+            </button>
+          </span>
         </header>
         <div class="tg-profile-body">
           <span class="tg-avatar tg-avatar-profile" data-profile-avatar aria-hidden="true">TG</span>
           <h2 data-profile-title>聊天</h2>
           <p data-profile-username>Telegram</p>
+          <p class="tg-profile-bio" data-profile-bio hidden></p>
           <dl class="tg-profile-list">
             <div>
               <dt>类型</dt>
               <dd data-profile-type>会话</dd>
+            </div>
+            <div data-profile-phone-row hidden>
+              <dt>手机号</dt>
+              <dd data-profile-phone>—</dd>
             </div>
             <div>
               <dt>未读消息</dt>
@@ -188,11 +199,104 @@
               <dd data-profile-account>Telegram</dd>
             </div>
           </dl>
-          <p class="tg-profile-note">
-            当前页面直接读取已授权的 Telegram 会话，仅用于浏览。
+          <form class="tg-profile-form" data-profile-form hidden>
+            <label>
+              <span>显示名称</span>
+              <input name="display_name" type="text" maxlength="64" required>
+            </label>
+            <label>
+              <span>用户名</span>
+              <input name="username" type="text" maxlength="33" placeholder="@username">
+            </label>
+            <label>
+              <span>个人简介</span>
+              <textarea name="bio" rows="3" maxlength="70"></textarea>
+            </label>
+            <p class="tg-notice tg-notice-error" data-profile-error hidden></p>
+            <div class="tg-profile-form-actions">
+              <button class="tg-text-button" type="button" data-profile-cancel>取消</button>
+              <button class="tg-primary-button" type="submit">保存资料</button>
+            </div>
+          </form>
+          <p class="tg-profile-note" data-profile-note>
+            当前资料来自已授权的 Telegram 会话。
           </p>
         </div>
       </aside>
+
+      <div class="tg-selection-bar" data-selection-bar hidden>
+        <button class="tg-icon-button" type="button" data-exit-selection aria-label="退出多选">
+          <span class="icon icon-x" aria-hidden="true"></span>
+        </button>
+        <strong><span data-selection-count>0</span> 条已选择</strong>
+        <button class="tg-icon-button" type="button" data-selection-forward aria-label="转发所选消息" title="转发">
+          <span class="icon icon-forward" aria-hidden="true"></span>
+        </button>
+        <button class="tg-icon-button" type="button" data-selection-delete aria-label="删除所选消息" title="删除">
+          <span class="icon icon-trash" aria-hidden="true"></span>
+        </button>
+      </div>
+
+      <div class="tg-context-menu" data-context-menu role="menu" aria-label="消息操作" hidden>
+        <button type="button" role="menuitem" data-context-action="copy">
+          <span class="icon icon-copy" aria-hidden="true"></span>
+          <span>复制文本</span>
+        </button>
+        <button type="button" role="menuitem" data-context-action="profile">
+          <span class="icon icon-info" aria-hidden="true"></span>
+          <span>查看资料</span>
+        </button>
+        <button type="button" role="menuitem" data-context-action="forward">
+          <span class="icon icon-forward" aria-hidden="true"></span>
+          <span>转发消息</span>
+        </button>
+        <button type="button" role="menuitem" data-context-action="select">
+          <span class="icon icon-check-check" aria-hidden="true"></span>
+          <span>多选消息</span>
+        </button>
+        <button class="is-danger" type="button" role="menuitem" data-context-action="delete">
+          <span class="icon icon-trash" aria-hidden="true"></span>
+          <span>删除消息</span>
+        </button>
+      </div>
+
+      <dialog class="tg-dialog" data-forward-dialog aria-labelledby="forward-title">
+        <form class="tg-dialog-card" data-forward-form>
+          <header>
+            <h2 id="forward-title">转发消息</h2>
+            <button class="tg-icon-button" type="button" data-close-dialog aria-label="关闭转发窗口">
+              <span class="icon icon-x" aria-hidden="true"></span>
+            </button>
+          </header>
+          <p>将 <strong data-forward-count>0</strong> 条消息转发到：</p>
+          <label class="tg-dialog-field">
+            <span>目标会话</span>
+            <select name="target" data-forward-target required></select>
+          </label>
+          <p class="tg-notice tg-notice-error" data-forward-error hidden></p>
+          <footer>
+            <button class="tg-text-button" type="button" data-close-dialog>取消</button>
+            <button class="tg-primary-button" type="submit">转发</button>
+          </footer>
+        </form>
+      </dialog>
+
+      <dialog class="tg-dialog" data-delete-dialog aria-labelledby="delete-title">
+        <form class="tg-dialog-card" data-delete-form>
+          <header>
+            <h2 id="delete-title">删除消息</h2>
+            <button class="tg-icon-button" type="button" data-close-dialog aria-label="关闭删除窗口">
+              <span class="icon icon-x" aria-hidden="true"></span>
+            </button>
+          </header>
+          <p>确定删除选中的 <strong data-delete-count>0</strong> 条消息吗？此操作会同步到 Telegram。</p>
+          <p class="tg-notice tg-notice-error" data-delete-error hidden></p>
+          <footer>
+            <button class="tg-text-button" type="button" data-close-dialog>取消</button>
+            <button class="tg-danger-button" type="submit">删除</button>
+          </footer>
+        </form>
+      </dialog>
 
       <div class="tg-toast" data-toast role="status" aria-live="polite" hidden></div>
     </div>

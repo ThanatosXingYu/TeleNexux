@@ -12,6 +12,64 @@
     return;
   }
 
+  const pageSettingsKey = "telenexus.page-settings";
+  const defaultPageSettings = {
+    breadcrumbs: true,
+    tabs: true,
+    sidebar: true,
+    compact: true,
+  };
+
+  const readPageSettings = () => {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(pageSettingsKey) || "{}");
+      return {
+        breadcrumbs: stored?.breadcrumbs !== false,
+        tabs: stored?.tabs !== false,
+        sidebar: stored?.sidebar !== false,
+        compact: stored?.compact !== false,
+      };
+    } catch {
+      return {...defaultPageSettings};
+    }
+  };
+
+  let pageSettings = readPageSettings();
+
+  const syncPageSettingControls = () => {
+    document.querySelectorAll("[data-page-setting]").forEach((input) => {
+      const key = input.dataset.pageSetting;
+      if (Object.hasOwn(pageSettings, key)) {
+        input.checked = pageSettings[key];
+      }
+    });
+    document.querySelectorAll("[data-toggle-breadcrumb]").forEach((input) => {
+      input.checked = pageSettings.breadcrumbs;
+    });
+    document.querySelectorAll("[data-toggle-tabs]").forEach((input) => {
+      input.checked = pageSettings.tabs;
+    });
+  };
+
+  const applyPageSettings = () => {
+    shell.dataset.breadcrumbs = pageSettings.breadcrumbs ? "visible" : "hidden";
+    shell.dataset.tabs = pageSettings.tabs ? "visible" : "hidden";
+    shell.dataset.pageSidebar = pageSettings.sidebar ? "visible" : "hidden";
+    shell.dataset.compact = pageSettings.compact ? "true" : "false";
+    syncPageSettingControls();
+  };
+
+  const savePageSettings = () => {
+    try {
+      window.localStorage.setItem(pageSettingsKey, JSON.stringify(pageSettings));
+    } catch {
+      // Keep the current layout usable when browser storage is unavailable.
+    }
+    applyPageSettings();
+  };
+
+  applyPageSettings();
+
   const initPageTabs = () => {
     if (!pageTabs) {
       return;
@@ -314,12 +372,29 @@
     });
   });
 
-  document.querySelector("[data-toggle-breadcrumb]")?.addEventListener("change", (event) => {
-    shell.dataset.breadcrumbs = event.target.checked ? "visible" : "hidden";
+  document.querySelectorAll("[data-toggle-breadcrumb]").forEach((input) => {
+    input.addEventListener("change", () => {
+      pageSettings.breadcrumbs = input.checked;
+      savePageSettings();
+    });
   });
 
-  document.querySelector("[data-toggle-tabs]")?.addEventListener("change", (event) => {
-    shell.dataset.tabs = event.target.checked ? "visible" : "hidden";
+  document.querySelectorAll("[data-toggle-tabs]").forEach((input) => {
+    input.addEventListener("change", () => {
+      pageSettings.tabs = input.checked;
+      savePageSettings();
+    });
+  });
+
+  document.querySelectorAll("[data-page-setting]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const key = input.dataset.pageSetting;
+      if (!Object.hasOwn(pageSettings, key)) {
+        return;
+      }
+      pageSettings[key] = input.checked;
+      savePageSettings();
+    });
   });
 
   document.querySelector("[data-toggle-collapse]")?.addEventListener("change", (event) => {
@@ -360,8 +435,8 @@
   const accountsEmpty = document.querySelector("[data-accounts-empty]");
   const accountsLoading = document.querySelector("[data-accounts-loading]");
   const accountsError = document.querySelector("[data-accounts-error]");
-  const accountCount = document.querySelector("[data-account-count]");
-  const onlineCount = document.querySelector("[data-online-count]");
+  const accountCounts = [...document.querySelectorAll("[data-account-count]")];
+  const onlineCounts = [...document.querySelectorAll("[data-online-count]")];
 
   const showNotice = (element, message, isError = false) => {
     if (!element) {
@@ -397,12 +472,9 @@
     return payload;
   };
 
-  const maskPhone = (phone) => {
+  const formatPhone = (phone) => {
     const digits = String(phone || "").replace(/\D/g, "");
-    if (digits.length <= 4) {
-      return "••••";
-    }
-    return `••••••${digits.slice(-4)}`;
+    return digits ? `+${digits}` : "未设置";
   };
 
   const formatAccountDate = (value) => {
@@ -424,7 +496,7 @@
     online: "在线",
     pending: "待验证",
     paused: "已暂停",
-    error: "异常",
+    error: "已掉线",
   };
 
   const tableCell = (content) => {
@@ -443,12 +515,12 @@
     }
     accountBody.replaceChildren();
     const online = items.filter((item) => item.status === "online").length;
-    if (accountCount) {
-      accountCount.textContent = String(items.length);
-    }
-    if (onlineCount) {
-      onlineCount.textContent = String(online);
-    }
+    accountCounts.forEach((element) => {
+      element.textContent = String(items.length);
+    });
+    onlineCounts.forEach((element) => {
+      element.textContent = String(online);
+    });
 
     const hasItems = items.length > 0;
     accountsTable?.toggleAttribute("hidden", !hasItems);
@@ -487,7 +559,7 @@
 
       const phone = document.createElement("span");
       phone.className = "table-secondary";
-      phone.textContent = maskPhone(account.phone_number);
+      phone.textContent = formatPhone(account.phone_number);
 
       const username = document.createElement("span");
       username.className = "table-secondary";
@@ -511,7 +583,16 @@
 
       const actionGroup = document.createElement("div");
       actionGroup.className = "account-actions";
-      actionGroup.append(chatAction, webAction);
+      if (account.status === "error") {
+        const relogin = document.createElement("button");
+        relogin.className = "button button-primary button-compact";
+        relogin.type = "button";
+        relogin.textContent = "重新登录";
+        relogin.addEventListener("click", () => openLoginDialog());
+        actionGroup.append(relogin);
+      } else {
+        actionGroup.append(chatAction, webAction);
+      }
 
       row.append(
         tableCell(identityLink),
@@ -522,7 +603,7 @@
         tableCell(actionGroup),
       );
       row.addEventListener("click", (event) => {
-        if (!event.target.closest("a")) {
+        if (!event.target.closest("a, button, input, select, textarea")) {
           window.location.assign(row.dataset.href);
         }
       });
@@ -530,16 +611,20 @@
     });
   };
 
-  const loadAccounts = async () => {
+  const loadAccounts = async (verifySessions = false) => {
     if (!accountBody) {
       return;
     }
-    accountsLoading?.removeAttribute("hidden");
-    accountsTable?.setAttribute("hidden", "");
-    accountsEmpty?.setAttribute("hidden", "");
+    if (!verifySessions) {
+      accountsLoading?.removeAttribute("hidden");
+      accountsTable?.setAttribute("hidden", "");
+      accountsEmpty?.setAttribute("hidden", "");
+    }
     showNotice(accountsError, "");
     try {
-      const payload = await requestJSON("/api/v1/accounts?limit=100");
+      const payload = verifySessions
+        ? await requestJSON("/api/v1/accounts/refresh", {method: "POST", body: "{}"})
+        : await requestJSON("/api/v1/accounts?limit=100");
       renderAccounts(Array.isArray(payload?.items) ? payload.items : []);
     } catch (error) {
       accountsLoading?.setAttribute("hidden", "");
@@ -566,7 +651,17 @@
     }
   };
 
-  document.querySelector("[data-accounts-refresh]")?.addEventListener("click", loadAccounts);
+  document.querySelector("[data-accounts-refresh]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    showNotice(accountsError, "正在验证 Telegram 授权状态...");
+    try {
+      await loadAccounts(true);
+      showNotice(accountsError, "");
+    } finally {
+      button.disabled = false;
+    }
+  });
   if (accountBody) {
     loadAccounts();
     loadTelegramConfig();
@@ -576,11 +671,17 @@
   const authSteps = [...document.querySelectorAll("[data-auth-step]")];
   const progressSteps = [...document.querySelectorAll("[data-progress-step]")];
   const phoneForm = document.querySelector("[data-phone-form]");
+  const usernameForm = document.querySelector("[data-username-form]");
   const codeForm = document.querySelector("[data-code-form]");
   const passwordForm = document.querySelector("[data-password-form]");
   const phoneNotice = document.querySelector("[data-phone-notice]");
   const codeNotice = document.querySelector("[data-code-notice]");
   const passwordNotice = document.querySelector("[data-password-notice]");
+  const usernameNotice = document.querySelector("[data-username-notice]");
+  const qrNotice = document.querySelector("[data-qr-notice]");
+  const qrImage = document.querySelector("[data-qr-image]");
+  const qrLoading = document.querySelector("[data-qr-loading]");
+  const loginModeButtons = [...document.querySelectorAll("[data-login-mode]")];
   const phoneHint = document.querySelector("[data-auth-phone-hint]");
   const codeType = document.querySelector("[data-auth-code-type]");
   const codeInput = codeForm?.querySelector("input[name='code']");
@@ -588,9 +689,13 @@
   const completeName = document.querySelector("[data-complete-name]");
   const viewChatButton = document.querySelector("[data-login-view-chat]");
   const viewWebButton = document.querySelector("[data-login-view-web]");
+  const qrRestart = document.querySelector("[data-qr-restart]");
   let loginID = "";
   let pollTimer = 0;
   let pollAttempts = 0;
+  let qrLoginID = "";
+  let qrPollTimer = 0;
+  let qrPollAttempts = 0;
   let authCompleted = false;
 
   const stopCodePolling = () => {
@@ -600,8 +705,15 @@
     }
   };
 
+  const stopQRPolling = () => {
+    if (qrPollTimer) {
+      window.clearTimeout(qrPollTimer);
+      qrPollTimer = 0;
+    }
+  };
+
   const setAuthStep = (name) => {
-    const order = ["phone", "code", "password", "complete"];
+    const order = ["qr", "phone", "code", "password", "complete"];
     const index = order.indexOf(name);
     authSteps.forEach((step) => {
       step.hidden = step.dataset.authStep !== name;
@@ -612,37 +724,168 @@
     });
   };
 
-  const cancelLogin = () => {
-    stopCodePolling();
-    const current = loginID;
-    loginID = "";
-    if (!current || authCompleted) {
+  const setAuthMode = (mode, start = true) => {
+    if (!["qr", "phone", "username"].includes(mode)) {
       return;
     }
-    fetch(`/api/v1/telegram/auth/${encodeURIComponent(current)}`, {method: "DELETE"}).catch(() => {});
+    loginModeButtons.forEach((button) => {
+      const active = button.dataset.loginMode === mode;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", String(active));
+    });
+    if (start) {
+      cancelLogin();
+      showNotice(phoneNotice, "");
+      showNotice(usernameNotice, "");
+      showNotice(qrNotice, "");
+      showNotice(codeNotice, "");
+      showNotice(passwordNotice, "");
+    }
+    setAuthStep(mode);
+    if (!start) {
+      return;
+    }
+    if (mode === "qr") {
+      if (telegramConfigured) {
+        startQRAuth();
+      } else {
+        showNotice(qrNotice, "请先在系统设置中配置 Telegram API ID 和 API Hash。", true);
+      }
+    } else if (mode === "phone") {
+      phoneForm?.querySelector("input[name='phone_number']")?.focus();
+    } else {
+      usernameForm?.querySelector("input[name='username']")?.focus();
+    }
   };
+
+  const cancelLogin = () => {
+    stopCodePolling();
+    stopQRPolling();
+    const current = loginID;
+    const currentQR = qrLoginID;
+    loginID = "";
+    qrLoginID = "";
+    if (authCompleted) {
+      return;
+    }
+    if (current) {
+      fetch(`/api/v1/telegram/auth/${encodeURIComponent(current)}`, {method: "DELETE"}).catch(() => {});
+    }
+    if (currentQR) {
+      fetch(`/api/v1/telegram/auth/qr/${encodeURIComponent(currentQR)}`, {method: "DELETE"}).catch(() => {});
+    }
+  };
+
+  async function startQRAuth() {
+    if (!telegramConfigured || authCompleted) {
+      return;
+    }
+    stopQRPolling();
+    const previousLoginID = qrLoginID;
+    qrLoginID = "";
+    qrPollAttempts = 0;
+    showNotice(qrNotice, "");
+    qrImage?.setAttribute("hidden", "");
+    qrLoading?.removeAttribute("hidden");
+    if (qrRestart) {
+      qrRestart.disabled = true;
+    }
+    if (previousLoginID) {
+      fetch(`/api/v1/telegram/auth/qr/${encodeURIComponent(previousLoginID)}`, {
+        method: "DELETE",
+      }).catch(() => {});
+    }
+    try {
+      const challenge = await requestJSON("/api/v1/telegram/auth/qr", {method: "POST"});
+      qrLoginID = challenge.login_id;
+      if (qrImage && challenge.image) {
+        qrImage.src = challenge.image;
+        qrImage.removeAttribute("hidden");
+      }
+      qrLoading?.setAttribute("hidden", "");
+      pollQRAuth();
+    } catch (error) {
+      qrLoading?.setAttribute("hidden", "");
+      showNotice(qrNotice, error.message, true);
+    } finally {
+      if (qrRestart) {
+        qrRestart.disabled = false;
+      }
+    }
+  }
+
+  async function pollQRAuth() {
+    if (!qrLoginID || authCompleted) {
+      return;
+    }
+    const currentLoginID = qrLoginID;
+    try {
+      const result = await requestJSON(
+        `/api/v1/telegram/auth/qr/${encodeURIComponent(currentLoginID)}`,
+      );
+      if (qrLoginID !== currentLoginID || authCompleted) {
+        return;
+      }
+      qrPollAttempts = 0;
+      if (result.image && qrImage && result.image !== qrImage.src) {
+        qrImage.src = result.image;
+        qrImage.removeAttribute("hidden");
+        qrLoading?.setAttribute("hidden", "");
+      }
+      if (result.next_step === "complete") {
+        stopQRPolling();
+        qrLoginID = "";
+        finishAuth(result);
+        return;
+      }
+    } catch (error) {
+      if (error.code === "login_not_found") {
+        stopQRPolling();
+        qrLoginID = "";
+        showNotice(qrNotice, "二维码已过期，请点击“重新生成二维码”。", true);
+        return;
+      }
+      qrPollAttempts += 1;
+      if (qrPollAttempts >= 8) {
+        showNotice(qrNotice, error.message, true);
+      }
+    }
+    if (qrLoginID === currentLoginID && !authCompleted) {
+      qrPollTimer = window.setTimeout(pollQRAuth, qrPollAttempts >= 8 ? 5000 : 1800);
+    }
+  }
 
   const resetLoginDialog = () => {
     cancelLogin();
     authCompleted = false;
     pollAttempts = 0;
     phoneForm?.reset();
+    usernameForm?.reset();
     codeForm?.reset();
     passwordForm?.reset();
     showNotice(phoneNotice, "");
     showNotice(codeNotice, "");
     showNotice(passwordNotice, "");
+    showNotice(usernameNotice, "");
+    showNotice(qrNotice, "");
+    qrImage?.setAttribute("hidden", "");
+    if (qrImage) {
+      qrImage.removeAttribute("src");
+    }
+    setAuthMode("qr", false);
     viewChatButton?.setAttribute("hidden", "");
     viewChatButton?.removeAttribute("href");
     viewWebButton?.setAttribute("hidden", "");
     viewWebButton?.removeAttribute("href");
-    setAuthStep("phone");
+    setAuthStep("qr");
     const submit = phoneForm?.querySelector("button[type='submit']");
     if (submit) {
       submit.disabled = !telegramConfigured;
     }
     if (!telegramConfigured) {
-      showNotice(phoneNotice, "请先在 .env 中配置 TELEGRAM_API_ID 和 TELEGRAM_API_HASH，然后重启服务。", true);
+      const message = "请先在系统设置中配置 Telegram API ID 和 API Hash，然后重启服务。";
+      showNotice(qrNotice, message, true);
+      showNotice(phoneNotice, message, true);
     }
   };
 
@@ -656,10 +899,19 @@
     } else {
       authDialog.setAttribute("open", "");
     }
+    if (telegramConfigured) {
+      startQRAuth();
+    }
   };
 
   document.querySelectorAll("[data-open-login]").forEach((button) => {
     button.addEventListener("click", openLoginDialog);
+  });
+  loginModeButtons.forEach((button) => {
+    button.addEventListener("click", () => setAuthMode(button.dataset.loginMode));
+  });
+  qrRestart?.addEventListener("click", () => {
+    setAuthMode("qr");
   });
   document.querySelectorAll("[data-login-close]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -675,6 +927,21 @@
     cancelLogin();
     showNotice(codeNotice, "");
     setAuthStep("phone");
+  });
+
+  usernameForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const username = String(new FormData(usernameForm).get("username") || "")
+      .trim()
+      .replace(/^@/, "");
+    if (!/^[A-Za-z0-9_]{5,32}$/.test(username)) {
+      showNotice(usernameNotice, "请输入 5 到 32 位 Telegram 用户名。", true);
+      return;
+    }
+    const message = `请使用 @${username} 对应账号扫描二维码完成授权。`;
+    showNotice(usernameNotice, message);
+    setAuthMode("qr");
+    showNotice(qrNotice, message);
   });
 
   phoneForm?.addEventListener("submit", async (event) => {
@@ -729,14 +996,17 @@
   const finishAuth = (result) => {
     if (result.next_step === "password") {
       stopCodePolling();
+      stopQRPolling();
       setAuthStep("password");
       passwordForm?.querySelector("input[name='password']")?.focus();
       return;
     }
     if (result.next_step === "complete") {
       stopCodePolling();
+      stopQRPolling();
       authCompleted = true;
       loginID = "";
+      qrLoginID = "";
       if (completeName) {
         completeName.textContent = result.account?.display_name || result.account?.username || "Telegram 账号";
       }
@@ -1061,7 +1331,7 @@
           detailName.textContent = account.display_name || account.username || "Telegram 账号";
         }
         if (detailMeta) {
-          detailMeta.textContent = `${account.username ? `@${account.username} · ` : ""}${maskPhone(account.phone_number)} · ${statusLabels[account.status] || account.status}`;
+          detailMeta.textContent = `${account.username ? `@${account.username} · ` : ""}${formatPhone(account.phone_number)} · ${statusLabels[account.status] || account.status}`;
         }
       })
       .catch((error) => {
@@ -1078,9 +1348,31 @@
   if (settingsForm) {
     const settingsNotice = document.querySelector("[data-settings-notice]");
     const settingsState = document.querySelector("[data-settings-state]");
-    const apiHashState = document.querySelector("[data-api-hash-state]");
-    const restartNote = document.querySelector("[data-restart-note]");
+    const apiHashStates = [...document.querySelectorAll("[data-api-hash-state]")];
+    const restartNotes = [...document.querySelectorAll("[data-restart-note]")];
     const environmentOverrides = document.querySelector("[data-environment-overrides]");
+    const telegramLoginState = document.querySelector("[data-telegram-login-state]");
+    const settingsTabs = [...document.querySelectorAll("[data-settings-tab]")];
+    const settingsPanels = [...document.querySelectorAll("[data-settings-panel]")];
+
+    const activateSettingsTab = (name) => {
+      settingsTabs.forEach((button) => {
+        const active = button.dataset.settingsTab === name;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-selected", String(active));
+      });
+      settingsPanels.forEach((panel) => {
+        panel.hidden = panel.dataset.settingsPanel !== name;
+      });
+    };
+
+    settingsTabs.forEach((button) => {
+      button.addEventListener("click", () => {
+        activateSettingsTab(button.dataset.settingsTab || "basic");
+      });
+    });
+    activateSettingsTab(settingsTabs.find((button) => button.classList.contains("active"))
+      ?.dataset.settingsTab || "basic");
 
     const renderSettings = (settings) => {
       const setValue = (name, value) => {
@@ -1093,16 +1385,12 @@
       setValue("log_level", settings.log_level || "info");
       setValue("telegram_api_id", settings.telegram_api_id || "");
       setValue("telegram_api_hash", "");
-      setValue("telegram_code_fetch_hosts", Array.isArray(settings.telegram_code_fetch_hosts)
-        ? settings.telegram_code_fetch_hosts.join(", ")
-        : "");
-      setValue("telegram_code_dns_server", settings.telegram_code_dns_server || "");
       setValue("http_addr", settings.http_addr || "");
-      if (apiHashState) {
+      apiHashStates.forEach((apiHashState) => {
         apiHashState.textContent = settings.telegram_api_hash_configured
           ? (settings.telegram_api_hash_hint || "已配置")
           : "尚未配置";
-      }
+      });
       const overrides = Array.isArray(settings.environment_overrides) ? settings.environment_overrides : [];
       if (environmentOverrides) {
         environmentOverrides.textContent = overrides.length
@@ -1113,9 +1401,16 @@
         settingsState.textContent = settings.telegram_api_hash_configured ? "已配置" : "待配置";
         settingsState.className = `badge ${settings.telegram_api_hash_configured ? "badge-blue" : "badge-neutral"}`;
       }
-      if (restartNote) {
-        restartNote.textContent = settings.restart_required ? "设置已保存，重启服务后生效。" : "";
+      if (telegramLoginState) {
+        telegramLoginState.textContent = settings.telegram_api_hash_configured
+          ? "登录凭据已配置"
+          : "待配置";
       }
+      restartNotes.forEach((restartNote) => {
+        restartNote.textContent = settings.restart_required
+          ? "设置已保存，重启服务后生效。"
+          : "当前配置已生效。";
+      });
     };
 
     const loadSettings = async () => {
@@ -1138,11 +1433,6 @@
         log_level: String(data.get("log_level") || "").trim(),
         http_addr: String(data.get("http_addr") || "").trim(),
         telegram_api_id: Number(data.get("telegram_api_id") || 0),
-        telegram_code_fetch_hosts: String(data.get("telegram_code_fetch_hosts") || "")
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean),
-        telegram_code_dns_server: String(data.get("telegram_code_dns_server") || "").trim(),
       };
       const apiHash = String(data.get("telegram_api_hash") || "").trim();
       if (apiHash) {
@@ -1156,7 +1446,12 @@
           body: JSON.stringify(payload),
         });
         renderSettings(saved);
-        showNotice(settingsNotice, "设置已保存。请重启服务使配置生效。");
+        showNotice(
+          settingsNotice,
+          saved.restart_required
+            ? "设置已保存。请重启服务使配置生效。"
+            : "设置已保存。",
+        );
       } catch (error) {
         showNotice(settingsNotice, error.message, true);
       } finally {

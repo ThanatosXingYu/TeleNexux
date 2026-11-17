@@ -29,16 +29,26 @@ func TestScriptUsesOnlyReferencedControls(t *testing.T) {
 		`target = "_blank"`,
 		`userTrigger?.addEventListener`,
 		`document.querySelector("[data-open-search]")`,
-		`document.querySelector("[data-toggle-breadcrumb]")`,
-		`document.querySelector("[data-toggle-tabs]")`,
+		`querySelectorAll("[data-toggle-breadcrumb]")`,
+		`querySelectorAll("[data-toggle-tabs]")`,
 		`document.querySelector("[data-login-form]")`,
 		`/api/v1/telegram/auth/send-code`,
+		`/api/v1/telegram/auth/qr`,
+		`startQRAuth`,
+		`pollQRAuth`,
+		`setAuthMode`,
 		`data-auth-step`,
 		`requestJSON`,
 		`fetchCodeFromSource`,
 		`passwordForm?.addEventListener`,
 		`data-login-view-chat`,
 		`loadMessages(items[0])`,
+		`data-settings-tab`,
+		`data-settings-panel`,
+		`data-page-setting`,
+		`!event.target.closest("a, button, input, select, textarea")`,
+		`phone.textContent = formatPhone(account.phone_number)`,
+		`relogin.textContent = "重新登录"`,
 	}
 	for _, behavior := range requiredBehavior {
 		if !strings.Contains(script, behavior) {
@@ -57,7 +67,7 @@ func TestScriptAvoidsUnsafeDOMAPIs(t *testing.T) {
 		t.Fatalf("read app.js: %v", err)
 	}
 	script := string(content)
-	for _, forbidden := range []string{"innerHTML", "eval(", "document.write(", "localStorage"} {
+	for _, forbidden := range []string{"innerHTML", "eval(", "document.write("} {
 		if strings.Contains(script, forbidden) {
 			t.Errorf("app.js must not use %q", forbidden)
 		}

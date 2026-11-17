@@ -1,69 +1,27 @@
 {{define "system.html"}}
-<section class="page-heading">
-  <div>
-    <p class="eyebrow">System Configuration</p>
-    <h1>系统配置</h1>
-    <p class="page-subtitle">集中管理运行环境、Telegram 应用凭据、接码网络、设备身份与服务监听地址。</p>
+<section class="account-toolbar settings-toolbar" aria-label="系统配置操作">
+  <div class="settings-tabs" role="tablist" aria-label="系统配置分类">
+    <button class="active" type="button" role="tab" aria-selected="true" data-settings-tab="basic">基础配置</button>
+    <button type="button" role="tab" aria-selected="false" data-settings-tab="telegram">Telegram 应用</button>
+    <button type="button" role="tab" aria-selected="false" data-settings-tab="page">页面配置</button>
+    <button type="button" role="tab" aria-selected="false" data-settings-tab="runtime">运行参数</button>
+    <button type="button" role="tab" aria-selected="false" data-settings-tab="device">设备身份</button>
+    <button type="button" role="tab" aria-selected="false" data-settings-tab="security">登录与安全</button>
+    <button type="button" role="tab" aria-selected="false" data-settings-tab="status">服务状态</button>
   </div>
   <span class="badge badge-neutral" data-settings-state>读取中</span>
 </section>
 
-<div class="settings-layout">
-  <section class="card settings-card">
-    <div class="card-header">
-      <div>
-        <h2>Telegram 应用</h2>
-        <span class="muted">API Hash 仅用于本地存储，保存后不会在接口或页面中回显。</span>
+<form class="settings-form" data-settings-form>
+  <div class="settings-layout settings-tabbed-layout">
+    <section class="card settings-card" data-settings-panel="basic">
+      <div class="card-header">
+        <div>
+          <h2>服务访问</h2>
+          <span class="muted">配置 TeleNexus 管理台的监听地址和配置优先级。</span>
+        </div>
+        <span class="stat-icon stat-blue"><span class="icon icon-settings" aria-hidden="true"></span></span>
       </div>
-      <span class="stat-icon stat-blue"><span class="icon icon-key-round" aria-hidden="true"></span></span>
-    </div>
-    <form class="settings-form" data-settings-form>
-      <div class="form-grid">
-        <label class="field">
-          <span>Telegram API ID</span>
-          <input name="telegram_api_id" type="number" min="0" inputmode="numeric" placeholder="例如 12345678">
-        </label>
-        <label class="field">
-          <span>Telegram API Hash</span>
-          <input name="telegram_api_hash" type="password" autocomplete="new-password"
-            placeholder="留空则保留已配置的 Hash">
-          <small class="field-hint" data-api-hash-state>尚未配置</small>
-        </label>
-      </div>
-
-      <h3 class="form-section-title">接码网络</h3>
-      <div class="form-grid">
-        <label class="field">
-          <span>允许的接码主机</span>
-          <input name="telegram_code_fetch_hosts" type="text"
-            placeholder="tgok.cc, api.didiapi.uk">
-          <small class="field-hint">多个域名使用英文逗号分隔。</small>
-        </label>
-        <label class="field">
-          <span>接码 DNS 服务器</span>
-          <input name="telegram_code_dns_server" type="text" placeholder="1.1.1.1:53">
-        </label>
-      </div>
-
-      <h3 class="form-section-title">运行参数</h3>
-      <div class="form-grid">
-        <label class="field">
-          <span>运行环境</span>
-          <input name="app_env" type="text" maxlength="32" placeholder="development">
-          <small class="field-hint">例如 development、staging 或 production。</small>
-        </label>
-        <label class="field">
-          <span>日志级别</span>
-          <select name="log_level">
-            <option value="debug">debug</option>
-            <option value="info">info</option>
-            <option value="warn">warn</option>
-            <option value="error">error</option>
-          </select>
-        </label>
-      </div>
-
-      <h3 class="form-section-title">服务访问</h3>
       <div class="form-grid">
         <label class="field">
           <span>HTTP 监听地址</span>
@@ -76,22 +34,130 @@
           <small class="field-hint" data-environment-overrides>未检测到环境变量覆盖。</small>
         </div>
       </div>
+      <label class="field">
+        <span>运行环境</span>
+        <input name="app_env" type="text" maxlength="32" placeholder="development">
+        <small class="field-hint">例如 development、staging 或 production。</small>
+      </label>
+    </section>
 
-      <h3 class="form-section-title">登录设备身份</h3>
+    <section class="card settings-card" data-settings-panel="telegram" hidden>
+      <div class="card-header">
+        <div>
+          <h2>Telegram 应用凭据</h2>
+          <span class="muted">仅用于 MTProto 客户端授权，API Hash 保存后不会回显。</span>
+        </div>
+        <span class="stat-icon stat-blue"><span class="icon icon-key-round" aria-hidden="true"></span></span>
+      </div>
+      <div class="form-grid">
+        <label class="field">
+          <span>Telegram API ID</span>
+          <input name="telegram_api_id" type="number" min="0" inputmode="numeric" placeholder="例如 12345678">
+        </label>
+        <label class="field">
+          <span>Telegram API Hash</span>
+          <input name="telegram_api_hash" type="password" autocomplete="new-password"
+            placeholder="留空则保留已配置的 Hash">
+          <small class="field-hint" data-api-hash-state>尚未配置</small>
+        </label>
+      </div>
+      <div class="environment-note">
+        <span>临时接码链接</span>
+        <p>接码服务不再作为系统配置项。需要时只在添加账号的登录流程中临时填写，结束即丢弃。</p>
+      </div>
+    </section>
+
+    <section class="card settings-card" data-settings-panel="page" hidden>
+      <div class="card-header">
+        <div>
+          <h2>页面布局</h2>
+          <span class="muted">按类别管理控制台显示项，设置仅保存在当前浏览器。</span>
+        </div>
+        <span class="stat-icon stat-green"><span class="icon icon-layout-dashboard" aria-hidden="true"></span></span>
+      </div>
+      <div class="settings-toggle-grid">
+        <label class="setting-row"><span>breadcrumb-bar 面包屑</span><input type="checkbox" checked data-page-setting="breadcrumbs"></label>
+        <label class="setting-row"><span>page-tabs 页面页签</span><input type="checkbox" checked data-page-setting="tabs"></label>
+        <label class="setting-row"><span>sidebar 左侧导航</span><input type="checkbox" checked data-page-setting="sidebar"></label>
+        <label class="setting-row"><span>紧凑功能页头</span><input type="checkbox" checked data-page-setting="compact"></label>
+      </div>
+    </section>
+
+    <section class="card settings-card" data-settings-panel="runtime" hidden>
+      <div class="card-header">
+        <div>
+          <h2>运行参数</h2>
+          <span class="muted">调整日志详细程度，配置保存后重启服务生效。</span>
+        </div>
+        <span class="stat-icon stat-orange"><span class="icon icon-activity" aria-hidden="true"></span></span>
+      </div>
+      <label class="field">
+        <span>日志级别</span>
+        <select name="log_level">
+          <option value="debug">debug</option>
+          <option value="info">info</option>
+          <option value="warn">warn</option>
+          <option value="error">error</option>
+        </select>
+      </label>
+      <div class="environment-note">
+        <span>重启提示</span>
+        <p data-restart-note>尚未修改运行参数。</p>
+      </div>
+    </section>
+
+    <section class="card settings-card" data-settings-panel="device" hidden>
+      <div class="card-header">
+        <div>
+          <h2>登录设备身份</h2>
+          <span class="muted">设备信息与每个授权会话绑定，重新登录不会沿用其他账号的身份。</span>
+        </div>
+        <span class="stat-icon stat-blue"><span class="icon icon-smartphone" aria-hidden="true"></span></span>
+      </div>
       <div class="environment-note">
         <span>Apple iPhone 随机设备</span>
-        <p>每次新登录会从多个 iPhone 型号、iOS 版本和 Telegram iOS 版本中随机选择，并在该账号的授权会话中保持不变。设备信息不会使用项目名称。</p>
+        <p>每次新登录会从多个 iPhone 型号、iOS 版本和 Telegram iOS 版本中随机选择，并在该账号的授权会话中保持不变。</p>
       </div>
+    </section>
 
-      <p class="form-notice" data-settings-notice hidden></p>
-      <div class="settings-actions">
-        <button class="button button-primary" type="submit">
-          <span class="icon icon-circle-check" aria-hidden="true"></span>
-          保存设置
-        </button>
-        <span class="muted" data-restart-note></span>
+    <section class="card settings-card" data-settings-panel="security" hidden>
+      <div class="card-header">
+        <div>
+          <h2>登录与会话安全</h2>
+          <span class="muted">Telegram 授权文件与 SQLite 数据库均保存在本地受保护目录。</span>
+        </div>
+        <span class="stat-icon stat-green"><span class="icon icon-shield-check" aria-hidden="true"></span></span>
       </div>
-    </form>
-  </section>
-</div>
+      <ul class="settings-note-list">
+        <li>授权会话不进入 Git、镜像或浏览器存储，文件权限限制为当前用户。</li>
+        <li>API Hash、接码地址、验证码和云密码不会写入页面或日志。</li>
+        <li>会话失效后，账号状态会持久化为已掉线，重新授权成功后才恢复在线。</li>
+      </ul>
+    </section>
+
+    <section class="card settings-card" data-settings-panel="status" hidden>
+      <div class="card-header">
+        <div>
+          <h2>服务状态</h2>
+          <span class="muted">此页只读取当前配置状态，不显示任何凭据内容。</span>
+        </div>
+        <span class="stat-icon stat-green"><span class="icon icon-circle-check" aria-hidden="true"></span></span>
+      </div>
+      <dl class="settings-status-list">
+        <div><dt>HTTP 服务</dt><dd><span class="status-online">运行中</span></dd></div>
+        <div><dt>Telegram 登录</dt><dd data-telegram-login-state>检查中</dd></div>
+        <div><dt>API Hash</dt><dd data-api-hash-state>尚未配置</dd></div>
+        <div><dt>配置生效</dt><dd data-restart-note>当前配置已生效</dd></div>
+      </dl>
+    </section>
+
+    <div class="settings-actions">
+      <button class="button button-primary" type="submit">
+        <span class="icon icon-circle-check" aria-hidden="true"></span>
+        保存设置
+      </button>
+      <p class="form-notice" data-settings-notice hidden></p>
+    </div>
+  </div>
+</form>
 {{end}}

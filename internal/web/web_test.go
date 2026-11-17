@@ -157,6 +157,10 @@ func TestAccountsPageRendersTelegramLoginFlow(t *testing.T) {
 	for _, expected := range []string{
 		"登录 Telegram 账号",
 		`data-auth-step="phone"`,
+		`data-auth-step="qr"`,
+		`data-login-mode="qr"`,
+		`data-login-mode="phone"`,
+		`data-login-mode="username"`,
 		`data-auth-step="code"`,
 		`data-auth-step="password"`,
 		`data-accounts-body`,
@@ -171,6 +175,9 @@ func TestAccountsPageRendersTelegramLoginFlow(t *testing.T) {
 	}
 	if strings.Contains(body, "账号列表尚未接入") {
 		t.Error("accounts page must not render the generic placeholder")
+	}
+	if strings.Contains(body, "TELEGRAM ACCOUNT OPERATIONS") {
+		t.Error("accounts page must not repeat the page title in the content header")
 	}
 }
 
@@ -191,8 +198,9 @@ func TestSystemPageRendersEditableSettings(t *testing.T) {
 		`name="log_level"`,
 		`name="telegram_api_id"`,
 		`name="telegram_api_hash"`,
-		`name="telegram_code_fetch_hosts"`,
 		`name="http_addr"`,
+		`data-settings-tab="page"`,
+		`data-settings-panel="page"`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("system page missing %q", expected)
@@ -200,6 +208,11 @@ func TestSystemPageRendersEditableSettings(t *testing.T) {
 	}
 	if strings.Contains(body, "系统设置尚未接入") {
 		t.Error("system page must not render the generic placeholder")
+	}
+	for _, removedField := range []string{`name="code_url"`, `name="code_source"`, `name="fetch_code"`} {
+		if strings.Contains(body, removedField) {
+			t.Errorf("system page still renders code receiving field %q", removedField)
+		}
 	}
 }
 

@@ -44,6 +44,27 @@
     profileType: root.querySelector("[data-profile-type]"),
     profileUnread: root.querySelector("[data-profile-unread]"),
     profileAccount: root.querySelector("[data-profile-account]"),
+    profilePhone: root.querySelector("[data-profile-phone]"),
+    profilePhoneRow: root.querySelector("[data-profile-phone-row]"),
+    profileBio: root.querySelector("[data-profile-bio]"),
+    profileHeading: root.querySelector("[data-profile-heading]"),
+    profileEdit: root.querySelector("[data-profile-edit]"),
+    profileForm: root.querySelector("[data-profile-form]"),
+    profileCancel: root.querySelector("[data-profile-cancel]"),
+    profileError: root.querySelector("[data-profile-error]"),
+    profileNote: root.querySelector("[data-profile-note]"),
+    selectionBar: root.querySelector("[data-selection-bar]"),
+    selectionCount: root.querySelector("[data-selection-count]"),
+    contextMenu: root.querySelector("[data-context-menu]"),
+    forwardDialog: root.querySelector("[data-forward-dialog]"),
+    forwardForm: root.querySelector("[data-forward-form]"),
+    forwardTarget: root.querySelector("[data-forward-target]"),
+    forwardCount: root.querySelector("[data-forward-count]"),
+    forwardError: root.querySelector("[data-forward-error]"),
+    deleteDialog: root.querySelector("[data-delete-dialog]"),
+    deleteForm: root.querySelector("[data-delete-form]"),
+    deleteCount: root.querySelector("[data-delete-count]"),
+    deleteError: root.querySelector("[data-delete-error]"),
     toast: root.querySelector("[data-toast]"),
   };
 
@@ -56,6 +77,16 @@
     nextBeforeID: 0,
     activeFolder: "all",
     query: "",
+    searchResults: null,
+    searchTimer: 0,
+    searchRequest: 0,
+    selectionMode: false,
+    selectedMessageIDs: new Set(),
+    contextMessage: null,
+    actionMessageIDs: [],
+    forwardChats: new Map(),
+    profile: null,
+    profileTarget: null,
     toastTimer: 0,
     messagesRequest: 0,
     dateFrame: 0,
@@ -71,7 +102,7 @@
     online: "在线",
     pending: "待验证",
     paused: "已暂停",
-    error: "异常",
+    error: "已掉线",
   };
 
   const requestJSON = async (path, options = {}) => {
@@ -127,9 +158,9 @@
     }, 2800);
   };
 
-  const maskPhone = (phone) => {
+  const formatPhone = (phone) => {
     const digits = String(phone || "").replace(/\D/g, "");
-    return digits.length > 4 ? `••••••${digits.slice(-4)}` : "••••";
+    return digits ? `+${digits}` : "未设置";
   };
 
   const stableColorIndex = (value) => {
@@ -148,12 +179,38 @@
     return Array.from(words[0] || "TG").slice(0, 2).join("");
   };
 
-  const applyAvatar = (element, title, extraClass = "") => {
+  const chatAvatarURL = (chat) => {
+    if (!chat?.has_avatar || !chat.type || !chat.peer_id) {
+      return "";
+    }
+    return `/api/v1/accounts/${encodeURIComponent(accountID)}/chats/` +
+      `${encodeURIComponent(chat.type)}/${encodeURIComponent(chat.peer_id)}/avatar`;
+  };
+
+  const currentAvatarURL = () => (
+    `/api/v1/accounts/${encodeURIComponent(accountID)}/chats/user/` +
+    `${encodeURIComponent(accountID)}/avatar`
+  );
+
+  const applyAvatar = (element, title, extraClass = "", avatarURL = "") => {
     if (!element) {
       return;
     }
     element.className = `tg-avatar ${extraClass} tg-avatar-color-${stableColorIndex(title)}`.replace(/\s+/g, " ").trim();
-    element.textContent = initials(title);
+    element.replaceChildren();
+    if (!avatarURL) {
+      element.textContent = initials(title);
+      return;
+    }
+    const image = document.createElement("img");
+    image.src = avatarURL;
+    image.alt = "";
+    image.decoding = "async";
+    image.addEventListener("error", () => {
+      image.remove();
+      element.textContent = initials(title);
+    }, {once: true});
+    element.append(image);
   };
 
   const parseDate = (value) => {
@@ -288,7 +345,7 @@
 
     const avatar = document.createElement("span");
     avatar.setAttribute("aria-hidden", "true");
-    applyAvatar(avatar, chat.title || chat.username);
+    applyAvatar(avatar, chat.title || chat.username, "", chatAvatarURL(chat));
 
     const content = document.createElement("span");
     content.className = "tg-chat-content";
@@ -339,7 +396,12 @@
     if (!elements.chatList) {
       return;
     }
-    state.filteredChats = state.chats.filter((chat) => chatMatchesFolder(chat) && chatMatchesQuery(chat));
+    const sourceChats = state.query && state.searchResults
+      ? state.searchResults
+      : state.chats;
+    state.filteredChats = sourceChats.filter(
+      (chat) => chatMatchesFolder(chat) && chatMatchesQuery(chat),
+    );
     elements.chatList.replaceChildren(...state.filteredChats.map(makeChatRow));
     updateSelectedChatRow();
 
@@ -357,11 +419,44 @@
     }
   };
 
+  const runSearch = async () => {
+    const query = state.query.trim();
+    const requestID = ++state.searchRequest;
+    if (!query) {
+      state.searchResults = null;
+      renderChats();
+      return;
+    }
+    try {
+      const params = new URLSearchParams({q: query, limit: "30"});
+      const payload = await requestJSON(
+        `/api/v1/accounts/${encodeURIComponent(accountID)}/search?${params}`,
+      );
+      if (requestID !== state.searchRequest) {
+        return;
+      }
+      state.searchResults = Array.isArray(payload?.items) ? payload.items : [];
+      renderChats();
+    } catch (error) {
+      if (requestID !== state.searchRequest) {
+        return;
+      }
+      state.searchResults = null;
+      renderChats();
+      showToast(error.message);
+    }
+  };
+
   const updateProfile = (chat) => {
     if (!chat) {
       return;
     }
-    applyAvatar(elements.profileAvatar, chat.title || chat.username, "tg-avatar-profile");
+    applyAvatar(
+      elements.profileAvatar,
+      chat.title || chat.username,
+      "tg-avatar-profile",
+      chatAvatarURL(chat),
+    );
     if (elements.profileTitle) {
       elements.profileTitle.textContent = chat.title || "未命名会话";
     }
@@ -371,13 +466,126 @@
     if (elements.profileType) {
       elements.profileType.textContent = typeLabels[chat.type] || "会话";
     }
+    if (elements.profileBio) {
+      elements.profileBio.hidden = true;
+      elements.profileBio.textContent = "";
+    }
+    if (elements.profilePhoneRow) {
+      elements.profilePhoneRow.hidden = true;
+    }
     if (elements.profileUnread) {
       elements.profileUnread.textContent = String(Number(chat.unread_count) || 0);
     }
     if (elements.profileAccount) {
       const accountName = state.account?.display_name || state.account?.username || "Telegram 账号";
-      elements.profileAccount.textContent = `${accountName} · ${maskPhone(state.account?.phone_number)}`;
+      elements.profileAccount.textContent = `${accountName} · ${formatPhone(state.account?.phone_number)}`;
     }
+    if (elements.profileHeading) {
+      elements.profileHeading.textContent = "聊天信息";
+    }
+    if (elements.profileNote) {
+      elements.profileNote.textContent = "更多资料正在从 Telegram 读取。";
+    }
+    elements.profileEdit?.setAttribute("hidden", "");
+    elements.profileForm?.setAttribute("hidden", "");
+  };
+
+  const profileURL = (target) => {
+    if (target?.kind === "current") {
+      return `/api/v1/accounts/${encodeURIComponent(accountID)}/profile`;
+    }
+    if (target?.chat) {
+      return `/api/v1/accounts/${encodeURIComponent(accountID)}/chats/` +
+        `${encodeURIComponent(target.chat.type)}/` +
+        `${encodeURIComponent(target.chat.peer_id)}/profile`;
+    }
+    return "";
+  };
+
+  const renderProfile = (profile, target) => {
+    state.profile = profile;
+    state.profileTarget = target;
+    const title = profile.display_name || profile.username || "Telegram";
+    const avatarURL = target?.kind === "current"
+      ? currentAvatarURL()
+      : (profile.has_avatar
+        ? `/api/v1/accounts/${encodeURIComponent(accountID)}/chats/` +
+          `${encodeURIComponent(profile.type)}/${encodeURIComponent(profile.id)}/avatar`
+        : (target?.chat ? chatAvatarURL(target.chat) : ""));
+    applyAvatar(elements.profileAvatar, title, "tg-avatar-profile", avatarURL);
+    if (elements.profileTitle) {
+      elements.profileTitle.textContent = title;
+    }
+    if (elements.profileUsername) {
+      elements.profileUsername.textContent = profile.username
+        ? `@${profile.username}`
+        : (typeLabels[profile.type] || "Telegram");
+    }
+    if (elements.profileType) {
+      elements.profileType.textContent = typeLabels[profile.type] || "会话";
+    }
+    if (elements.profilePhone) {
+      elements.profilePhone.textContent = formatPhone(profile.phone_number);
+    }
+    if (elements.profilePhoneRow) {
+      elements.profilePhoneRow.hidden = !profile.phone_number;
+    }
+    if (elements.profileBio) {
+      elements.profileBio.textContent = profile.bio || "";
+      elements.profileBio.hidden = !profile.bio;
+    }
+    if (elements.profileUnread) {
+      elements.profileUnread.textContent = String(
+        Number(target?.chat?.unread_count || state.selectedChat?.unread_count) || 0,
+      );
+    }
+    if (elements.profileAccount) {
+      const accountName = state.account?.display_name || state.account?.username || "Telegram 账号";
+      elements.profileAccount.textContent = `${accountName} · ${formatPhone(state.account?.phone_number)}`;
+    }
+    if (elements.profileHeading) {
+      elements.profileHeading.textContent = target?.kind === "current" ? "个人资料" : "聊天信息";
+    }
+    if (elements.profileNote) {
+      elements.profileNote.textContent = target?.kind === "current"
+        ? "这里显示当前已授权账号的 Telegram 资料，可修改名称、用户名和简介。"
+        : "这里显示从 Telegram 实时读取的会话资料。";
+    }
+    elements.profileEdit?.toggleAttribute("hidden", !profile.can_edit);
+    elements.profileForm?.setAttribute("hidden", "");
+    showNotice(elements.profileError, "");
+  };
+
+  const loadProfile = async (target) => {
+    const url = profileURL(target);
+    if (!url) {
+      return;
+    }
+    setProfileOpen(true);
+    if (elements.profileNote) {
+      elements.profileNote.textContent = "正在从 Telegram 读取资料...";
+    }
+    try {
+      const profile = await requestJSON(url);
+      renderProfile(profile, target);
+    } catch (error) {
+      showToast(error.message);
+    }
+  };
+
+  const openProfileEditor = () => {
+    if (!state.profile?.can_edit || !elements.profileForm) {
+      return;
+    }
+    elements.profileForm.elements.namedItem("display_name").value = state.profile.display_name || "";
+    elements.profileForm.elements.namedItem("username").value = state.profile.username
+      ? `@${state.profile.username}`
+      : "";
+    elements.profileForm.elements.namedItem("bio").value = state.profile.bio || "";
+    elements.profileForm.removeAttribute("hidden");
+    elements.profileNote?.setAttribute("hidden", "");
+    showNotice(elements.profileError, "");
+    elements.profileForm.elements.namedItem("display_name")?.focus();
   };
 
   const selectChat = (chat) => {
@@ -385,11 +593,18 @@
     state.messages = [];
     state.nextBeforeID = 0;
     state.messagesRequest += 1;
+    setSelectionMode(false);
+    hideContextMenu();
     root.dataset.mobileView = "chat";
 
     elements.threadEmpty?.setAttribute("hidden", "");
     elements.conversation?.removeAttribute("hidden");
-    applyAvatar(elements.conversationAvatar, chat.title || chat.username, "tg-avatar-medium");
+    applyAvatar(
+      elements.conversationAvatar,
+      chat.title || chat.username,
+      "tg-avatar-medium",
+      chatAvatarURL(chat),
+    );
     if (elements.conversationTitle) {
       elements.conversationTitle.textContent = chat.title || "未命名会话";
     }
@@ -399,6 +614,9 @@
         : (typeLabels[chat.type] || "Telegram");
     }
     updateProfile(chat);
+    if (elements.profilePanel && !elements.profilePanel.hidden) {
+      loadProfile({kind: "chat", chat});
+    }
     updateSelectedChatRow();
     loadMessages(true);
   };
@@ -419,6 +637,8 @@
   function createMessageRow(message, previous, next, chat) {
     const row = document.createElement("article");
     row.className = `tg-message-row${message.outgoing ? " is-outgoing" : ""}`;
+    row.dataset.messageId = String(message.id);
+    row.classList.toggle("is-selected", state.selectedMessageIDs.has(Number(message.id)));
     const consecutive = sameMessageGroup(previous, message);
     const nextConsecutive = sameMessageGroup(message, next);
     row.classList.toggle("is-consecutive", consecutive);
@@ -427,8 +647,16 @@
 
     if (!message.outgoing && (chat.type === "chat" || chat.type === "channel")) {
       const avatar = document.createElement("span");
-      avatar.className = `tg-avatar tg-message-avatar${consecutive ? " is-placeholder" : ""}`;
-      applyAvatar(avatar, message.sender || chat.title);
+      const senderAvatarURL = Number(message.sender_id) > 0
+        ? `/api/v1/accounts/${encodeURIComponent(accountID)}/chats/user/` +
+          `${encodeURIComponent(message.sender_id)}/avatar`
+        : "";
+      applyAvatar(
+        avatar,
+        message.sender || chat.title,
+        `tg-message-avatar${consecutive ? " is-placeholder" : ""}`,
+        senderAvatarURL,
+      );
       avatar.setAttribute("aria-hidden", "true");
       row.append(avatar);
     }
@@ -470,6 +698,11 @@
     bubble.append(meta);
     column.append(bubble);
     row.append(column);
+    row.addEventListener("click", () => {
+      if (state.selectionMode) {
+        toggleMessageSelection(Number(message.id));
+      }
+    });
     return row;
   }
 
@@ -503,6 +736,7 @@
       nodes.push(empty);
     }
     elements.messageList.replaceChildren(...nodes);
+    updateSelectionUI();
     scheduleStickyDate();
   };
 
@@ -529,6 +763,164 @@
     }
     state.dateFrame = window.requestAnimationFrame(updateStickyDate);
   }
+
+  const findMessage = (id) => state.messages.find((message) => Number(message.id) === Number(id));
+
+  const updateSelectionUI = () => {
+    const count = state.selectedMessageIDs.size;
+    elements.selectionBar?.toggleAttribute("hidden", !state.selectionMode);
+    if (elements.selectionCount) {
+      elements.selectionCount.textContent = String(count);
+    }
+    root.querySelectorAll("[data-selection-forward], [data-selection-delete]").forEach((button) => {
+      button.disabled = count === 0;
+    });
+    root.querySelector("[data-toggle-selection]")?.setAttribute(
+      "aria-pressed",
+      String(state.selectionMode),
+    );
+    elements.messageList?.querySelectorAll("[data-message-id]").forEach((row) => {
+      const selected = state.selectedMessageIDs.has(Number(row.dataset.messageId));
+      row.classList.toggle("is-selected", selected);
+      row.setAttribute("aria-selected", String(selected));
+    });
+  };
+
+  const setSelectionMode = (active) => {
+    state.selectionMode = active;
+    if (!active) {
+      state.selectedMessageIDs.clear();
+    }
+    updateSelectionUI();
+  };
+
+  const toggleMessageSelection = (messageID) => {
+    if (!Number.isFinite(messageID)) {
+      return;
+    }
+    if (state.selectedMessageIDs.has(messageID)) {
+      state.selectedMessageIDs.delete(messageID);
+    } else {
+      state.selectedMessageIDs.add(messageID);
+    }
+    updateSelectionUI();
+  };
+
+  const hideContextMenu = () => {
+    elements.contextMenu?.setAttribute("hidden", "");
+    state.contextMessage = null;
+  };
+
+  const openContextMenu = (event, message) => {
+    if (!elements.contextMenu || !message) {
+      return;
+    }
+    state.contextMessage = message;
+    elements.contextMenu.hidden = false;
+    const menuRect = elements.contextMenu.getBoundingClientRect();
+    const left = Math.min(event.clientX, window.innerWidth - menuRect.width - 8);
+    const top = Math.min(event.clientY, window.innerHeight - menuRect.height - 8);
+    elements.contextMenu.style.left = `${Math.max(8, left)}px`;
+    elements.contextMenu.style.top = `${Math.max(8, top)}px`;
+  };
+
+  const copyMessageText = async (message) => {
+    const text = message?.text || "";
+    if (!text) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      root.append(area);
+      area.select();
+      document.execCommand("copy");
+      area.remove();
+    }
+    showToast("消息文本已复制");
+  };
+
+  const openForwardDialog = (messageIDs) => {
+    if (!state.selectedChat || !elements.forwardDialog || !elements.forwardTarget) {
+      return;
+    }
+    const ids = [...new Set(messageIDs.map(Number).filter((id) => id > 0))];
+    if (ids.length === 0) {
+      return;
+    }
+    state.actionMessageIDs = ids;
+    state.forwardChats.clear();
+    const currentID = `${state.selectedChat.type}:${state.selectedChat.peer_id}`;
+    state.chats.forEach((chat) => {
+      const value = `${chat.type}:${chat.peer_id}`;
+      if (value === currentID) {
+        return;
+      }
+      state.forwardChats.set(value, chat);
+    });
+    elements.forwardTarget.replaceChildren(
+      ...[...state.forwardChats.entries()].map(([value, chat]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = chat.title || (chat.username ? `@${chat.username}` : value);
+        return option;
+      }),
+    );
+    if (state.forwardChats.size === 0) {
+      showToast("没有可用的转发目标");
+      return;
+    }
+    if (elements.forwardCount) {
+      elements.forwardCount.textContent = String(ids.length);
+    }
+    showNotice(elements.forwardError, "");
+    elements.forwardDialog.showModal();
+  };
+
+  const openDeleteDialog = (messageIDs) => {
+    if (!elements.deleteDialog) {
+      return;
+    }
+    const ids = [...new Set(messageIDs.map(Number).filter((id) => id > 0))];
+    if (ids.length === 0) {
+      return;
+    }
+    state.actionMessageIDs = ids;
+    if (elements.deleteCount) {
+      elements.deleteCount.textContent = String(ids.length);
+    }
+    showNotice(elements.deleteError, "");
+    elements.deleteDialog.showModal();
+  };
+
+  const openMessageProfile = (message) => {
+    if (message.outgoing || state.selectedChat?.type === "user") {
+      if (message.outgoing) {
+        loadProfile({kind: "current"});
+      } else {
+        loadProfile({kind: "chat", chat: state.selectedChat});
+      }
+      return;
+    }
+    if (Number(message.sender_id) > 0) {
+      loadProfile({
+        kind: "chat",
+        chat: {
+          type: "user",
+          peer_id: Number(message.sender_id),
+          title: message.sender,
+          unread_count: 0,
+        },
+      });
+      return;
+    }
+    loadProfile({kind: "chat", chat: state.selectedChat});
+  };
 
   const mergeMessages = (items) => {
     const byID = new Map(state.messages.map((message) => [message.id, message]));
@@ -620,6 +1012,9 @@
         state.selectedChat = state.chats.find((chat) => chat.id === state.selectedChat.id) || state.selectedChat;
         updateSelectedChatRow();
       }
+      if (state.query) {
+        runSearch();
+      }
       if (notify) {
         showToast("会话已刷新");
       }
@@ -630,11 +1025,12 @@
       renderChats();
       elements.chatList?.setAttribute("hidden", "");
       elements.chatsEmpty?.setAttribute("hidden", "");
-      if (error.code === "session_invalid") {
+      if (error.code === "session_invalid" || error.code === "session_not_found") {
         elements.accountStatusDot?.classList.add("is-offline");
         if (elements.accountMeta) {
           elements.accountMeta.textContent = "Telegram 授权已失效";
         }
+        loadAccount();
       }
       showNotice(elements.chatsError, error.message);
       showToast(error.message);
@@ -656,14 +1052,14 @@
       if (elements.accountMeta) {
         elements.accountMeta.textContent = [
           account.username ? `@${account.username}` : "",
-          maskPhone(account.phone_number),
+          formatPhone(account.phone_number),
           statusLabels[account.status] || account.status,
         ].filter(Boolean).join(" · ");
       }
-      applyAvatar(elements.accountAvatar, name, "tg-avatar-small");
+      applyAvatar(elements.accountAvatar, name, "tg-avatar-small", currentAvatarURL());
       elements.accountStatusDot?.classList.toggle("is-offline", !online);
       if (elements.profileAccount) {
-        elements.profileAccount.textContent = `${name} · ${maskPhone(account.phone_number)}`;
+        elements.profileAccount.textContent = `${name} · ${formatPhone(account.phone_number)}`;
       }
     } catch (error) {
       if (elements.accountName) {
@@ -696,10 +1092,191 @@
     root.dataset.mobileView = "list";
   });
   root.querySelectorAll("[data-toggle-profile]").forEach((button) => {
-    button.addEventListener("click", () => setProfileOpen(elements.profilePanel?.hidden ?? true));
+    button.addEventListener("click", () => {
+      const shouldOpen = elements.profilePanel?.hidden ?? true;
+      if (!shouldOpen) {
+        setProfileOpen(false);
+        return;
+      }
+      if (state.selectedChat) {
+        updateProfile(state.selectedChat);
+        loadProfile({kind: "chat", chat: state.selectedChat});
+      } else {
+        setProfileOpen(true);
+      }
+    });
   });
-  root.querySelector("[data-account-menu]")?.addEventListener("click", () => setProfileOpen(true));
+  root.querySelector("[data-account-menu]")?.addEventListener("click", () => {
+    loadProfile({kind: "current"});
+  });
   root.querySelector("[data-close-profile]")?.addEventListener("click", () => setProfileOpen(false));
+  elements.profileEdit?.addEventListener("click", openProfileEditor);
+  elements.profileCancel?.addEventListener("click", () => {
+    elements.profileForm?.setAttribute("hidden", "");
+    elements.profileNote?.removeAttribute("hidden");
+    showNotice(elements.profileError, "");
+  });
+  elements.profileForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submit = elements.profileForm.querySelector("button[type='submit']");
+    const data = new FormData(elements.profileForm);
+    submit?.setAttribute("disabled", "");
+    showNotice(elements.profileError, "");
+    try {
+      const saved = await requestJSON(
+        `/api/v1/accounts/${encodeURIComponent(accountID)}/profile`,
+        {
+          method: "PUT",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            display_name: String(data.get("display_name") || "").trim(),
+            username: String(data.get("username") || "").trim(),
+            bio: String(data.get("bio") || "").trim(),
+          }),
+        },
+      );
+      if (saved?.account) {
+        state.account = saved.account;
+      }
+      renderProfile(saved.profile, {kind: "current"});
+      loadAccount();
+      showToast("个人资料已更新");
+    } catch (error) {
+      showNotice(elements.profileError, error.message);
+    } finally {
+      submit?.removeAttribute("disabled");
+    }
+  });
+
+  root.querySelector("[data-toggle-selection]")?.addEventListener("click", () => {
+    setSelectionMode(!state.selectionMode);
+  });
+  root.querySelector("[data-exit-selection]")?.addEventListener("click", () => {
+    setSelectionMode(false);
+  });
+  root.querySelector("[data-selection-forward]")?.addEventListener("click", () => {
+    openForwardDialog([...state.selectedMessageIDs]);
+  });
+  root.querySelector("[data-selection-delete]")?.addEventListener("click", () => {
+    openDeleteDialog([...state.selectedMessageIDs]);
+  });
+
+  root.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    const row = event.target.closest("[data-message-id]");
+    const message = row ? findMessage(row.dataset.messageId) : null;
+    hideContextMenu();
+    if (message) {
+      openContextMenu(event, message);
+    }
+  });
+
+  elements.contextMenu?.addEventListener("click", (event) => {
+    const action = event.target.closest("[data-context-action]")?.dataset.contextAction;
+    const message = state.contextMessage;
+    if (!action || !message) {
+      return;
+    }
+    const messageIDs = state.selectionMode && state.selectedMessageIDs.size > 0
+      ? [...state.selectedMessageIDs]
+      : [Number(message.id)];
+    hideContextMenu();
+    switch (action) {
+    case "copy":
+      copyMessageText(message);
+      break;
+    case "profile":
+      openMessageProfile(message);
+      break;
+    case "forward":
+      openForwardDialog(messageIDs);
+      break;
+    case "select":
+      setSelectionMode(true);
+      toggleMessageSelection(Number(message.id));
+      break;
+    case "delete":
+      openDeleteDialog(messageIDs);
+      break;
+    }
+  });
+
+  root.querySelectorAll("[data-close-dialog]").forEach((button) => {
+    button.addEventListener("click", () => button.closest("dialog")?.close());
+  });
+
+  elements.forwardForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submit = elements.forwardForm.querySelector("button[type='submit']");
+    const target = elements.forwardChats.get(elements.forwardTarget?.value || "");
+    if (!target || !state.selectedChat) {
+      showNotice(elements.forwardError, "请选择有效的转发目标。");
+      return;
+    }
+    submit?.setAttribute("disabled", "");
+    showNotice(elements.forwardError, "");
+    try {
+      await requestJSON(
+        `/api/v1/accounts/${encodeURIComponent(accountID)}/chats/` +
+          `${encodeURIComponent(state.selectedChat.type)}/` +
+          `${encodeURIComponent(state.selectedChat.peer_id)}/messages/forward`,
+        {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            message_ids: state.actionMessageIDs,
+            to_type: target.type,
+            to_id: target.peer_id,
+          }),
+        },
+      );
+      elements.forwardDialog.close();
+      setSelectionMode(false);
+      showToast(`已转发 ${state.actionMessageIDs.length} 条消息`);
+    } catch (error) {
+      showNotice(elements.forwardError, error.message);
+    } finally {
+      submit?.removeAttribute("disabled");
+    }
+  });
+
+  elements.deleteForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submit = elements.deleteForm.querySelector("button[type='submit']");
+    if (!state.selectedChat) {
+      return;
+    }
+    submit?.setAttribute("disabled", "");
+    showNotice(elements.deleteError, "");
+    try {
+      await requestJSON(
+        `/api/v1/accounts/${encodeURIComponent(accountID)}/chats/` +
+          `${encodeURIComponent(state.selectedChat.type)}/` +
+          `${encodeURIComponent(state.selectedChat.peer_id)}/messages/delete`,
+        {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({message_ids: state.actionMessageIDs}),
+        },
+      );
+      const deleted = new Set(state.actionMessageIDs);
+      state.messages = state.messages.filter((message) => !deleted.has(Number(message.id)));
+      elements.deleteDialog.close();
+      setSelectionMode(false);
+      renderMessages();
+      showToast(`已删除 ${deleted.size} 条消息`);
+    } catch (error) {
+      showNotice(elements.deleteError, error.message);
+    } finally {
+      submit?.removeAttribute("disabled");
+    }
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest("[data-context-menu]")) {
+      hideContextMenu();
+    }
+  });
 
   root.querySelectorAll("[data-folder]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -716,7 +1293,14 @@
   elements.search?.addEventListener("input", () => {
     state.query = elements.search.value.trim().toLocaleLowerCase();
     elements.clearSearch?.toggleAttribute("hidden", !elements.search.value);
+    state.searchResults = null;
     renderChats();
+    window.clearTimeout(state.searchTimer);
+    if (state.query) {
+      state.searchTimer = window.setTimeout(runSearch, 320);
+    } else {
+      state.searchRequest += 1;
+    }
   });
 
   elements.clearSearch?.addEventListener("click", () => {
@@ -725,6 +1309,9 @@
     }
     elements.search.value = "";
     state.query = "";
+    state.searchResults = null;
+    state.searchRequest += 1;
+    window.clearTimeout(state.searchTimer);
     elements.clearSearch.hidden = true;
     renderChats();
     elements.search.focus();
@@ -732,15 +1319,32 @@
 
   elements.refreshChats?.addEventListener("click", () => loadChats(true));
   elements.loadOlder?.addEventListener("click", () => loadMessages(false));
-  elements.messageScroll?.addEventListener("scroll", scheduleStickyDate, {passive: true});
-  window.addEventListener("resize", scheduleStickyDate, {passive: true});
+  elements.messageScroll?.addEventListener("scroll", () => {
+    hideContextMenu();
+    scheduleStickyDate();
+  }, {passive: true});
+  window.addEventListener("resize", () => {
+    hideContextMenu();
+    scheduleStickyDate();
+  }, {passive: true});
   root.querySelector("[data-message-composer]")?.addEventListener("submit", (event) => {
     event.preventDefault();
     showToast("当前是只读视图，消息发送功能尚未启用");
   });
 
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && elements.profilePanel && !elements.profilePanel.hidden) {
+    if (event.key !== "Escape") {
+      return;
+    }
+    if (!elements.contextMenu?.hidden) {
+      hideContextMenu();
+      return;
+    }
+    if (state.selectionMode) {
+      setSelectionMode(false);
+      return;
+    }
+    if (elements.profilePanel && !elements.profilePanel.hidden) {
       setProfileOpen(false);
     }
   });
