@@ -88,6 +88,32 @@ func (r *memoryRepository) UpdateStatus(
 	return item, nil
 }
 
+func (r *memoryRepository) Update(
+	_ context.Context,
+	id int64,
+	input UpdateInput,
+	now time.Time,
+) (Account, error) {
+	item, exists := r.accounts[id]
+	if !exists {
+		return Account{}, ErrNotFound
+	}
+	item.PhoneNumber = input.PhoneNumber
+	item.Username = input.Username
+	item.DisplayName = input.DisplayName
+	item.UpdatedAt = now
+	r.accounts[id] = item
+	return item, nil
+}
+
+func (r *memoryRepository) Delete(_ context.Context, id int64) error {
+	if _, exists := r.accounts[id]; !exists {
+		return ErrNotFound
+	}
+	delete(r.accounts, id)
+	return nil
+}
+
 func TestServiceCreateNormalizesAccount(t *testing.T) {
 	service := NewService(newMemoryRepository())
 	created, err := service.Create(context.Background(), CreateInput{
@@ -184,5 +210,36 @@ func TestServiceUpdateStatusPersistsRealSessionState(t *testing.T) {
 	}
 	if updated.Status != StatusError {
 		t.Fatalf("UpdateStatus() status = %q, want %q", updated.Status, StatusError)
+	}
+}
+
+func TestServiceUpdatesAndDeletesAccount(t *testing.T) {
+	service := NewService(newMemoryRepository())
+	item, err := service.Create(context.Background(), CreateInput{
+		ID:          42,
+		PhoneNumber: "+15550001001",
+		DisplayName: "Before",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	updated, err := service.Update(context.Background(), item.ID, UpdateInput{
+		PhoneNumber: " +15550001002 ",
+		Username:    " @updated_user ",
+		DisplayName: " After ",
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.PhoneNumber != "+15550001002" ||
+		updated.Username != "updated_user" ||
+		updated.DisplayName != "After" {
+		t.Fatalf("Update() = %+v, want normalized account details", updated)
+	}
+	if err := service.Delete(context.Background(), item.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if _, err := service.Get(context.Background(), item.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get() after Delete() error = %v, want ErrNotFound", err)
 	}
 }

@@ -29,13 +29,15 @@ type QRChallenge struct {
 	LoginID   string    `json:"login_id"`
 	NextStep  string    `json:"next_step"`
 	Image     string    `json:"image,omitempty"`
+	RefreshAt time.Time `json:"refresh_at,omitempty"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type QRResult struct {
-	NextStep string   `json:"next_step"`
-	Image    string   `json:"image,omitempty"`
-	Profile  *Profile `json:"-"`
+	NextStep  string    `json:"next_step"`
+	Image     string    `json:"image,omitempty"`
+	RefreshAt time.Time `json:"refresh_at,omitempty"`
+	Profile   *Profile  `json:"-"`
 }
 
 type QRService struct {
@@ -54,6 +56,7 @@ type qrLoginState struct {
 	sessionPath string
 	stage       string
 	image       string
+	refreshAt   time.Time
 	expiresAt   time.Time
 	profile     *Profile
 	err         error
@@ -118,6 +121,7 @@ func (s *QRService) Start(ctx context.Context) (QRChallenge, error) {
 			LoginID:   loginID,
 			NextStep:  QRStepPending,
 			Image:     snapshot.image,
+			RefreshAt: snapshot.refreshAt,
 			ExpiresAt: state.expiresAt,
 		}, nil
 	case <-ctx.Done():
@@ -138,7 +142,11 @@ func (s *QRService) Poll(loginID string) (QRResult, error) {
 	if snapshot.stage == QRStepComplete {
 		return QRResult{NextStep: QRStepComplete, Profile: snapshot.profile}, nil
 	}
-	return QRResult{NextStep: QRStepPending, Image: snapshot.image}, nil
+	return QRResult{
+		NextStep:  QRStepPending,
+		Image:     snapshot.image,
+		RefreshAt: snapshot.refreshAt,
+	}, nil
 }
 
 func (s *QRService) Cancel(loginID string) error {
@@ -190,6 +198,7 @@ func (s *QRService) run(ctx context.Context, state *qrLoginState) {
 				}
 				state.setImage("data:image/png;base64," +
 					base64.StdEncoding.EncodeToString(encoded.Bytes()))
+				state.setRefreshAt(token.Expires())
 				return nil
 			},
 		)
@@ -268,26 +277,34 @@ func (s *QRService) cleanupExpiredLocked() {
 }
 
 type qrStateSnapshot struct {
-	stage   string
-	image   string
-	profile *Profile
-	err     error
+	stage     string
+	image     string
+	refreshAt time.Time
+	profile   *Profile
+	err       error
 }
 
 func (s *qrLoginState) snapshot() qrStateSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return qrStateSnapshot{
-		stage:   s.stage,
-		image:   s.image,
-		profile: s.profile,
-		err:     s.err,
+		stage:     s.stage,
+		image:     s.image,
+		refreshAt: s.refreshAt,
+		profile:   s.profile,
+		err:       s.err,
 	}
 }
 
 func (s *qrLoginState) setImage(image string) {
 	s.mu.Lock()
 	s.image = image
+	s.mu.Unlock()
+}
+
+func (s *qrLoginState) setRefreshAt(refreshAt time.Time) {
+	s.mu.Lock()
+	s.refreshAt = refreshAt
 	s.mu.Unlock()
 	s.closeReady()
 }
@@ -297,6 +314,7 @@ func (s *qrLoginState) complete(profile *Profile) {
 	s.stage = QRStepComplete
 	s.profile = profile
 	s.image = ""
+	s.refreshAt = time.Time{}
 	s.mu.Unlock()
 	s.closeReady()
 }

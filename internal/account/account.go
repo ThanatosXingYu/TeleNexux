@@ -43,6 +43,12 @@ type CreateInput struct {
 	DisplayName string `json:"display_name"`
 }
 
+type UpdateInput struct {
+	PhoneNumber string `json:"phone_number"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+}
+
 type Filter struct {
 	Status string
 	Limit  int
@@ -55,6 +61,8 @@ type Repository interface {
 	List(ctx context.Context, filter Filter) ([]Account, error)
 	Get(ctx context.Context, id int64) (Account, error)
 	UpdateStatus(ctx context.Context, id int64, status string, now time.Time) (Account, error)
+	Update(ctx context.Context, id int64, input UpdateInput, now time.Time) (Account, error)
+	Delete(ctx context.Context, id int64) error
 }
 
 type Service struct {
@@ -115,6 +123,24 @@ func (s *Service) UpdateStatus(ctx context.Context, id int64, status string) (Ac
 	return s.repository.UpdateStatus(ctx, id, status, s.clock().UTC())
 }
 
+func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Account, error) {
+	if id <= 0 {
+		return Account{}, errors.New("account ID must be positive")
+	}
+	normalized, err := normalizeUpdateInput(input)
+	if err != nil {
+		return Account{}, err
+	}
+	return s.repository.Update(ctx, id, normalized, s.clock().UTC())
+}
+
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return errors.New("account ID must be positive")
+	}
+	return s.repository.Delete(ctx, id)
+}
+
 func IsValidStatus(status string) bool {
 	switch status {
 	case StatusPending, StatusOnline, StatusPaused, StatusError:
@@ -140,6 +166,23 @@ func normalizeCreateInput(input CreateInput) (CreateInput, error) {
 	}
 	if utf8.RuneCountInString(input.DisplayName) > MaxDisplayName {
 		return CreateInput{}, fmt.Errorf("display_name must be at most %d characters", MaxDisplayName)
+	}
+	return input, nil
+}
+
+func normalizeUpdateInput(input UpdateInput) (UpdateInput, error) {
+	input.PhoneNumber = strings.TrimSpace(input.PhoneNumber)
+	input.Username = strings.TrimPrefix(strings.TrimSpace(input.Username), "@")
+	input.DisplayName = strings.TrimSpace(input.DisplayName)
+
+	if err := validatePhoneNumber(input.PhoneNumber); err != nil {
+		return UpdateInput{}, err
+	}
+	if err := validateUsername(input.Username); err != nil {
+		return UpdateInput{}, err
+	}
+	if utf8.RuneCountInString(input.DisplayName) > MaxDisplayName {
+		return UpdateInput{}, fmt.Errorf("display_name must be at most %d characters", MaxDisplayName)
 	}
 	return input, nil
 }

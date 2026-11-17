@@ -151,3 +151,43 @@ func TestSQLiteRepositoryUpdatesAccountStatus(t *testing.T) {
 		t.Fatalf("UpdateStatus() = %+v, want error status and newer timestamp", updated)
 	}
 }
+
+func TestSQLiteRepositoryUpdatesAndDeletesAccount(t *testing.T) {
+	ctx := context.Background()
+	repository, err := NewSQLiteRepository(ctx, filepath.Join(t.TempDir(), "accounts.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteRepository() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	service := NewService(repository)
+	item, err := service.Create(ctx, CreateInput{
+		ID:          8003,
+		PhoneNumber: "+15550001003",
+		DisplayName: "Before update",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	updated, err := service.Update(ctx, item.ID, UpdateInput{
+		PhoneNumber: "+15550001004",
+		Username:    "updated_user",
+		DisplayName: "After update",
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.PhoneNumber != "+15550001004" || updated.Username != "updated_user" {
+		t.Fatalf("Update() = %+v, want persisted account details", updated)
+	}
+	if err := service.Delete(ctx, item.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if _, err := repository.Get(ctx, item.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get() after Delete() error = %v, want ErrNotFound", err)
+	}
+}

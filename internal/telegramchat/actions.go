@@ -75,7 +75,7 @@ func (s *Service) SearchChats(
 	if s == nil {
 		return ChatPage{}, ErrNotConfigured
 	}
-	query = strings.TrimSpace(strings.TrimPrefix(query, "@"))
+	query = normalizeSearchQuery(query)
 	if query == "" || utf8.RuneCountInString(query) > 64 {
 		return ChatPage{}, fmt.Errorf("%w: search query must contain 1 to 64 characters", ErrInvalidInput)
 	}
@@ -142,6 +142,10 @@ func (s *Service) SearchChats(
 		return nil
 	})
 	return page, err
+}
+
+func normalizeSearchQuery(query string) string {
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(query), "@"))
 }
 
 func (s *Service) CurrentProfile(ctx context.Context, accountID int64) (Profile, error) {
@@ -325,6 +329,7 @@ func (s *Service) DeleteMessages(
 	peerType string,
 	peerID int64,
 	messageIDs []int,
+	revoke bool,
 ) error {
 	ids, err := normalizeMessageIDs(messageIDs)
 	if err != nil {
@@ -338,7 +343,15 @@ func (s *Service) DeleteMessages(
 		if err != nil {
 			return err
 		}
-		if channel, ok := peer.(*tg.InputPeerChannel); ok {
+		if revoke {
+			channel, isChannel := peer.(*tg.InputPeerChannel)
+			if !isChannel {
+				_, err = client.API().MessagesDeleteMessages(ctx, &tg.MessagesDeleteMessagesRequest{
+					Revoke: true,
+					ID:     ids,
+				})
+				return err
+			}
 			_, err = client.API().ChannelsDeleteMessages(ctx, &tg.ChannelsDeleteMessagesRequest{
 				Channel: &tg.InputChannel{
 					ChannelID:  channel.ChannelID,
@@ -349,7 +362,7 @@ func (s *Service) DeleteMessages(
 			return err
 		}
 		_, err = client.API().MessagesDeleteMessages(ctx, &tg.MessagesDeleteMessagesRequest{
-			Revoke: true,
+			Revoke: false,
 			ID:     ids,
 		})
 		return err

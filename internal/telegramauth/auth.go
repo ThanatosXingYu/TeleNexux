@@ -277,7 +277,7 @@ func (s *Service) SendCode(ctx context.Context, phone, codeSource string) (Chall
 
 	return Challenge{
 		LoginID:      loginID,
-		PhoneHint:    maskPhone(phone),
+		PhoneHint:    phone,
 		CodeType:     sent.CodeType,
 		CodeLength:   sent.CodeLength,
 		ExpiresAt:    state.expiresAt,
@@ -473,14 +473,6 @@ func normalizePhone(phone string) (string, error) {
 		return "", ErrInvalidPhone
 	}
 	return normalized, nil
-}
-
-func maskPhone(phone string) string {
-	digits := strings.TrimPrefix(phone, "+")
-	if len(digits) <= 4 {
-		return "••••"
-	}
-	return "••••••" + digits[len(digits)-4:]
 }
 
 func newLoginID() (string, error) {

@@ -205,6 +205,57 @@ WHERE id = ?`
 	return item, nil
 }
 
+func (r *SQLiteRepository) Update(
+	ctx context.Context,
+	id int64,
+	input UpdateInput,
+	now time.Time,
+) (Account, error) {
+	const query = `
+UPDATE accounts
+SET phone_number = ?, username = ?, display_name = ?, updated_at = ?
+WHERE id = ?`
+	result, err := r.db.ExecContext(
+		ctx,
+		query,
+		input.PhoneNumber,
+		input.Username,
+		input.DisplayName,
+		now.Format(time.RFC3339Nano),
+		id,
+	)
+	if err != nil {
+		return Account{}, fmt.Errorf("update account %d: %w", id, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Account{}, fmt.Errorf("check updated account %d: %w", id, err)
+	}
+	if affected == 0 {
+		return Account{}, ErrNotFound
+	}
+	item, err := r.Get(ctx, id)
+	if err != nil {
+		return Account{}, fmt.Errorf("read account %d after update: %w", id, err)
+	}
+	return item, nil
+}
+
+func (r *SQLiteRepository) Delete(ctx context.Context, id int64) error {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM accounts WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete account %d: %w", id, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check deleted account %d: %w", id, err)
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }

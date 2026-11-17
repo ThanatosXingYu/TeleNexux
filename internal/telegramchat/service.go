@@ -84,6 +84,34 @@ func (s *Service) ValidateSession(ctx context.Context, accountID int64) error {
 	})
 }
 
+// DeleteSession removes the local authorization files for an account without
+// changing the Telegram account itself.
+func (s *Service) DeleteSession(accountID int64) error {
+	if s == nil {
+		return ErrNotConfigured
+	}
+	if accountID <= 0 {
+		return ErrSessionMissing
+	}
+	path := filepath.Join(s.sessionDirectory, "accounts", fmt.Sprintf("%d.session", accountID))
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect Telegram account session: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refuse to delete unsafe Telegram session path")
+	}
+	for _, candidate := range []string{path + ".device", path} {
+		if err := os.Remove(candidate); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("delete Telegram session file: %w", err)
+		}
+	}
+	return nil
+}
+
 func NewService(appID int, appHash, sessionDirectory string) (*Service, error) {
 	if appID <= 0 || strings.TrimSpace(appHash) == "" {
 		return nil, ErrNotConfigured

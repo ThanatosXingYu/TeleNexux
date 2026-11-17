@@ -27,6 +27,8 @@ type fakeAccountService struct {
 	listErr   error
 	getErr    error
 	updateErr error
+	deleteErr error
+	deletedID int64
 }
 
 func (s *fakeAccountService) Create(_ context.Context, input account.CreateInput) (account.Account, error) {
@@ -83,6 +85,29 @@ func (s *fakeAccountService) UpdateStatus(
 	}
 	s.created.Status = status
 	return s.created, nil
+}
+
+func (s *fakeAccountService) Update(
+	_ context.Context,
+	id int64,
+	input account.UpdateInput,
+) (account.Account, error) {
+	if s.updateErr != nil {
+		return account.Account{}, s.updateErr
+	}
+	s.created.ID = id
+	s.created.PhoneNumber = input.PhoneNumber
+	s.created.Username = input.Username
+	s.created.DisplayName = input.DisplayName
+	return s.created, nil
+}
+
+func (s *fakeAccountService) Delete(_ context.Context, id int64) error {
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	s.deletedID = id
+	return nil
 }
 
 type fakeTelegramAuthService struct {
@@ -151,10 +176,21 @@ type fakeTelegramChatService struct {
 	chatsErr    error
 	messagesErr error
 	validateErr error
+	deleteErr   error
+	sessionID   int64
+	deleteScope bool
 }
 
 func (s *fakeTelegramChatService) ValidateSession(_ context.Context, _ int64) error {
 	return s.validateErr
+}
+
+func (s *fakeTelegramChatService) DeleteSession(accountID int64) error {
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	s.sessionID = accountID
+	return nil
 }
 
 func (s *fakeTelegramChatService) Chats(
@@ -224,7 +260,9 @@ func (s *fakeTelegramChatService) DeleteMessages(
 	_ string,
 	_ int64,
 	_ []int,
+	revoke bool,
 ) error {
+	s.deleteScope = revoke
 	return s.messagesErr
 }
 
@@ -357,6 +395,62 @@ func TestGetAccountNotFound(t *testing.T) {
 
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+	}
+}
+
+func TestUpdateAccount(t *testing.T) {
+	service := &fakeAccountService{}
+	request := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/accounts/42",
+		strings.NewReader(`{"phone_number":"+15550001005","username":"updated_user","display_name":"Updated"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	newTestHandler(service).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if service.created.ID != 42 ||
+		service.created.PhoneNumber != "+15550001005" ||
+		service.created.Username != "updated_user" {
+		t.Fatalf("updated account = %+v", service.created)
+	}
+}
+
+func TestDeleteAccountRemovesSessionAndAccount(t *testing.T) {
+	accounts := &fakeAccountService{}
+	chats := &fakeTelegramChatService{}
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/accounts/42", nil)
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithDependencies(accounts, &fakeTelegramAuthService{}, chats, nil).
+		ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if chats.sessionID != 42 || accounts.deletedID != 42 {
+		t.Fatalf("session ID = %d, deleted ID = %d, want 42", chats.sessionID, accounts.deletedID)
+	}
+}
+
+func TestDeleteAccountStopsWhenSessionCleanupFails(t *testing.T) {
+	accounts := &fakeAccountService{}
+	chats := &fakeTelegramChatService{deleteErr: errors.New("unsafe session path")}
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/accounts/42", nil)
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithDependencies(accounts, &fakeTelegramAuthService{}, chats, nil).
+		ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if accounts.deletedID != 0 {
+		t.Fatal("account must not be deleted when session cleanup fails")
 	}
 }
 
@@ -589,6 +683,62 @@ func TestRefreshAccountsPersistsExpiredSession(t *testing.T) {
 	}
 	if accounts.created.Status != account.StatusError {
 		t.Fatalf("account status = %q, want %q", accounts.created.Status, account.StatusError)
+	}
+}
+
+func TestDeleteChatMessagesUsesRequestedScope(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		scope      string
+		wantRevoke bool
+	}{
+		{name: "delete for me", scope: "me", wantRevoke: false},
+		{name: "delete for everyone", scope: "all", wantRevoke: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			accounts := &fakeAccountService{
+				created: account.Account{ID: 42, Status: account.StatusOnline},
+			}
+			chats := &fakeTelegramChatService{}
+			request := httptest.NewRequest(
+				http.MethodPost,
+				"/api/v1/accounts/42/chats/user/99/messages/delete",
+				strings.NewReader(`{"message_ids":[1,2],"scope":"`+test.scope+`"}`),
+			)
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+
+			newTestHandlerWithDependencies(accounts, &fakeTelegramAuthService{}, chats, nil).
+				ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want 204; body: %s", recorder.Code, recorder.Body.String())
+			}
+			if chats.deleteScope != test.wantRevoke {
+				t.Fatalf("delete scope revoke = %v, want %v", chats.deleteScope, test.wantRevoke)
+			}
+		})
+	}
+}
+
+func TestDeleteChatMessagesRejectsUnknownScope(t *testing.T) {
+	accounts := &fakeAccountService{
+		created: account.Account{ID: 42, Status: account.StatusOnline},
+	}
+	chats := &fakeTelegramChatService{}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/accounts/42/chats/user/99/messages/delete",
+		strings.NewReader(`{"message_ids":[1],"scope":"everyone"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithDependencies(accounts, &fakeTelegramAuthService{}, chats, nil).
+		ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body: %s", recorder.Code, recorder.Body.String())
 	}
 }
 

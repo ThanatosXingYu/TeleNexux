@@ -31,6 +31,8 @@ type AccountService interface {
 	List(ctx context.Context, filter account.Filter) ([]account.Account, error)
 	Get(ctx context.Context, id int64) (account.Account, error)
 	UpdateStatus(ctx context.Context, id int64, status string) (account.Account, error)
+	Update(ctx context.Context, id int64, input account.UpdateInput) (account.Account, error)
+	Delete(ctx context.Context, id int64) error
 }
 
 type TelegramAuthService interface {
@@ -47,6 +49,7 @@ type TelegramAuthService interface {
 
 type TelegramChatService interface {
 	ValidateSession(ctx context.Context, accountID int64) error
+	DeleteSession(accountID int64) error
 	Chats(ctx context.Context, accountID int64, limit int) (telegramchat.ChatPage, error)
 	SearchChats(ctx context.Context, accountID int64, query string, limit int) (telegramchat.ChatPage, error)
 	Messages(
@@ -76,6 +79,7 @@ type TelegramChatService interface {
 		peerType string,
 		peerID int64,
 		messageIDs []int,
+		revoke bool,
 	) error
 	ForwardMessages(
 		ctx context.Context,
@@ -130,6 +134,8 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/accounts", a.createAccount)
 	mux.HandleFunc("POST /api/v1/accounts/refresh", a.refreshAccounts)
 	mux.HandleFunc("GET /api/v1/accounts/{id}", a.getAccount)
+	mux.HandleFunc("PUT /api/v1/accounts/{id}", a.updateAccount)
+	mux.HandleFunc("DELETE /api/v1/accounts/{id}", a.deleteAccount)
 	mux.HandleFunc("POST /api/v1/accounts/{id}/refresh", a.refreshAccount)
 	mux.HandleFunc("GET /api/v1/accounts/{id}/chats", a.listAccountChats)
 	mux.HandleFunc("GET /api/v1/accounts/{id}/search", a.searchAccountChats)
@@ -214,6 +220,60 @@ func (a *API) getAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func (a *API) updateAccount(w http.ResponseWriter, r *http.Request) {
+	if !prepareJSONMutation(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid_id", "account ID must be a positive integer")
+		return
+	}
+	var input account.UpdateInput
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	item, err := a.accounts.Update(r.Context(), id, input)
+	if errors.Is(err, account.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "account_not_found", "account was not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_account", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (a *API) deleteAccount(w http.ResponseWriter, r *http.Request) {
+	if !prepareJSONMutation(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid_id", "account ID must be a positive integer")
+		return
+	}
+	if a.chats != nil {
+		if err := a.chats.DeleteSession(id); err != nil {
+			a.logger.Error("delete Telegram account session", "account_id", id, "error", err)
+			writeError(w, http.StatusInternalServerError, "session_delete_failed",
+				"无法清理该账号的授权会话，账号未删除")
+			return
+		}
+	}
+	if err := a.accounts.Delete(r.Context(), id); err != nil {
+		if errors.Is(err, account.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "account_not_found", "account was not found")
+			return
+		}
+		a.logger.Error("delete account", "account_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not delete account")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) refreshAccounts(w http.ResponseWriter, r *http.Request) {
@@ -383,12 +443,25 @@ func (a *API) deleteChatMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		MessageIDs []int `json:"message_ids"`
+		MessageIDs []int  `json:"message_ids"`
+		Scope      string `json:"scope"`
 	}
 	if !decodeJSONBody(w, r, &input) {
 		return
 	}
-	if err := a.chats.DeleteMessages(r.Context(), accountID, peerType, peerID, input.MessageIDs); err != nil {
+	if input.Scope != "me" && input.Scope != "all" {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_delete_scope",
+			"scope must be me or all")
+		return
+	}
+	if err := a.chats.DeleteMessages(
+		r.Context(),
+		accountID,
+		peerType,
+		peerID,
+		input.MessageIDs,
+		input.Scope == "all",
+	); err != nil {
 		a.writeChatError(r.Context(), w, accountID, err)
 		return
 	}
@@ -842,12 +915,14 @@ func (a *API) writeTelegramResult(w http.ResponseWriter, r *http.Request, result
 
 func (a *API) writeQRResult(w http.ResponseWriter, r *http.Request, result telegramauth.QRResult) {
 	response := struct {
-		NextStep string           `json:"next_step"`
-		Image    string           `json:"image,omitempty"`
-		Account  *account.Account `json:"account,omitempty"`
+		NextStep  string           `json:"next_step"`
+		Image     string           `json:"image,omitempty"`
+		RefreshAt time.Time        `json:"refresh_at,omitempty"`
+		Account   *account.Account `json:"account,omitempty"`
 	}{
-		NextStep: result.NextStep,
-		Image:    result.Image,
+		NextStep:  result.NextStep,
+		Image:     result.Image,
+		RefreshAt: result.RefreshAt,
 	}
 	if result.NextStep == telegramauth.QRStepComplete {
 		if result.Profile == nil {
