@@ -242,6 +242,8 @@ func TestAccountWorkspaceRendersStandaloneChatViewer(t *testing.T) {
 		`data-chat-list`,
 		`data-message-list`,
 		`data-profile-panel`,
+		`class="tg-rail-folders"`,
+		`class="tg-composer"`,
 		`/static/css/telegram_client.css`,
 		`/static/js/telegram_client.js`,
 	} {
@@ -249,7 +251,7 @@ func TestAccountWorkspaceRendersStandaloneChatViewer(t *testing.T) {
 			t.Errorf("account workspace missing %q", expected)
 		}
 	}
-	for _, unexpected := range []string{`class="sidebar"`, `class="topbar"`, `data-page-tabs`} {
+	for _, unexpected := range []string{`class="sidebar"`, `class="topbar"`, `class="tg-folders"`, `data-page-tabs`} {
 		if strings.Contains(body, unexpected) {
 			t.Errorf("account workspace must not include administration shell %q", unexpected)
 		}

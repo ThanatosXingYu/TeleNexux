@@ -16,28 +16,38 @@
         <a class="tg-rail-brand" href="/accounts" aria-label="返回 TeleNexus 账号列表">
           <img src="/static/img/logo.svg" alt="">
         </a>
-        <div class="tg-rail-actions">
-          <a class="tg-rail-button" href="/accounts" title="账号">
-            <span class="icon icon-users" aria-hidden="true"></span>
-            <span class="tg-visually-hidden">账号</span>
-          </a>
-          <button class="tg-rail-button tg-rail-button-active" type="button" title="聊天" aria-current="page">
+        <div class="tg-rail-folders" role="tablist" aria-label="会话筛选">
+          <button class="tg-rail-folder tg-rail-folder-active" type="button" role="tab" aria-selected="true" data-folder="all">
             <span class="icon icon-messages-square" aria-hidden="true"></span>
-            <span class="tg-visually-hidden">聊天</span>
+            <span>全部</span>
+            <b data-folder-count="all">0</b>
           </button>
+          <button class="tg-rail-folder" type="button" role="tab" aria-selected="false" data-folder="unread">
+            <span class="icon icon-inbox" aria-hidden="true"></span>
+            <span>未读</span>
+            <b data-folder-count="unread">0</b>
+          </button>
+          <button class="tg-rail-folder" type="button" role="tab" aria-selected="false" data-folder="private">
+            <span class="icon icon-user-round" aria-hidden="true"></span>
+            <span>私聊</span>
+          </button>
+          <button class="tg-rail-folder" type="button" role="tab" aria-selected="false" data-folder="groups">
+            <span class="icon icon-users" aria-hidden="true"></span>
+            <span>群组</span>
+          </button>
+        </div>
+        <div class="tg-rail-footer">
+          <a class="tg-rail-button" href="/accounts" title="账号管理">
+            <span class="icon icon-users" aria-hidden="true"></span>
+            <span class="tg-visually-hidden">账号管理</span>
+          </a>
           <a class="tg-rail-button" href="/monitor" title="实时监控">
             <span class="icon icon-activity" aria-hidden="true"></span>
             <span class="tg-visually-hidden">实时监控</span>
           </a>
-          <a class="tg-rail-button" href="/system" title="设置">
+          <a class="tg-rail-button" href="/system" title="系统设置">
             <span class="icon icon-settings" aria-hidden="true"></span>
-            <span class="tg-visually-hidden">设置</span>
-          </a>
-        </div>
-        <div class="tg-rail-footer">
-          <a class="tg-rail-button" href="/accounts" title="返回管理台">
-            <span class="icon icon-arrow-left" aria-hidden="true"></span>
-            <span class="tg-visually-hidden">返回管理台</span>
+            <span class="tg-visually-hidden">系统设置</span>
           </a>
           <span class="tg-account-avatar tg-avatar-small" data-account-avatar aria-hidden="true">TG</span>
         </div>
@@ -59,21 +69,6 @@
             <span class="icon icon-refresh-cw" aria-hidden="true"></span>
           </button>
         </header>
-
-        <div class="tg-folders" role="tablist" aria-label="会话筛选">
-          <button class="tg-folder tg-folder-active" type="button" role="tab" aria-selected="true" data-folder="all">
-            全部 <span data-folder-count="all">0</span>
-          </button>
-          <button class="tg-folder" type="button" role="tab" aria-selected="false" data-folder="unread">
-            未读 <span data-folder-count="unread">0</span>
-          </button>
-          <button class="tg-folder" type="button" role="tab" aria-selected="false" data-folder="private">
-            私聊
-          </button>
-          <button class="tg-folder" type="button" role="tab" aria-selected="false" data-folder="groups">
-            群组
-          </button>
-        </div>
 
         <div class="tg-chatlist-state" data-chats-loading>
           <span class="tg-spinner" aria-hidden="true"></span>

@@ -21,6 +21,7 @@ func TestTelegramClientScriptBehaviors(t *testing.T) {
 		`before_id`,
 		`setProfileOpen`,
 		`error.code === "session_invalid"`,
+		`element.hidden = count === 0`,
 		`showToast("当前是只读视图，消息发送功能尚未启用")`,
 		`textContent`,
 	} {
@@ -32,6 +33,28 @@ func TestTelegramClientScriptBehaviors(t *testing.T) {
 	for _, forbidden := range []string{"innerHTML", "insertAdjacentHTML", "eval(", "document.write(", "localStorage"} {
 		if strings.Contains(script, forbidden) {
 			t.Errorf("telegram_client.js must not use %q", forbidden)
+		}
+	}
+}
+
+func TestTelegramClientUsesWebGeometry(t *testing.T) {
+	content, err := os.ReadFile("../css/telegram_client.css")
+	if err != nil {
+		t.Fatalf("read telegram_client.css: %v", err)
+	}
+	css := string(content)
+
+	for _, expected := range []string{
+		"--tg-rail-width: 72px",
+		"--tg-chatlist-width: 360px",
+		"--tg-chat-width: 696px",
+		"--tg-topbar-height: 48px",
+		"--tg-input-height: 48px",
+		"--tg-row-height: 72px",
+		"--tg-column-radius: 24px",
+	} {
+		if !strings.Contains(css, expected) {
+			t.Errorf("telegram_client.css missing geometry %q", expected)
 		}
 	}
 }

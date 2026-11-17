@@ -255,14 +255,17 @@
   };
 
   const updateFolderCounts = () => {
-    if (elements.folderCountAll) {
-      elements.folderCountAll.textContent = String(state.chats.length);
-    }
-    if (elements.folderCountUnread) {
-      elements.folderCountUnread.textContent = String(
-        state.chats.filter((chat) => Number(chat.unread_count) > 0).length,
-      );
-    }
+    const unreadChats = state.chats.filter((chat) => Number(chat.unread_count) > 0).length;
+    [
+      [elements.folderCountAll, unreadChats],
+      [elements.folderCountUnread, unreadChats],
+    ].forEach(([element, count]) => {
+      if (!element) {
+        return;
+      }
+      element.textContent = String(count);
+      element.hidden = count === 0;
+    });
   };
 
   const updateSelectedChatRow = () => {
