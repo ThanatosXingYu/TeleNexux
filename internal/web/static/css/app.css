@@ -1983,11 +1983,89 @@ a {
   margin-right: 6px;
 }
 
+.account-filters {
+  display: grid;
+  grid-template-columns: minmax(240px, 1.8fr) repeat(2, minmax(150px, 0.7fr)) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 10px;
+  padding: 14px 16px;
+  border-radius: 4px;
+  background: var(--surface);
+}
+
+.account-filters .field {
+  margin: 0;
+}
+
+.compact-search-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+}
+
+.compact-search-field:focus-within {
+  border-color: var(--primary-6);
+  box-shadow: 0 0 0 2px var(--primary-1);
+}
+
+.compact-search-field .icon {
+  width: 15px;
+  height: 15px;
+  flex-basis: 15px;
+  color: var(--text-secondary);
+}
+
+.compact-search-field input {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
+
 .account-overview {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   margin-bottom: 10px;
+}
+
+.account-batch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 10px;
+  padding: 10px 14px;
+  border: 1px solid #91caff;
+  border-radius: 4px;
+  background: #e6f4ff;
+}
+
+.account-batch-summary {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.account-batch-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.account-batch-actions .inline-filter select {
+  min-width: 120px;
 }
 
 .overview-item {
@@ -2073,9 +2151,22 @@ a {
 
 .accounts-table {
   width: 100%;
-  min-width: 1080px;
+  min-width: 1120px;
   border-collapse: collapse;
   font-size: 13px;
+}
+
+.account-select-column {
+  width: 36px;
+  padding-right: 4px !important;
+}
+
+.account-select-column input,
+.account-mobile-select input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--primary-6);
 }
 
 .accounts-table th,
@@ -3379,6 +3470,34 @@ a {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .account-filters {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .account-filters > .button {
+    width: 100%;
+  }
+
+  .account-batch-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .account-batch-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .account-batch-actions .inline-filter {
+    grid-column: 1 / -1;
+    align-items: stretch;
+  }
+
+  .account-batch-actions .inline-filter select {
+    width: 100%;
+  }
+
   .overview-integration {
     grid-column: auto;
   }
@@ -3410,6 +3529,15 @@ a {
     align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
+  }
+
+  .account-mobile-select {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 34px;
+    flex: 0 0 28px;
   }
 
   .account-mobile-card-header .account-identity {

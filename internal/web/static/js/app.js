@@ -446,8 +446,20 @@
   const accountsTable = document.querySelector("[data-accounts-table]");
   const accountsMobile = document.querySelector("[data-accounts-mobile]");
   const accountsEmpty = document.querySelector("[data-accounts-empty]");
+  const accountsFilterEmpty = document.querySelector("[data-accounts-filter-empty]");
   const accountsLoading = document.querySelector("[data-accounts-loading]");
   const accountsError = document.querySelector("[data-accounts-error]");
+  const accountSearch = document.querySelector("[data-account-search]");
+  const accountStatusFilter = document.querySelector("[data-account-status-filter]");
+  const accountGroupFilter = document.querySelector("[data-account-group-filter]");
+  const accountFilterReset = document.querySelector("[data-account-filter-reset]");
+  const accountBatchBar = document.querySelector("[data-account-batch-bar]");
+  const accountSelectedCount = document.querySelector("[data-account-selected-count]");
+  const accountSelectAll = document.querySelector("[data-account-select-all]");
+  const accountBatchGroup = document.querySelector("[data-account-batch-group]");
+  const accountBatchAssign = document.querySelector("[data-account-batch-assign]");
+  const accountBatchRefresh = document.querySelector("[data-account-batch-refresh]");
+  const accountBatchDelete = document.querySelector("[data-account-batch-delete]");
   const accountCounts = [...document.querySelectorAll("[data-account-count]")];
   const onlineCounts = [...document.querySelectorAll("[data-online-count]")];
   const accountToast = document.querySelector("[data-account-toast]");
@@ -464,6 +476,9 @@
   const deleteNotice = document.querySelector("[data-account-delete-notice]");
   let managedAccount = null;
   let accountToastTimer = 0;
+  let allAccounts = [];
+  let accountGroups = [];
+  const selectedAccountIDs = new Set();
 
   const showNotice = (element, message, isError = false) => {
     if (!element) {
@@ -501,7 +516,7 @@
       }
     }
     if (!response.ok) {
-      if (response.status === 401) {
+      if (response.status === 401 || payload?.error?.code === "setup_required") {
         window.location.replace("/login");
       }
       const error = new Error(payload?.error?.message || `请求失败（${response.status}）`);
@@ -630,6 +645,121 @@
     };
   };
 
+  const createSelectOption = (value, label) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    return option;
+  };
+
+  const renderAccountGroupOptions = () => {
+    const filterValue = accountGroupFilter?.value || "";
+    const batchValue = accountBatchGroup?.value || "";
+    if (accountGroupFilter) {
+      accountGroupFilter.replaceChildren(
+        createSelectOption("", "全部分组"),
+        ...accountGroups.map((group) => createSelectOption(String(group.id), group.name)),
+      );
+      accountGroupFilter.value = accountGroups.some((group) => String(group.id) === filterValue)
+        ? filterValue
+        : "";
+    }
+    if (accountBatchGroup) {
+      accountBatchGroup.replaceChildren(
+        createSelectOption("", "选择分组"),
+        ...accountGroups.map((group) => createSelectOption(String(group.id), group.name)),
+      );
+      accountBatchGroup.value = accountGroups.some((group) => String(group.id) === batchValue)
+        ? batchValue
+        : "";
+    }
+    if (accountBatchAssign) {
+      accountBatchAssign.disabled = !accountBatchGroup?.value;
+    }
+  };
+
+  const accountMatchesFilters = (account) => {
+    const query = String(accountSearch?.value || "").trim().toLocaleLowerCase();
+    if (query) {
+      const phone = String(account.phone_number || "");
+      const haystack = [
+        account.display_name,
+        account.username ? `@${account.username}` : "",
+        account.username,
+        formatPhone(phone),
+        phone,
+        phone.replace(/\D/g, ""),
+        String(account.id),
+      ].filter(Boolean).join(" ").toLocaleLowerCase();
+      if (!haystack.includes(query)) {
+        return false;
+      }
+    }
+    const status = accountStatus(account).key;
+    if (accountStatusFilter?.value && status !== accountStatusFilter.value) {
+      return false;
+    }
+    const groupID = Number(accountGroupFilter?.value);
+    if (groupID > 0) {
+      const group = accountGroups.find((item) => Number(item.id) === groupID);
+      const accountIDs = Array.isArray(group?.account_ids)
+        ? group.account_ids.map(Number)
+        : [];
+      if (!accountIDs.includes(Number(account.id))) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const filteredAccounts = () => allAccounts.filter(accountMatchesFilters);
+
+  const selectedAccounts = () => allAccounts.filter(
+    (account) => selectedAccountIDs.has(Number(account.id)),
+  );
+
+  const createAccountSelection = (account, className) => {
+    const label = document.createElement("label");
+    label.className = className;
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = selectedAccountIDs.has(Number(account.id));
+    checkbox.setAttribute(
+      "aria-label",
+      `选择账号 ${account.display_name || account.username || account.id}`,
+    );
+    checkbox.addEventListener("change", () => {
+      const accountID = Number(account.id);
+      if (checkbox.checked) {
+        selectedAccountIDs.add(accountID);
+      } else {
+        selectedAccountIDs.delete(accountID);
+      }
+      updateSelectionControls();
+    });
+    label.append(checkbox);
+    return label;
+  };
+
+  const updateSelectionControls = () => {
+    const visible = filteredAccounts();
+    const selectedVisible = visible.filter(
+      (account) => selectedAccountIDs.has(Number(account.id)),
+    ).length;
+    if (accountSelectedCount) {
+      accountSelectedCount.textContent = String(selectedAccountIDs.size);
+    }
+    accountBatchBar?.toggleAttribute("hidden", selectedAccountIDs.size === 0);
+    if (accountSelectAll) {
+      accountSelectAll.checked = visible.length > 0 && selectedVisible === visible.length;
+      accountSelectAll.indeterminate = selectedVisible > 0 && selectedVisible < visible.length;
+      accountSelectAll.disabled = visible.length === 0;
+    }
+    if (accountBatchAssign) {
+      accountBatchAssign.disabled = !accountBatchGroup?.value || selectedAccountIDs.size === 0;
+    }
+  };
+
   const createStatus = (account) => {
     const state = accountStatus(account);
     const wrapper = document.createElement("span");
@@ -679,7 +809,7 @@
   const createAccountActions = (account) => {
     const actionGroup = document.createElement("div");
     actionGroup.className = "account-actions";
-    if (account.status !== "online") {
+    if (accountStatus(account).key !== "online") {
       const relogin = document.createElement("button");
       relogin.className = "button button-primary button-compact";
       relogin.type = "button";
@@ -717,7 +847,11 @@
     const header = document.createElement("div");
     header.className = "account-mobile-card-header";
     const status = createStatus(account);
-    header.append(createAccountIdentity(account), status);
+    header.append(
+      createAccountSelection(account, "account-mobile-select"),
+      createAccountIdentity(account),
+      status,
+    );
 
     const details = document.createElement("dl");
     details.className = "account-mobile-details";
@@ -778,7 +912,7 @@
       ? `+${phoneNumber.replace(/\D/g, "")}`
       : "";
     profileForm.elements.namedItem("username").value = account.username ? `@${account.username}` : "";
-    profileWebLink?.toggleAttribute("hidden", account.status !== "online");
+    profileWebLink?.toggleAttribute("hidden", accountStatus(account).key !== "online");
     if (profileWebLink) {
       profileWebLink.href = `/accounts/${encodeURIComponent(account.id)}/web`;
     }
@@ -804,9 +938,9 @@
     }
     accountBody.replaceChildren();
     accountsMobile.replaceChildren();
-    const online = items.filter((item) => accountStatus(item).key === "online").length;
+    const online = allAccounts.filter((item) => accountStatus(item).key === "online").length;
     accountCounts.forEach((element) => {
-      element.textContent = String(items.length);
+      element.textContent = String(allAccounts.length);
     });
     onlineCounts.forEach((element) => {
       element.textContent = String(online);
@@ -815,9 +949,14 @@
     const hasItems = items.length > 0;
     accountsTable?.toggleAttribute("hidden", !hasItems);
     accountsMobile.toggleAttribute("hidden", !hasItems);
-    accountsEmpty?.toggleAttribute("hidden", hasItems);
+    accountsEmpty?.toggleAttribute("hidden", allAccounts.length > 0);
+    accountsFilterEmpty?.toggleAttribute(
+      "hidden",
+      hasItems || allAccounts.length === 0,
+    );
     accountsLoading?.setAttribute("hidden", "");
     if (!hasItems) {
+      updateSelectionControls();
       return;
     }
 
@@ -835,6 +974,7 @@
       const status = createStatus(account);
 
       row.append(
+        tableCell(createAccountSelection(account, "account-row-select")),
         tableCell(identity),
         tableCell(phone),
         tableCell(username),
@@ -845,6 +985,7 @@
       accountBody.append(row);
       accountsMobile.append(createAccountMobileCard(account));
     });
+    updateSelectionControls();
   };
 
   document.querySelectorAll("[data-account-profile-close]").forEach((button) => {
@@ -909,6 +1050,17 @@
     }
   });
 
+  const loadAccountGroups = async () => {
+    try {
+      const payload = await requestJSON("/api/v1/groups");
+      accountGroups = Array.isArray(payload?.items) ? payload.items : [];
+    } catch {
+      accountGroups = [];
+    }
+    renderAccountGroupOptions();
+    return accountGroups;
+  };
+
   const loadAccounts = async (verifySessions = false) => {
     if (!accountBody) {
       return false;
@@ -917,13 +1069,21 @@
       accountsLoading?.removeAttribute("hidden");
       accountsTable?.setAttribute("hidden", "");
       accountsEmpty?.setAttribute("hidden", "");
+      accountsFilterEmpty?.setAttribute("hidden", "");
     }
     showNotice(accountsError, "");
     try {
       const payload = verifySessions
         ? await requestJSON("/api/v1/accounts/refresh", {method: "POST", body: "{}"})
         : await requestJSON("/api/v1/accounts?limit=100");
-      renderAccounts(Array.isArray(payload?.items) ? payload.items : []);
+      allAccounts = Array.isArray(payload?.items) ? payload.items : [];
+      const validAccountIDs = new Set(allAccounts.map((account) => Number(account.id)));
+      for (const accountID of selectedAccountIDs) {
+        if (!validAccountIDs.has(accountID)) {
+          selectedAccountIDs.delete(accountID);
+        }
+      }
+      renderAccounts(filteredAccounts());
       showNotice(accountsError, "");
       return true;
     } catch (error) {
@@ -932,6 +1092,148 @@
       return false;
     }
   };
+
+  const setBatchButtonsDisabled = (disabled) => {
+    [accountBatchAssign, accountBatchRefresh, accountBatchDelete].forEach((button) => {
+      if (button) {
+        button.disabled = disabled;
+      }
+    });
+  };
+
+  [accountSearch, accountStatusFilter, accountGroupFilter].forEach((control) => {
+    control?.addEventListener("input", () => renderAccounts(filteredAccounts()));
+    control?.addEventListener("change", () => renderAccounts(filteredAccounts()));
+  });
+  accountFilterReset?.addEventListener("click", () => {
+    if (accountSearch) {
+      accountSearch.value = "";
+    }
+    if (accountStatusFilter) {
+      accountStatusFilter.value = "";
+    }
+    if (accountGroupFilter) {
+      accountGroupFilter.value = "";
+    }
+    renderAccounts(filteredAccounts());
+    accountSearch?.focus();
+  });
+  accountSelectAll?.addEventListener("change", () => {
+    filteredAccounts().forEach((account) => {
+      const accountID = Number(account.id);
+      if (accountSelectAll.checked) {
+        selectedAccountIDs.add(accountID);
+      } else {
+        selectedAccountIDs.delete(accountID);
+      }
+    });
+    accountBody?.querySelectorAll(
+      ".account-row-select input, .account-mobile-select input",
+    )
+      .forEach((checkbox) => {
+        checkbox.checked = accountSelectAll.checked;
+      });
+    updateSelectionControls();
+  });
+  accountBatchGroup?.addEventListener("change", updateSelectionControls);
+
+  accountBatchAssign?.addEventListener("click", async () => {
+    const groupID = Number(accountBatchGroup?.value);
+    const group = accountGroups.find((item) => Number(item.id) === groupID);
+    if (!group || selectedAccountIDs.size === 0) {
+      return;
+    }
+    setBatchButtonsDisabled(true);
+    showNotice(accountsError, "正在更新账号分组...");
+    try {
+      const accountIDs = new Set(
+        (Array.isArray(group.account_ids) ? group.account_ids : []).map(Number),
+      );
+      selectedAccountIDs.forEach((accountID) => accountIDs.add(accountID));
+      await requestJSON(`/api/v1/groups/${encodeURIComponent(group.id)}/accounts`, {
+        method: "PUT",
+        body: JSON.stringify({account_ids: [...accountIDs]}),
+      });
+      await loadAccountGroups();
+      await loadAccounts();
+      showAccountToast(`已将 ${selectedAccountIDs.size} 个账号加入“${group.name}”`);
+    } catch (error) {
+      showNotice(accountsError, error.message, true);
+    } finally {
+      setBatchButtonsDisabled(false);
+      updateSelectionControls();
+    }
+  });
+
+  accountBatchRefresh?.addEventListener("click", async () => {
+    const targets = selectedAccounts().filter(
+      (account) => ["online", "error", "stale"].includes(accountStatus(account).key),
+    );
+    if (targets.length === 0) {
+      showNotice(accountsError, "所选账号当前没有可刷新的会话状态。", true);
+      return;
+    }
+    setBatchButtonsDisabled(true);
+    showNotice(accountsError, `正在验证 ${targets.length} 个账号的 Telegram 授权...`);
+    let failed = 0;
+    try {
+      for (const account of targets) {
+        try {
+          await requestJSON(
+            `/api/v1/accounts/${encodeURIComponent(account.id)}/refresh`,
+            {method: "POST", body: "{}"},
+          );
+        } catch {
+          failed += 1;
+        }
+      }
+      await loadAccounts();
+      if (failed > 0) {
+        showNotice(accountsError, `${failed} 个账号状态刷新失败，请稍后重试。`, true);
+      } else {
+        showAccountToast(`${targets.length} 个账号状态已刷新`);
+      }
+    } finally {
+      setBatchButtonsDisabled(false);
+      updateSelectionControls();
+    }
+  });
+
+  accountBatchDelete?.addEventListener("click", async () => {
+    const targets = selectedAccounts();
+    if (targets.length === 0) {
+      return;
+    }
+    if (!window.confirm(
+      `确定删除所选 ${targets.length} 个本地账号及其授权会话吗？Telegram 账号本身不会注销。`,
+    )) {
+      return;
+    }
+    setBatchButtonsDisabled(true);
+    showNotice(accountsError, `正在删除 ${targets.length} 个账号...`);
+    let failed = 0;
+    try {
+      for (const account of targets) {
+        try {
+          await requestJSON(`/api/v1/accounts/${encodeURIComponent(account.id)}`, {
+            method: "DELETE",
+          });
+          selectedAccountIDs.delete(Number(account.id));
+        } catch {
+          failed += 1;
+        }
+      }
+      await loadAccounts();
+      if (failed > 0) {
+        showNotice(accountsError, `${failed} 个账号删除失败，请检查授权会话清理状态。`, true);
+      } else {
+        showAccountToast(`${targets.length} 个本地账号已删除`);
+      }
+    } finally {
+      setBatchButtonsDisabled(false);
+      updateSelectionControls();
+    }
+  });
 
   const telegramConfig = document.querySelector("[data-telegram-config]");
   let telegramConfigured = false;
@@ -966,7 +1268,7 @@
     }
   });
   if (accountBody) {
-    loadAccounts();
+    loadAccountGroups().then(() => loadAccounts());
     loadTelegramConfig();
   }
 

@@ -16,6 +16,38 @@
   </div>
 </section>
 
+<section class="account-filters" aria-label="账号筛选">
+  <label class="field account-filter-search">
+    <span>搜索账号</span>
+    <span class="compact-search-field">
+      <span class="icon icon-search" aria-hidden="true"></span>
+      <input type="search" data-account-search maxlength="100"
+        placeholder="手机号、用户名、姓名或 Telegram ID">
+    </span>
+  </label>
+  <label class="field">
+    <span>账号状态</span>
+    <select data-account-status-filter>
+      <option value="">全部状态</option>
+      <option value="online">在线</option>
+      <option value="stale">状态待确认</option>
+      <option value="error">已掉线</option>
+      <option value="paused">已暂停</option>
+      <option value="pending">待验证</option>
+    </select>
+  </label>
+  <label class="field">
+    <span>账号分组</span>
+    <select data-account-group-filter>
+      <option value="">全部分组</option>
+    </select>
+  </label>
+  <button class="button button-secondary" type="button" data-account-filter-reset>
+    <span class="icon icon-x" aria-hidden="true"></span>
+    清除筛选
+  </button>
+</section>
+
 <section class="account-overview" aria-label="账号概览">
   <div class="overview-item">
     <span class="stat-icon stat-blue"><span class="icon icon-users" aria-hidden="true"></span></span>
@@ -34,6 +66,28 @@
   </div>
 </section>
 
+<section class="account-batch-bar" data-account-batch-bar aria-label="批量账号操作" hidden>
+  <span class="account-batch-summary">已选择 <strong data-account-selected-count>0</strong> 个账号</span>
+  <div class="account-batch-actions">
+    <label class="inline-filter">
+      <span>加入分组</span>
+      <select data-account-batch-group>
+        <option value="">选择分组</option>
+      </select>
+    </label>
+    <button class="button button-secondary button-compact" type="button" data-account-batch-assign disabled>
+      添加到分组
+    </button>
+    <button class="button button-secondary button-compact" type="button" data-account-batch-refresh>
+      <span class="icon icon-refresh-cw" aria-hidden="true"></span>
+      批量刷新
+    </button>
+    <button class="button button-danger-ghost button-compact" type="button" data-account-batch-delete>
+      批量删除
+    </button>
+  </div>
+</section>
+
 <section class="card accounts-card">
   <div class="table-state" data-accounts-loading>
     <span class="table-spinner" aria-hidden="true"></span>
@@ -45,10 +99,18 @@
     <p>点击“添加账号”，使用 Telegram 扫码或手机号完成授权。</p>
     <button class="button button-primary" type="button" data-open-login>登录第一个账号</button>
   </div>
+  <div class="empty-state accounts-empty" data-accounts-filter-empty hidden>
+    <span class="empty-icon"><span class="icon icon-search" aria-hidden="true"></span></span>
+    <h2>没有匹配的账号</h2>
+    <p>调整搜索关键词、状态或分组条件后重试。</p>
+  </div>
   <div class="accounts-table-wrap" data-accounts-table hidden>
     <table class="accounts-table">
       <thead>
         <tr>
+          <th class="account-select-column">
+            <input type="checkbox" data-account-select-all aria-label="选择当前筛选结果中的全部账号">
+          </th>
           <th>账号</th>
           <th>手机号</th>
           <th>用户名</th>

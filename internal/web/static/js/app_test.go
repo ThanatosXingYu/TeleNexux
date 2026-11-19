@@ -55,6 +55,11 @@ func TestScriptUsesOnlyReferencedControls(t *testing.T) {
 		`/api/v1/accounts/${encodeURIComponent(managedAccount.id)}`,
 		`relogin.textContent = "重新登录"`,
 		`data-account-offline`,
+		`data-account-search`,
+		`data-account-batch-bar`,
+		`/api/v1/accounts/refresh`,
+		`accountStatus(account).key !== "online"`,
+		`.account-row-select input`,
 	}
 	for _, behavior := range requiredBehavior {
 		if !strings.Contains(script, behavior) {
