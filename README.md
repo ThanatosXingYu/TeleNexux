@@ -2,7 +2,8 @@
 
 TeleNexus 是使用 Go 开发的 Telegram 多账号管理服务。当前提供管理台、
 账号元数据管理、SQLite 持久化、MTProto 二维码/手机号登录、可选两步验证、
-账号会话搜索、个人资料编辑、消息转发/删除、系统配置、健康检查和 REST API。
+账号会话搜索、个人资料编辑、消息转发/删除、账号分组、关键词监控、
+消息索引检索、数据报表、系统配置、健康检查和 REST API。
 
 ## 环境要求
 
@@ -20,7 +21,9 @@ go run ./cmd/telenexus
 ```
 
 服务默认仅监听 `http://127.0.0.1:9487`。打开
-`http://localhost:9487/accounts`，点击“添加账号”。默认使用二维码登录，
+`http://localhost:9487/login` 完成本机管理员初始化，然后进入账号列表点击
+“添加账号”。首次初始化只允许本机请求；管理员密码使用 bcrypt 保存。
+默认使用二维码登录，
 也可以切换到手机号登录；用户名方式用于核对账号，最终仍须使用该账号扫描
 二维码完成授权。
 
@@ -33,9 +36,9 @@ curl http://localhost:9487/healthz
 未配置 API 凭据时服务仍可启动，管理台会显示“待配置 API 凭据”，登录按钮
 不可提交。
 
-当前阶段尚未实现管理员登录与权限控制，因此默认只监听本机。不要将管理台
-直接暴露到公网；需要局域网访问时必须先增加反向代理鉴权并显式设置
-`HTTP_ADDR`。
+管理台已启用管理员会话、HttpOnly Cookie、CSRF 校验和登录限流。默认仍
+只监听本机；需要局域网访问时必须使用反向代理提供 TLS 和额外访问控制，
+并显式设置 `HTTP_ADDR`。
 
 ## 账号登录
 
@@ -71,6 +74,7 @@ sidecar；后续连接沿用同一资料，不会使用项目名称作为设备�
 | `LOG_LEVEL` | `info` | `debug`、`info`、`warn` 或 `error` |
 | `DATABASE_PATH` | `./data/telenexus.db` | SQLite 数据文件 |
 | `SETTINGS_PATH` | `./data/settings.json` | 系统设置本地文件 |
+| `AUTH_PATH` | `./data/auth.json` | 管理员凭据文件，权限 `0600` |
 | `SHUTDOWN_TIMEOUT` | `10s` | HTTP 启动检查与关闭超时 |
 | `TELEGRAM_API_ID` | 空 | Telegram 应用 ID |
 | `TELEGRAM_API_HASH` | 空 | Telegram 应用 Hash |
@@ -80,6 +84,9 @@ sidecar；后续连接沿用同一资料，不会使用项目名称作为设备�
 `temp/` 均不得提交到 Git。`.env.example` 仅包含空模板。
 
 ## API
+
+除登录、初始化和 `/healthz` 外，API 均要求管理员会话。写请求还必须携带
+与 HttpOnly Cookie 配套的 `X-CSRF-Token`。
 
 账号查询：
 
@@ -121,6 +128,21 @@ GET    /api/v1/accounts/{id}/profile
 PUT    /api/v1/accounts/{id}/profile
 GET    /api/v1/accounts/{id}/chats/{type}/{peer_id}/profile
 GET    /api/v1/accounts/{id}/chats/{type}/{peer_id}/avatar
+GET    /api/v1/dashboard
+GET    /api/v1/groups
+POST   /api/v1/groups
+DELETE /api/v1/groups/{id}
+PUT    /api/v1/groups/{id}/accounts
+GET    /api/v1/monitor/rules
+POST   /api/v1/monitor/rules
+PUT    /api/v1/monitor/rules/{id}
+DELETE /api/v1/monitor/rules/{id}
+POST   /api/v1/monitor/run
+GET    /api/v1/monitor/status
+GET    /api/v1/monitor/alerts
+POST   /api/v1/monitor/alerts/{id}/resolve
+GET    /api/v1/messages
+GET    /api/v1/reports?days=7
 ```
 
 聊天接口只读取账号目录中与 `{id}` 对应的授权会话，`type` 支持 `user`、
@@ -129,6 +151,12 @@ GET    /api/v1/accounts/{id}/chats/{type}/{peer_id}/avatar
 菜单、多选后转发或删除消息，并查看或编辑当前账号资料。删除消息时可选择
 “仅为我删除”或“为所有人删除”，默认使用更安全的仅本地删除。头像按需在浏览器
 读取，不会下载为本地会话归档。
+
+账号分组、监控规则、告警和消息索引保存在同一个 SQLite 数据库。监控调度器
+每分钟读取启用规则；第一次运行只建立最新消息基线，不会把大量历史消息回填
+为告警。消息索引默认保留 30 天，可在浏览器中检索，不提供会话文件下载。
+管理台工作台、分组、监控、消息记录和报表页面均读取真实接口，没有数据时
+显示空状态，不生成虚构统计。
 
 错误响应统一为：
 
