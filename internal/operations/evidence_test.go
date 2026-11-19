@@ -353,6 +353,53 @@ func TestIngestBatchRejectsInvalidScope(t *testing.T) {
 	}
 }
 
+func TestEvidenceAndIngestionBatchesAreAppendOnly(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	service.now = func() time.Time {
+		return time.Date(2026, 11, 20, 14, 30, 0, 0, time.UTC)
+	}
+	result, err := service.IngestBatch(ctx, IngestBatchInput{
+		BatchID:         "append-only-batch",
+		Source:          "test",
+		AccountID:       7,
+		PeerType:        "chat",
+		PeerID:          42,
+		CheckpointAfter: 1,
+		Complete:        true,
+		Messages: []MessageRecord{{
+			AccountID: 7,
+			PeerType:  "chat",
+			PeerID:    42,
+			MessageID: 1,
+			Sender:    "Alice",
+			Text:      "original",
+			SentAt:    service.now(),
+		}},
+	})
+	if err != nil || result.Events != 1 {
+		t.Fatalf("IngestBatch() = %+v, %v", result, err)
+	}
+	if _, err := service.db.ExecContext(ctx, `
+UPDATE evidence_events SET text = 'tampered'
+WHERE batch_id = 'append-only-batch'`); err == nil {
+		t.Fatal("evidence event update unexpectedly succeeded")
+	}
+	if _, err := service.db.ExecContext(ctx, `
+UPDATE ingestion_batches SET status = 'failed'
+WHERE batch_id = 'append-only-batch'`); err == nil {
+		t.Fatal("ingestion batch update unexpectedly succeeded")
+	}
+	var text string
+	if err := service.db.QueryRowContext(ctx, `
+SELECT text FROM evidence_events WHERE batch_id = 'append-only-batch'`).Scan(&text); err != nil {
+		t.Fatalf("read evidence text: %v", err)
+	}
+	if text != "original" {
+		t.Fatalf("evidence text = %q, want original", text)
+	}
+}
+
 func TestIngestBatchRetryIsIdempotentAndRejectsConflictingContent(t *testing.T) {
 	ctx := context.Background()
 	service := newTestService(t)

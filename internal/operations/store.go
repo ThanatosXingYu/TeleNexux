@@ -402,6 +402,11 @@ CREATE TABLE IF NOT EXISTS ingestion_batches (
 );
 CREATE INDEX IF NOT EXISTS ingestion_batches_target_idx
 	ON ingestion_batches(account_id, peer_type, peer_id, finished_at DESC);
+CREATE TRIGGER IF NOT EXISTS ingestion_batches_no_update
+BEFORE UPDATE ON ingestion_batches
+BEGIN
+	SELECT RAISE(ABORT, 'ingestion batches are append-only');
+END;
 CREATE TABLE IF NOT EXISTS evidence_events (
 	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
 	event_id TEXT NOT NULL UNIQUE,
@@ -428,6 +433,11 @@ CREATE INDEX IF NOT EXISTS evidence_events_message_idx
 	ON evidence_events(account_id, peer_type, peer_id, message_id, version DESC);
 CREATE INDEX IF NOT EXISTS evidence_events_batch_idx
 	ON evidence_events(batch_id, sequence);
+CREATE TRIGGER IF NOT EXISTS evidence_events_no_update
+BEFORE UPDATE ON evidence_events
+BEGIN
+	SELECT RAISE(ABORT, 'evidence events are append-only');
+END;
 CREATE TABLE IF NOT EXISTS retention_policies (
 	id INTEGER PRIMARY KEY CHECK (id = 1),
 	message_retention_days INTEGER NOT NULL
