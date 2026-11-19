@@ -19,6 +19,7 @@ type Config struct {
 	LogLevel           string
 	DatabasePath       string
 	SettingsPath       string
+	AuthPath           string
 	ShutdownTimeout    time.Duration
 	TelegramAPIID      int
 	TelegramAPIHash    string
@@ -55,6 +56,7 @@ func Load() (Config, error) {
 		LogLevel:           valueOrDefault(lookup("LOG_LEVEL"), "info"),
 		DatabasePath:       valueOrDefault(lookup("DATABASE_PATH"), "./data/telenexus.db"),
 		SettingsPath:       settingsPath,
+		AuthPath:           valueOrDefault(lookup("AUTH_PATH"), "./data/auth.json"),
 		ShutdownTimeout:    10 * time.Second,
 		TelegramAPIHash:    strings.TrimSpace(lookup("TELEGRAM_API_HASH")),
 		TelegramSessionDir: valueOrDefault(lookup("TELEGRAM_SESSION_DIR"), "./data/telegram-sessions"),
@@ -90,6 +92,9 @@ func (c Config) validate() error {
 	}
 	if c.DatabasePath == "" {
 		return errors.New("DATABASE_PATH must not be empty")
+	}
+	if c.AuthPath == "" {
+		return errors.New("AUTH_PATH must not be empty")
 	}
 	if c.ShutdownTimeout <= 0 {
 		return errors.New("SHUTDOWN_TIMEOUT must be positive")

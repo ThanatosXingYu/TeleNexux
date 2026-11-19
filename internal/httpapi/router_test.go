@@ -9,15 +9,54 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ThanatosXingYu/TeleNexux/internal/account"
+	"github.com/ThanatosXingYu/TeleNexux/internal/auth"
 	"github.com/ThanatosXingYu/TeleNexux/internal/settings"
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramauth"
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramchat"
 	"github.com/ThanatosXingYu/TeleNexux/internal/web"
 )
+
+var (
+	testAuthOnce    sync.Once
+	testAuthManager *auth.Manager
+	testAuthToken   string
+	testAuthCSRF    string
+	testAuthErr     error
+)
+
+func testAuthentication() (*auth.Manager, string, string) {
+	testAuthOnce.Do(func() {
+		testAuthManager, testAuthErr = auth.NewTestManager("admin", "strong-password-123")
+		if testAuthErr != nil {
+			return
+		}
+		var session auth.Session
+		testAuthToken, session, testAuthErr = testAuthManager.CreateSession()
+		testAuthCSRF = session.CSRF
+	})
+	if testAuthErr != nil {
+		panic(testAuthErr)
+	}
+	return testAuthManager, testAuthToken, testAuthCSRF
+}
+
+type authenticatedTestHandler struct {
+	next  http.Handler
+	token string
+	csrf  string
+}
+
+func (h authenticatedTestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	request := r.Clone(r.Context())
+	request.AddCookie(&http.Cookie{Name: auth.CookieName, Value: h.token})
+	request.Header.Set(auth.CSRFHeader, h.csrf)
+	h.next.ServeHTTP(w, request)
+}
 
 type fakeAccountService struct {
 	items     []account.Account
@@ -84,6 +123,22 @@ func (s *fakeAccountService) UpdateStatus(
 		return account.Account{}, s.updateErr
 	}
 	s.created.Status = status
+	return s.created, nil
+}
+
+func (s *fakeAccountService) RecordVerification(
+	_ context.Context,
+	_ int64,
+	status string,
+	reason string,
+) (account.Account, error) {
+	if s.updateErr != nil {
+		return account.Account{}, s.updateErr
+	}
+	now := time.Unix(10, 0).UTC()
+	s.created.Status = status
+	s.created.StatusReason = reason
+	s.created.LastVerifiedAt = &now
 	return s.created, nil
 }
 
@@ -296,6 +351,27 @@ func newTestHandler(service AccountService) http.Handler {
 	return newTestHandlerWithTelegram(service, &fakeTelegramAuthService{})
 }
 
+func newRawTestHandler(t *testing.T, manager *auth.Manager) http.Handler {
+	t.Helper()
+	webHandler, err := web.New()
+	if err != nil {
+		t.Fatalf("web.New() error = %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return New(
+		&fakeAccountService{},
+		&fakeTelegramAuthService{},
+		nil,
+		nil,
+		manager,
+		webHandler.Handler(),
+		logger,
+		nil,
+		nil,
+		nil,
+	).Handler()
+}
+
 func newTestHandlerWithTelegram(
 	service AccountService,
 	telegram TelegramAuthService,
@@ -305,7 +381,23 @@ func newTestHandlerWithTelegram(
 		panic(err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(service, telegram, nil, nil, webHandler.Handler(), logger).Handler()
+	manager, token, csrf := testAuthentication()
+	return authenticatedTestHandler{
+		next: New(
+			service,
+			telegram,
+			nil,
+			nil,
+			manager,
+			webHandler.Handler(),
+			logger,
+			nil,
+			nil,
+			nil,
+		).Handler(),
+		token: token,
+		csrf:  csrf,
+	}
 }
 
 func TestCreateAccount(t *testing.T) {
@@ -322,6 +414,64 @@ func TestCreateAccount(t *testing.T) {
 	}
 	if service.created.ID != 42 {
 		t.Errorf("created ID = %d, want 42", service.created.ID)
+	}
+}
+
+func TestManagementAPIsRequireAuthentication(t *testing.T) {
+	manager, err := auth.NewTestManager("admin", "strong-password-123")
+	if err != nil {
+		t.Fatalf("NewTestManager() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/accounts", nil)
+	recorder := httptest.NewRecorder()
+	newRawTestHandler(t, manager).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestManagementMutationsRequireCSRF(t *testing.T) {
+	manager, err := auth.NewTestManager("admin", "strong-password-123")
+	if err != nil {
+		t.Fatalf("NewTestManager() error = %v", err)
+	}
+	token, _, err := manager.CreateSession()
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts", strings.NewReader(`{}`))
+	request.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	newRawTestHandler(t, manager).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAdministratorLoginCreatesSession(t *testing.T) {
+	manager, err := auth.NewTestManager("admin", "strong-password-123")
+	if err != nil {
+		t.Fatalf("NewTestManager() error = %v", err)
+	}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/login",
+		strings.NewReader(`{"username":"admin","password":"strong-password-123"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.RemoteAddr = "127.0.0.1:50000"
+	recorder := httptest.NewRecorder()
+	newRawTestHandler(t, manager).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"authenticated":true`) {
+		t.Fatalf("body = %s, want authenticated session", recorder.Body.String())
+	}
+	cookies := recorder.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("login did not set a session cookie")
 	}
 }
 
@@ -744,12 +894,21 @@ func newTestHandlerWithDependencies(
 		panic(err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(
-		accounts,
-		telegram,
-		chats,
-		settingsService,
-		webHandler.Handler(),
-		logger,
-	).Handler()
+	manager, token, csrf := testAuthentication()
+	return authenticatedTestHandler{
+		next: New(
+			accounts,
+			telegram,
+			chats,
+			settingsService,
+			manager,
+			webHandler.Handler(),
+			logger,
+			nil,
+			nil,
+			nil,
+		).Handler(),
+		token: token,
+		csrf:  csrf,
+	}
 }

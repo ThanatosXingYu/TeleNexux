@@ -13,8 +13,12 @@ import (
 	"time"
 
 	"github.com/ThanatosXingYu/TeleNexux/internal/account"
+	"github.com/ThanatosXingYu/TeleNexux/internal/auth"
 	"github.com/ThanatosXingYu/TeleNexux/internal/config"
+	"github.com/ThanatosXingYu/TeleNexux/internal/health"
 	"github.com/ThanatosXingYu/TeleNexux/internal/httpapi"
+	"github.com/ThanatosXingYu/TeleNexux/internal/monitorscheduler"
+	"github.com/ThanatosXingYu/TeleNexux/internal/operations"
 	"github.com/ThanatosXingYu/TeleNexux/internal/settings"
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramauth"
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramchat"
@@ -55,6 +59,22 @@ func run() error {
 		}
 	}()
 
+	authManager, err := auth.NewManager(cfg.AuthPath)
+	if err != nil {
+		return fmt.Errorf("initialize administrator authentication: %w", err)
+	}
+	if err := health.EnsureSessionDirectory(cfg.TelegramSessionDir); err != nil {
+		return err
+	}
+	operationsStore, err := operations.Open(ctx, cfg.DatabasePath)
+	if err != nil {
+		return fmt.Errorf("initialize operations storage: %w", err)
+	}
+	defer func() {
+		if err := operationsStore.Close(); err != nil {
+			logger.Error("close operations storage", "error", err)
+		}
+	}()
 	webRenderer, err := web.New()
 	if err != nil {
 		return fmt.Errorf("initialize web interface: %w", err)
@@ -96,6 +116,13 @@ func run() error {
 			return fmt.Errorf("initialize Telegram chat service: %w", err)
 		}
 	}
+	var monitorRunner httpapi.MonitorRunner
+	if telegramChats != nil {
+		scheduler := monitorscheduler.New(operationsStore, telegramChats, time.Minute, logger)
+		scheduler.Start(ctx)
+		monitorRunner = scheduler
+	}
+	go cleanupMessageIndex(ctx, operationsStore, logger)
 
 	server := &http.Server{
 		Addr: cfg.HTTPAddr,
@@ -104,8 +131,18 @@ func run() error {
 			telegramAuth,
 			telegramChats,
 			settingsStore,
+			authManager,
 			webRenderer.Handler(),
 			logger,
+			health.NewChecker(health.Options{
+				Database:           repository,
+				SessionDirectory:   cfg.TelegramSessionDir,
+				AuthPath:           cfg.AuthPath,
+				TelegramConfigured: telegramChats != nil,
+				AdminConfigured:    authManager.Configured,
+			}),
+			operationsStore,
+			monitorRunner,
 		).Handler(),
 		ReadHeaderTimeout: cfg.ShutdownTimeout,
 	}
@@ -131,6 +168,32 @@ func run() error {
 		return fmt.Errorf("shutdown HTTP server: %w", err)
 	}
 	return nil
+}
+
+func cleanupMessageIndex(
+	ctx context.Context,
+	store *operations.Service,
+	logger *slog.Logger,
+) {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			deleted, err := store.CleanupMessages(cleanupCtx, 30)
+			cancel()
+			if err != nil {
+				logger.Warn("cleanup message index failed", "error", err)
+				continue
+			}
+			if deleted > 0 {
+				logger.Info("message index retention cleanup completed", "deleted", deleted)
+			}
+		}
+	}
 }
 
 func parseLogLevel(level string) slog.Level {

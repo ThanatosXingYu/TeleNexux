@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +19,10 @@ import (
 	"time"
 
 	"github.com/ThanatosXingYu/TeleNexux/internal/account"
+	"github.com/ThanatosXingYu/TeleNexux/internal/auth"
+	healthcheck "github.com/ThanatosXingYu/TeleNexux/internal/health"
+	"github.com/ThanatosXingYu/TeleNexux/internal/monitorscheduler"
+	"github.com/ThanatosXingYu/TeleNexux/internal/operations"
 	"github.com/ThanatosXingYu/TeleNexux/internal/settings"
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramauth"
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramchat"
@@ -31,6 +36,12 @@ type AccountService interface {
 	List(ctx context.Context, filter account.Filter) ([]account.Account, error)
 	Get(ctx context.Context, id int64) (account.Account, error)
 	UpdateStatus(ctx context.Context, id int64, status string) (account.Account, error)
+	RecordVerification(
+		ctx context.Context,
+		id int64,
+		status string,
+		reason string,
+	) (account.Account, error)
 	Update(ctx context.Context, id int64, input account.UpdateInput) (account.Account, error)
 	Delete(ctx context.Context, id int64) error
 }
@@ -97,13 +108,55 @@ type SettingsService interface {
 	RestartRequired() bool
 }
 
+type HealthService interface {
+	Check(ctx context.Context, detailed bool) healthcheck.Report
+}
+
+type OperationsService interface {
+	CreateGroup(ctx context.Context, name, color string) (operations.Group, error)
+	ListGroups(ctx context.Context) ([]operations.Group, error)
+	DeleteGroup(ctx context.Context, id int64) error
+	SetGroupAccounts(ctx context.Context, groupID int64, accountIDs []int64) error
+	CreateRule(
+		ctx context.Context,
+		name string,
+		accountID int64,
+		peerType string,
+		peerID int64,
+		peerTitle string,
+		keywords []string,
+	) (operations.Rule, error)
+	ListRules(ctx context.Context, enabledOnly bool) ([]operations.Rule, error)
+	SetRuleEnabled(ctx context.Context, id int64, enabled bool) error
+	DeleteRule(ctx context.Context, id int64) error
+	ListAlerts(ctx context.Context, state string, limit int) ([]operations.Alert, error)
+	ResolveAlert(ctx context.Context, id int64) error
+	IngestMessages(ctx context.Context, messages []operations.MessageRecord) (int, []operations.Alert, error)
+	SearchMessages(ctx context.Context, filter operations.MessageQuery) (operations.MessagePage, error)
+	BuildReport(ctx context.Context, days int) (operations.Report, error)
+	Dashboard(ctx context.Context, telegramReady bool) (operations.Dashboard, error)
+	CleanupMessages(ctx context.Context, retentionDays int) (int64, error)
+	PurgeAccount(ctx context.Context, accountID int64) error
+}
+
+type MonitorRunner interface {
+	RunOnce(ctx context.Context) error
+	Status() monitorscheduler.Status
+}
+
 type API struct {
-	accounts AccountService
-	telegram TelegramAuthService
-	chats    TelegramChatService
-	settings SettingsService
-	web      http.Handler
-	logger   *slog.Logger
+	accounts   AccountService
+	telegram   TelegramAuthService
+	chats      TelegramChatService
+	settings   SettingsService
+	auth       *auth.Manager
+	healthSvc  HealthService
+	operations OperationsService
+	monitor    MonitorRunner
+	web        http.Handler
+	logger     *slog.Logger
+	loginMu    sync.Mutex
+	attempts   map[string]loginAttempt
 }
 
 func New(
@@ -111,58 +164,765 @@ func New(
 	telegram TelegramAuthService,
 	chats TelegramChatService,
 	settingsService SettingsService,
+	authManager *auth.Manager,
 	webHandler http.Handler,
 	logger *slog.Logger,
+	healthService HealthService,
+	operationsService OperationsService,
+	monitorRunner MonitorRunner,
 ) *API {
 	return &API{
-		accounts: accounts,
-		telegram: telegram,
-		chats:    chats,
-		settings: settingsService,
-		web:      webHandler,
-		logger:   logger,
+		accounts:   accounts,
+		telegram:   telegram,
+		chats:      chats,
+		settings:   settingsService,
+		auth:       authManager,
+		healthSvc:  healthService,
+		operations: operationsService,
+		monitor:    monitorRunner,
+		web:        webHandler,
+		logger:     logger,
+		attempts:   make(map[string]loginAttempt),
 	}
 }
 
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", a.web)
-	mux.Handle("GET /", a.web)
 	mux.HandleFunc("GET /healthz", a.health)
-	mux.HandleFunc("GET /api/v1/accounts", a.listAccounts)
-	mux.HandleFunc("POST /api/v1/accounts", a.createAccount)
-	mux.HandleFunc("POST /api/v1/accounts/refresh", a.refreshAccounts)
-	mux.HandleFunc("GET /api/v1/accounts/{id}", a.getAccount)
-	mux.HandleFunc("PUT /api/v1/accounts/{id}", a.updateAccount)
-	mux.HandleFunc("DELETE /api/v1/accounts/{id}", a.deleteAccount)
-	mux.HandleFunc("POST /api/v1/accounts/{id}/refresh", a.refreshAccount)
-	mux.HandleFunc("GET /api/v1/accounts/{id}/chats", a.listAccountChats)
-	mux.HandleFunc("GET /api/v1/accounts/{id}/search", a.searchAccountChats)
-	mux.HandleFunc("GET /api/v1/accounts/{id}/chats/{peerType}/{peerID}/messages", a.listChatMessages)
-	mux.HandleFunc("POST /api/v1/accounts/{id}/chats/{peerType}/{peerID}/messages/delete", a.deleteChatMessages)
-	mux.HandleFunc("POST /api/v1/accounts/{id}/chats/{peerType}/{peerID}/messages/forward", a.forwardChatMessages)
-	mux.HandleFunc("GET /api/v1/accounts/{id}/profile", a.getCurrentProfile)
-	mux.HandleFunc("PUT /api/v1/accounts/{id}/profile", a.updateCurrentProfile)
-	mux.HandleFunc("GET /api/v1/accounts/{id}/chats/{peerType}/{peerID}/profile", a.getChatProfile)
-	mux.HandleFunc("GET /api/v1/accounts/{id}/chats/{peerType}/{peerID}/avatar", a.getChatAvatar)
-	mux.HandleFunc("GET /api/v1/settings", a.getSettings)
-	mux.HandleFunc("PUT /api/v1/settings", a.updateSettings)
-	mux.HandleFunc("GET /api/v1/telegram/auth/config", a.telegramAuthConfig)
-	mux.HandleFunc("POST /api/v1/telegram/auth/send-code", a.sendTelegramCode)
-	mux.HandleFunc("POST /api/v1/telegram/auth/qr", a.startTelegramQR)
-	mux.HandleFunc("GET /api/v1/telegram/auth/qr/{loginID}", a.pollTelegramQR)
-	mux.HandleFunc("DELETE /api/v1/telegram/auth/qr/{loginID}", a.cancelTelegramQR)
-	mux.HandleFunc("POST /api/v1/telegram/auth/{loginID}/code", a.submitTelegramCode)
-	mux.HandleFunc("POST /api/v1/telegram/auth/{loginID}/password", a.submitTelegramPassword)
-	mux.HandleFunc("DELETE /api/v1/telegram/auth/{loginID}", a.cancelTelegramLogin)
+	mux.HandleFunc("GET /login", a.web.ServeHTTP)
+	mux.HandleFunc("GET /api/v1/auth/session", a.authSession)
+	mux.HandleFunc("POST /api/v1/auth/setup", a.setupAdministrator)
+	mux.HandleFunc("POST /api/v1/auth/login", a.loginAdministrator)
+	mux.HandleFunc("POST /api/v1/auth/logout", a.requireAPI(a.logoutAdministrator))
+	mux.HandleFunc("GET /api/v1/health", a.requireAPI(a.healthDetails))
+	mux.HandleFunc("GET /api/v1/dashboard", a.requireAPI(a.dashboard))
+	mux.HandleFunc("GET /api/v1/groups", a.requireAPI(a.listGroups))
+	mux.HandleFunc("POST /api/v1/groups", a.requireAPI(a.createGroup))
+	mux.HandleFunc("DELETE /api/v1/groups/{id}", a.requireAPI(a.deleteGroup))
+	mux.HandleFunc("PUT /api/v1/groups/{id}/accounts", a.requireAPI(a.updateGroupAccounts))
+	mux.HandleFunc("GET /api/v1/monitor/rules", a.requireAPI(a.listMonitorRules))
+	mux.HandleFunc("POST /api/v1/monitor/rules", a.requireAPI(a.createMonitorRule))
+	mux.HandleFunc("PUT /api/v1/monitor/rules/{id}", a.requireAPI(a.updateMonitorRule))
+	mux.HandleFunc("DELETE /api/v1/monitor/rules/{id}", a.requireAPI(a.deleteMonitorRule))
+	mux.HandleFunc("POST /api/v1/monitor/run", a.requireAPI(a.runMonitor))
+	mux.HandleFunc("GET /api/v1/monitor/status", a.requireAPI(a.monitorStatus))
+	mux.HandleFunc("GET /api/v1/monitor/alerts", a.requireAPI(a.listMonitorAlerts))
+	mux.HandleFunc(
+		"POST /api/v1/monitor/alerts/{id}/resolve",
+		a.requireAPI(a.resolveMonitorAlert),
+	)
+	mux.HandleFunc("GET /api/v1/messages", a.requireAPI(a.searchMessages))
+	mux.HandleFunc("POST /api/v1/messages/cleanup", a.requireAPI(a.cleanupMessages))
+	mux.HandleFunc("GET /api/v1/reports", a.requireAPI(a.messageReport))
+	mux.Handle("GET /", a.requirePage(a.web))
+
+	mux.HandleFunc("GET /api/v1/accounts", a.requireAPI(a.listAccounts))
+	mux.HandleFunc("POST /api/v1/accounts", a.requireAPI(a.createAccount))
+	mux.HandleFunc("POST /api/v1/accounts/refresh", a.requireAPI(a.refreshAccounts))
+	mux.HandleFunc("GET /api/v1/accounts/{id}", a.requireAPI(a.getAccount))
+	mux.HandleFunc("PUT /api/v1/accounts/{id}", a.requireAPI(a.updateAccount))
+	mux.HandleFunc("DELETE /api/v1/accounts/{id}", a.requireAPI(a.deleteAccount))
+	mux.HandleFunc("POST /api/v1/accounts/{id}/refresh", a.requireAPI(a.refreshAccount))
+	mux.HandleFunc("GET /api/v1/accounts/{id}/chats", a.requireAPI(a.listAccountChats))
+	mux.HandleFunc("GET /api/v1/accounts/{id}/search", a.requireAPI(a.searchAccountChats))
+	mux.HandleFunc(
+		"GET /api/v1/accounts/{id}/chats/{peerType}/{peerID}/messages",
+		a.requireAPI(a.listChatMessages),
+	)
+	mux.HandleFunc(
+		"POST /api/v1/accounts/{id}/chats/{peerType}/{peerID}/messages/delete",
+		a.requireAPI(a.deleteChatMessages),
+	)
+	mux.HandleFunc(
+		"POST /api/v1/accounts/{id}/chats/{peerType}/{peerID}/messages/forward",
+		a.requireAPI(a.forwardChatMessages),
+	)
+	mux.HandleFunc("GET /api/v1/accounts/{id}/profile", a.requireAPI(a.getCurrentProfile))
+	mux.HandleFunc("PUT /api/v1/accounts/{id}/profile", a.requireAPI(a.updateCurrentProfile))
+	mux.HandleFunc(
+		"GET /api/v1/accounts/{id}/chats/{peerType}/{peerID}/profile",
+		a.requireAPI(a.getChatProfile),
+	)
+	mux.HandleFunc(
+		"GET /api/v1/accounts/{id}/chats/{peerType}/{peerID}/avatar",
+		a.requireAPI(a.getChatAvatar),
+	)
+	mux.HandleFunc("GET /api/v1/settings", a.requireAPI(a.getSettings))
+	mux.HandleFunc("PUT /api/v1/settings", a.requireAPI(a.updateSettings))
+	mux.HandleFunc("GET /api/v1/telegram/auth/config", a.requireAPI(a.telegramAuthConfig))
+	mux.HandleFunc("POST /api/v1/telegram/auth/send-code", a.requireAPI(a.sendTelegramCode))
+	mux.HandleFunc("POST /api/v1/telegram/auth/qr", a.requireAPI(a.startTelegramQR))
+	mux.HandleFunc("GET /api/v1/telegram/auth/qr/{loginID}", a.requireAPI(a.pollTelegramQR))
+	mux.HandleFunc("DELETE /api/v1/telegram/auth/qr/{loginID}", a.requireAPI(a.cancelTelegramQR))
+	mux.HandleFunc(
+		"POST /api/v1/telegram/auth/{loginID}/code",
+		a.requireAPI(a.submitTelegramCode),
+	)
+	mux.HandleFunc(
+		"POST /api/v1/telegram/auth/{loginID}/password",
+		a.requireAPI(a.submitTelegramPassword),
+	)
+	mux.HandleFunc(
+		"DELETE /api/v1/telegram/auth/{loginID}",
+		a.requireAPI(a.cancelTelegramLogin),
+	)
 	return a.recoverPanic(a.logRequests(mux))
 }
 
-func (a *API) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{
-		"status":  "ok",
-		"service": "telenexus",
+func (a *API) health(w http.ResponseWriter, r *http.Request) {
+	a.writeHealth(w, r, false)
+}
+
+func (a *API) healthDetails(w http.ResponseWriter, r *http.Request) {
+	a.writeHealth(w, r, true)
+}
+
+func (a *API) writeHealth(w http.ResponseWriter, r *http.Request, detailed bool) {
+	if a.healthSvc == nil {
+		writeJSON(w, http.StatusServiceUnavailable, healthcheck.Report{
+			Status:    "error",
+			CheckedAt: time.Now().UTC(),
+			Checks: []healthcheck.Check{{
+				Name:    "service",
+				Status:  "error",
+				Message: "健康检查尚未初始化",
+			}},
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	report := a.healthSvc.Check(ctx, detailed)
+	status := http.StatusOK
+	if report.Status == "error" {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, report)
+}
+
+func (a *API) dashboard(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	result, err := a.operations.Dashboard(r.Context(), a.chats != nil)
+	if err != nil {
+		a.logger.Error("build dashboard", "error", err)
+		writeError(w, http.StatusInternalServerError, "dashboard_failed", "无法读取工作台数据")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *API) listGroups(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	items, err := a.operations.ListGroups(r.Context())
+	if err != nil {
+		a.logger.Error("list account groups", "error", err)
+		writeError(w, http.StatusInternalServerError, "groups_failed", "无法读取账号分组")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (a *API) createGroup(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	var input struct {
+		Name  string `json:"name"`
+		Color string `json:"color"`
+	}
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	item, err := a.operations.CreateGroup(r.Context(), input.Name, input.Color)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_group", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (a *API) deleteGroup(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if err := a.operations.DeleteGroup(r.Context(), id); err != nil {
+		a.writeOperationsError(w, err, "account group")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) updateGroupAccounts(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		AccountIDs []int64 `json:"account_ids"`
+	}
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	if err := a.operations.SetGroupAccounts(r.Context(), id, input.AccountIDs); err != nil {
+		a.writeOperationsError(w, err, "account group")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) listMonitorRules(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	enabledOnly := r.URL.Query().Get("enabled") == "true"
+	items, err := a.operations.ListRules(r.Context(), enabledOnly)
+	if err != nil {
+		a.logger.Error("list monitor rules", "error", err)
+		writeError(w, http.StatusInternalServerError, "monitor_rules_failed", "无法读取监控规则")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (a *API) createMonitorRule(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	var input struct {
+		Name      string   `json:"name"`
+		AccountID int64    `json:"account_id"`
+		PeerType  string   `json:"peer_type"`
+		PeerID    int64    `json:"peer_id"`
+		PeerTitle string   `json:"peer_title"`
+		Keywords  []string `json:"keywords"`
+	}
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	item, err := a.operations.CreateRule(
+		r.Context(),
+		input.Name,
+		input.AccountID,
+		input.PeerType,
+		input.PeerID,
+		input.PeerTitle,
+		input.Keywords,
+	)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_monitor_rule", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (a *API) updateMonitorRule(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	if input.Enabled == nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_monitor_rule", "enabled is required")
+		return
+	}
+	if err := a.operations.SetRuleEnabled(r.Context(), id, *input.Enabled); err != nil {
+		a.writeOperationsError(w, err, "monitor rule")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) deleteMonitorRule(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if err := a.operations.DeleteRule(r.Context(), id); err != nil {
+		a.writeOperationsError(w, err, "monitor rule")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) runMonitor(w http.ResponseWriter, _ *http.Request) {
+	if a.monitor == nil {
+		writeError(w, http.StatusServiceUnavailable, "monitor_unavailable", "监控调度器尚未初始化")
+		return
+	}
+	if a.monitor.Status().Running {
+		writeError(w, http.StatusConflict, "monitor_running", "监控任务正在运行，请稍后再试")
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := a.monitor.RunOnce(ctx); err != nil {
+			a.logger.Warn("manual monitor run failed", "error", err)
+		}
+	}()
+	writeJSON(w, http.StatusAccepted, a.monitor.Status())
+}
+
+func (a *API) monitorStatus(w http.ResponseWriter, _ *http.Request) {
+	if a.monitor == nil {
+		writeError(w, http.StatusServiceUnavailable, "monitor_unavailable", "监控调度器尚未初始化")
+		return
+	}
+	writeJSON(w, http.StatusOK, a.monitor.Status())
+}
+
+func (a *API) listMonitorAlerts(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	limit, ok := parseLimit(w, r, 50)
+	if !ok {
+		return
+	}
+	items, err := a.operations.ListAlerts(r.Context(), r.URL.Query().Get("state"), limit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_alert_query", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (a *API) resolveMonitorAlert(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if err := a.operations.ResolveAlert(r.Context(), id); err != nil {
+		a.writeOperationsError(w, err, "monitor alert")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) searchMessages(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	filter, err := parseMessageQuery(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_message_query", err.Error())
+		return
+	}
+	page, err := a.operations.SearchMessages(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "message_search_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (a *API) cleanupMessages(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	var input struct {
+		RetentionDays int `json:"retention_days"`
+	}
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	deleted, err := a.operations.CleanupMessages(r.Context(), input.RetentionDays)
+	if err != nil {
+		a.logger.Error("cleanup indexed messages", "error", err)
+		writeError(w, http.StatusInternalServerError, "message_cleanup_failed", "消息索引清理失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"deleted": deleted})
+}
+
+func (a *API) messageReport(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+	report, err := a.operations.BuildReport(r.Context(), days)
+	if err != nil {
+		a.logger.Error("build message report", "error", err)
+		writeError(w, http.StatusInternalServerError, "report_failed", "无法生成消息报表")
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
+func (a *API) prepareOperations(w http.ResponseWriter) bool {
+	if a.operations == nil {
+		writeError(w, http.StatusServiceUnavailable, "operations_unavailable", "业务数据服务尚未初始化")
+		return false
+	}
+	return true
+}
+
+func (a *API) writeOperationsError(w http.ResponseWriter, err error, subject string) {
+	if errors.Is(err, operations.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", subject+" was not found")
+		return
+	}
+	a.logger.Error("operations request failed", "subject", subject, "error", err)
+	writeError(w, http.StatusInternalServerError, "operations_failed", subject+" operation failed")
+}
+
+func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid_id", "ID must be a positive integer")
+		return 0, false
+	}
+	return id, true
+}
+
+func parseMessageQuery(r *http.Request) (operations.MessageQuery, error) {
+	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+	if err != nil && r.URL.Query().Get("limit") != "" {
+		return operations.MessageQuery{}, errors.New("limit must be an integer")
+	}
+	offset, err := strconv.Atoi(r.URL.Query().Get("offset"))
+	if err != nil && r.URL.Query().Get("offset") != "" {
+		return operations.MessageQuery{}, errors.New("offset must be an integer")
+	}
+	var accountID int64
+	if value := r.URL.Query().Get("account_id"); value != "" {
+		accountID, err = strconv.ParseInt(value, 10, 64)
+		if err != nil || accountID <= 0 {
+			return operations.MessageQuery{}, errors.New("account_id must be a positive integer")
+		}
+	}
+	from, err := parseOptionalQueryTime(r.URL.Query().Get("from"))
+	if err != nil {
+		return operations.MessageQuery{}, errors.New("from must be an RFC3339 timestamp")
+	}
+	to, err := parseOptionalQueryTime(r.URL.Query().Get("to"))
+	if err != nil {
+		return operations.MessageQuery{}, errors.New("to must be an RFC3339 timestamp")
+	}
+	if !from.IsZero() && !to.IsZero() && !from.Before(to) {
+		return operations.MessageQuery{}, errors.New("from must be before to")
+	}
+	return operations.MessageQuery{
+		Query:     r.URL.Query().Get("q"),
+		AccountID: accountID,
+		PeerType:  r.URL.Query().Get("peer_type"),
+		From:      from,
+		To:        to,
+		Limit:     limit,
+		Offset:    offset,
+	}, nil
+}
+
+func parseOptionalQueryTime(value string) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, nil
+	}
+	return time.Parse(time.RFC3339, value)
+}
+
+type loginAttempt struct {
+	windowStart time.Time
+	count       int
+}
+
+type authSessionResponse struct {
+	Configured    bool   `json:"configured"`
+	Authenticated bool   `json:"authenticated"`
+	Username      string `json:"username,omitempty"`
+	CSRFToken     string `json:"csrf_token,omitempty"`
+}
+
+func (a *API) authSession(w http.ResponseWriter, r *http.Request) {
+	if a.auth == nil {
+		writeError(w, http.StatusServiceUnavailable, "auth_unavailable", "管理员鉴权尚未初始化")
+		return
+	}
+	response := authSessionResponse{Configured: a.auth.Configured()}
+	token, ok := sessionCookie(r)
+	if ok {
+		session, err := a.auth.Lookup(token)
+		if err == nil {
+			response.Authenticated = true
+			response.Username = a.auth.Username()
+			response.CSRFToken = session.CSRF
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (a *API) setupAdministrator(w http.ResponseWriter, r *http.Request) {
+	if a.auth == nil {
+		writeError(w, http.StatusServiceUnavailable, "auth_unavailable", "管理员鉴权尚未初始化")
+		return
+	}
+	if !isLoopbackRequest(r) {
+		writeError(w, http.StatusForbidden, "setup_local_only", "管理员初始化仅允许从本机完成")
+		return
+	}
+	if a.auth.Configured() {
+		writeError(w, http.StatusConflict, "already_configured", "管理员账号已经初始化")
+		return
+	}
+	var input struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	if err := a.auth.Setup(input.Username, input.Password); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_admin_credentials", err.Error())
+		return
+	}
+	if err := a.startAdministratorSession(w, r); err != nil {
+		a.logger.Error("create initial administrator session", "error", err)
+		writeError(w, http.StatusInternalServerError, "session_failed", "管理员已创建，请重新登录")
+	}
+}
+
+func (a *API) loginAdministrator(w http.ResponseWriter, r *http.Request) {
+	if a.auth == nil {
+		writeError(w, http.StatusServiceUnavailable, "auth_unavailable", "管理员鉴权尚未初始化")
+		return
+	}
+	key := clientAddress(r)
+	if retryAfter := a.reserveLoginAttempt(key); retryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+		writeError(w, http.StatusTooManyRequests, "login_rate_limited", "登录尝试过于频繁，请稍后再试")
+		return
+	}
+	var input struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	if len(input.Username) > 64 || len(input.Password) > 128 {
+		writeError(w, http.StatusUnauthorized, "invalid_login", "管理员账号或密码不正确")
+		return
+	}
+	if err := a.auth.Login(input.Username, input.Password); err != nil {
+		if errors.Is(err, auth.ErrNotConfigured) {
+			writeError(w, http.StatusConflict, "setup_required", "请先初始化管理员账号")
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "invalid_login", "管理员账号或密码不正确")
+		return
+	}
+	a.clearLoginAttempts(key)
+	if err := a.startAdministratorSession(w, r); err != nil {
+		a.logger.Error("create administrator session", "error", err)
+		writeError(w, http.StatusInternalServerError, "session_failed", "无法创建管理员会话")
+	}
+}
+
+func (a *API) logoutAdministrator(w http.ResponseWriter, r *http.Request) {
+	token, _ := sessionCookie(r)
+	if a.auth != nil {
+		a.auth.Delete(token)
+	}
+	a.clearAuthCookies(w, r)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) startAdministratorSession(w http.ResponseWriter, r *http.Request) error {
+	token, session, err := a.auth.CreateSession()
+	if err != nil {
+		return err
+	}
+	secure := requestIsHTTPS(r)
+	http.SetCookie(w, &http.Cookie{
+		Name:     auth.CookieName,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(time.Until(session.ExpiresAt).Seconds()),
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
 	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     auth.CSRFCookie,
+		Value:    session.CSRF,
+		Path:     "/",
+		MaxAge:   int(time.Until(session.ExpiresAt).Seconds()),
+		HttpOnly: false,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+	})
+	writeJSON(w, http.StatusOK, authSessionResponse{
+		Configured:    true,
+		Authenticated: true,
+		Username:      a.auth.Username(),
+		CSRFToken:     session.CSRF,
+	})
+	return nil
+}
+
+func (a *API) requireAPI(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		session, ok := a.authorizedSession(w, r, false)
+		if !ok {
+			return
+		}
+		if isUnsafeMethod(r.Method) && r.Header.Get(auth.CSRFHeader) != session.CSRF {
+			writeError(w, http.StatusForbidden, "invalid_csrf", "请求校验失败，请刷新页面后重试")
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (a *API) requirePage(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := a.authorizedSession(w, r, true); !ok {
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (a *API) authorizedSession(
+	w http.ResponseWriter,
+	r *http.Request,
+	redirect bool,
+) (auth.Session, bool) {
+	reject := func() bool {
+		if redirect {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+		} else {
+			writeError(w, http.StatusUnauthorized, "authentication_required", "请先登录管理台")
+		}
+		return false
+	}
+	if a.auth == nil {
+		if redirect {
+			http.Error(w, "管理员鉴权尚未初始化", http.StatusServiceUnavailable)
+		} else {
+			writeError(w, http.StatusServiceUnavailable, "auth_unavailable", "管理员鉴权尚未初始化")
+		}
+		return auth.Session{}, false
+	}
+	if !a.auth.Configured() {
+		if redirect {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+		} else {
+			writeError(w, http.StatusServiceUnavailable, "setup_required", "请先初始化管理员账号")
+		}
+		return auth.Session{}, false
+	}
+	token, ok := sessionCookie(r)
+	if !ok {
+		reject()
+		return auth.Session{}, false
+	}
+	session, err := a.auth.Lookup(token)
+	if err != nil {
+		a.clearAuthCookies(w, r)
+		reject()
+		return auth.Session{}, false
+	}
+	return session, true
+}
+
+func sessionCookie(r *http.Request) (string, bool) {
+	cookie, err := r.Cookie(auth.CookieName)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		return "", false
+	}
+	return cookie.Value, true
+}
+
+func (a *API) clearAuthCookies(w http.ResponseWriter, r *http.Request) {
+	secure := requestIsHTTPS(r)
+	for _, name := range []string{auth.CookieName, auth.CSRFCookie} {
+		http.SetCookie(w, &http.Cookie{
+			Name:     name,
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			HttpOnly: name == auth.CookieName,
+			Secure:   secure,
+			SameSite: http.SameSiteStrictMode,
+		})
+	}
+}
+
+func requestIsHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+func isUnsafeMethod(method string) bool {
+	return method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
+}
+
+func clientAddress(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+func isLoopbackRequest(r *http.Request) bool {
+	host := clientAddress(r)
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func (a *API) reserveLoginAttempt(key string) time.Duration {
+	const (
+		window = time.Minute
+		limit  = 5
+	)
+	now := time.Now()
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
+	if a.attempts == nil {
+		a.attempts = make(map[string]loginAttempt)
+	}
+	attempt := a.attempts[key]
+	if attempt.windowStart.IsZero() || now.Sub(attempt.windowStart) >= window {
+		attempt = loginAttempt{windowStart: now}
+	}
+	attempt.count++
+	a.attempts[key] = attempt
+	if attempt.count <= limit {
+		return 0
+	}
+	return window - now.Sub(attempt.windowStart)
+}
+
+func (a *API) clearLoginAttempts(key string) {
+	a.loginMu.Lock()
+	delete(a.attempts, key)
+	a.loginMu.Unlock()
 }
 
 func (a *API) createAccount(w http.ResponseWriter, r *http.Request) {
@@ -262,6 +1022,14 @@ func (a *API) deleteAccount(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if a.operations != nil {
+		if err := a.operations.PurgeAccount(r.Context(), id); err != nil {
+			a.logger.Error("purge account operations", "account_id", id, "error", err)
+			writeError(w, http.StatusInternalServerError, "account_data_delete_failed",
+				"无法清理该账号的分组、监控和消息索引，账号未删除")
+			return
+		}
+	}
 	if err := a.accounts.Delete(r.Context(), id); err != nil {
 		if errors.Is(err, account.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "account_not_found", "account was not found")
@@ -340,20 +1108,23 @@ func (a *API) refreshAccountStatus(ctx context.Context, item account.Account) ac
 	}
 	err := a.chats.ValidateSession(ctx, item.ID)
 	status := account.StatusOnline
+	reason := ""
 	if err != nil {
-		if errors.Is(err, telegramchat.ErrSessionInvalid) ||
-			errors.Is(err, telegramchat.ErrSessionMissing) {
-			status = account.StatusError
-		} else {
-			a.logger.Warn("validate Telegram account session",
-				"account_id", item.ID, "error", err)
-			return item
+		status = account.StatusError
+		switch {
+		case errors.Is(err, telegramchat.ErrSessionMissing):
+			reason = "授权会话不存在，请重新登录"
+		case errors.Is(err, telegramchat.ErrSessionInvalid):
+			reason = "Telegram 授权已失效，请重新登录"
+		default:
+			reason = "无法连接 Telegram，请稍后重试"
 		}
+		a.logger.Warn("validate Telegram account session",
+			"account_id", item.ID, "error", err)
 	}
-	if status == item.Status {
-		return item
-	}
-	updated, err := a.accounts.UpdateStatus(ctx, item.ID, status)
+	updateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	updated, err := a.accounts.RecordVerification(updateCtx, item.ID, status, reason)
 	if err != nil {
 		a.logger.Error("persist Telegram account status",
 			"account_id", item.ID, "status", status, "error", err)
@@ -432,7 +1203,37 @@ func (a *API) listChatMessages(w http.ResponseWriter, r *http.Request) {
 		a.writeChatError(r.Context(), w, accountID, err)
 		return
 	}
+	a.indexMessages(r.Context(), accountID, peerType, peerID, page.Items)
 	writeJSON(w, http.StatusOK, page)
+}
+
+func (a *API) indexMessages(
+	ctx context.Context,
+	accountID int64,
+	peerType string,
+	peerID int64,
+	items []telegramchat.Message,
+) {
+	if a.operations == nil || len(items) == 0 {
+		return
+	}
+	indexCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 4*time.Second)
+	defer cancel()
+	records := make([]operations.MessageRecord, 0, len(items))
+	for _, item := range items {
+		records = append(records, operations.MessageRecord{
+			AccountID: accountID,
+			PeerType:  peerType,
+			PeerID:    peerID,
+			MessageID: item.ID,
+			Sender:    item.Sender,
+			Text:      item.Text,
+			SentAt:    item.SentAt,
+		})
+	}
+	if _, _, err := a.operations.IngestMessages(indexCtx, records); err != nil {
+		a.logger.Warn("index Telegram messages", "account_id", accountID, "error", err)
+	}
 }
 
 func (a *API) deleteChatMessages(w http.ResponseWriter, r *http.Request) {
@@ -638,18 +1439,40 @@ func (a *API) writeChatError(
 		writeError(w, http.StatusServiceUnavailable, "telegram_not_configured",
 			"Telegram 聊天服务尚未配置")
 	case errors.Is(err, telegramchat.ErrSessionMissing):
-		if _, updateErr := a.accounts.UpdateStatus(ctx, accountID, account.StatusError); updateErr != nil {
+		if _, updateErr := a.accounts.RecordVerification(
+			context.WithoutCancel(ctx),
+			accountID,
+			account.StatusError,
+			"授权会话不存在，请重新登录",
+		); updateErr != nil {
 			a.logger.Error("persist missing Telegram session status",
 				"account_id", accountID, "error", updateErr)
 		}
 		writeError(w, http.StatusNotFound, "session_not_found", "该账号的授权会话不存在，请重新登录")
 	case errors.Is(err, telegramchat.ErrSessionInvalid):
 		a.logger.Warn("Telegram session is no longer authorized", "account_id", accountID, "error", err)
-		if _, updateErr := a.accounts.UpdateStatus(ctx, accountID, account.StatusError); updateErr != nil {
+		if _, updateErr := a.accounts.RecordVerification(
+			context.WithoutCancel(ctx),
+			accountID,
+			account.StatusError,
+			"Telegram 授权已失效，请重新登录",
+		); updateErr != nil {
 			a.logger.Error("persist invalid Telegram session status",
 				"account_id", accountID, "error", updateErr)
 		}
 		writeError(w, http.StatusConflict, "session_invalid", "该账号的 Telegram 授权已失效，请重新登录后再查看会话")
+	case errors.Is(err, telegramchat.ErrFloodWait):
+		retryAfter := 30
+		var floodWait *telegramchat.FloodWaitError
+		if errors.As(err, &floodWait) && floodWait.Wait > 0 {
+			retryAfter = max(int(floodWait.Wait.Seconds()), 1)
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeError(w, http.StatusTooManyRequests, "telegram_flood_wait",
+			"Telegram 请求过于频繁，请稍后再试")
+	case errors.Is(err, telegramchat.ErrTimeout):
+		writeError(w, http.StatusGatewayTimeout, "telegram_timeout",
+			"Telegram 响应超时，请稍后重试")
 	case errors.Is(err, telegramchat.ErrPeerNotFound):
 		writeError(w, http.StatusNotFound, "chat_not_found", "未找到该聊天")
 	case errors.Is(err, telegramchat.ErrNoAvatar):

@@ -27,13 +27,15 @@ var (
 )
 
 type Account struct {
-	ID          int64     `json:"id"`
-	PhoneNumber string    `json:"phone_number"`
-	Username    string    `json:"username"`
-	DisplayName string    `json:"display_name"`
-	Status      string    `json:"status"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID             int64      `json:"id"`
+	PhoneNumber    string     `json:"phone_number"`
+	Username       string     `json:"username"`
+	DisplayName    string     `json:"display_name"`
+	Status         string     `json:"status"`
+	StatusReason   string     `json:"status_reason,omitempty"`
+	LastVerifiedAt *time.Time `json:"last_verified_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 type CreateInput struct {
@@ -61,6 +63,13 @@ type Repository interface {
 	List(ctx context.Context, filter Filter) ([]Account, error)
 	Get(ctx context.Context, id int64) (Account, error)
 	UpdateStatus(ctx context.Context, id int64, status string, now time.Time) (Account, error)
+	RecordVerification(
+		ctx context.Context,
+		id int64,
+		status string,
+		reason string,
+		now time.Time,
+	) (Account, error)
 	Update(ctx context.Context, id int64, input UpdateInput, now time.Time) (Account, error)
 	Delete(ctx context.Context, id int64) error
 }
@@ -121,6 +130,25 @@ func (s *Service) UpdateStatus(ctx context.Context, id int64, status string) (Ac
 		return Account{}, fmt.Errorf("status must be one of pending, online, paused, error")
 	}
 	return s.repository.UpdateStatus(ctx, id, status, s.clock().UTC())
+}
+
+func (s *Service) RecordVerification(
+	ctx context.Context,
+	id int64,
+	status string,
+	reason string,
+) (Account, error) {
+	if id <= 0 {
+		return Account{}, errors.New("account ID must be positive")
+	}
+	if !IsValidStatus(status) {
+		return Account{}, fmt.Errorf("status must be one of pending, online, paused, error")
+	}
+	reason = strings.TrimSpace(reason)
+	if utf8.RuneCountInString(reason) > 160 {
+		return Account{}, errors.New("status reason must be at most 160 characters")
+	}
+	return s.repository.RecordVerification(ctx, id, status, reason, s.clock().UTC())
 }
 
 func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Account, error) {

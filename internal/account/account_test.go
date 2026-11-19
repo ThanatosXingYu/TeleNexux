@@ -88,6 +88,25 @@ func (r *memoryRepository) UpdateStatus(
 	return item, nil
 }
 
+func (r *memoryRepository) RecordVerification(
+	_ context.Context,
+	id int64,
+	status string,
+	reason string,
+	now time.Time,
+) (Account, error) {
+	item, exists := r.accounts[id]
+	if !exists {
+		return Account{}, ErrNotFound
+	}
+	item.Status = status
+	item.StatusReason = reason
+	item.LastVerifiedAt = &now
+	item.UpdatedAt = now
+	r.accounts[id] = item
+	return item, nil
+}
+
 func (r *memoryRepository) Update(
 	_ context.Context,
 	id int64,

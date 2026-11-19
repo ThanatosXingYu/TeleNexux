@@ -15,6 +15,7 @@ import (
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
+	"github.com/gotd/td/tgerr"
 )
 
 var (
@@ -22,8 +23,22 @@ var (
 	ErrSessionMissing = errors.New("Telegram account session is missing")
 	ErrSessionInvalid = errors.New("Telegram account session is invalid")
 	ErrPeerNotFound   = errors.New("Telegram chat was not found")
+	ErrFloodWait      = errors.New("Telegram request is rate limited")
+	ErrTimeout        = errors.New("Telegram request timed out")
 	ErrTelegram       = errors.New("Telegram request failed")
 )
+
+type FloodWaitError struct {
+	Wait time.Duration
+}
+
+func (e *FloodWaitError) Error() string {
+	return fmt.Sprintf("%s: retry after %s", ErrFloodWait, e.Wait)
+}
+
+func (e *FloodWaitError) Unwrap() error {
+	return ErrFloodWait
+}
 
 type Chat struct {
 	ID          string    `json:"id"`
@@ -70,6 +85,7 @@ type Service struct {
 	peers            map[string]cachedPeer
 	avatarMu         sync.RWMutex
 	avatars          map[string]cachedAvatar
+	accountSlots     sync.Map
 }
 
 func (s *Service) ValidateSession(ctx context.Context, accountID int64) error {
@@ -198,6 +214,14 @@ func (s *Service) withClient(
 	accountID int64,
 	run func(context.Context, *telegram.Client) error,
 ) error {
+	slot, _ := s.accountSlots.LoadOrStore(accountID, make(chan struct{}, 1))
+	operationSlot := slot.(chan struct{})
+	select {
+	case operationSlot <- struct{}{}:
+		defer func() { <-operationSlot }()
+	case <-ctx.Done():
+		return fmt.Errorf("%w: request was canceled before starting", ErrTimeout)
+	}
 	sessionPath, err := s.sessionPath(accountID)
 	if err != nil {
 		return err
@@ -218,8 +242,14 @@ func (s *Service) withClient(
 	if err := client.Run(operationCtx, func(ctx context.Context) error {
 		return run(ctx, client)
 	}); err != nil {
+		if wait, ok := tgerr.AsFloodWait(err); ok {
+			return &FloodWaitError{Wait: wait}
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("%w: request timed out", ErrTelegram)
+			return fmt.Errorf("%w: request timed out", ErrTimeout)
+		}
+		if tgerr.Is(err, tg.ErrTimeout) {
+			return fmt.Errorf("%w: Telegram timeout", ErrTimeout)
 		}
 		if isInvalidSessionError(err) {
 			return fmt.Errorf("%w: %v", ErrSessionInvalid, err)

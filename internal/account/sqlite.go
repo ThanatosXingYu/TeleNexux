@@ -21,6 +21,15 @@ func NewSQLiteRepository(ctx context.Context, path string) (*SQLiteRepository, e
 		return nil, fmt.Errorf("open account database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+	for _, pragma := range []string{
+		"PRAGMA busy_timeout = 5000",
+		"PRAGMA journal_mode = WAL",
+	} {
+		if _, err := db.ExecContext(ctx, pragma); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("configure account database: %w", err)
+		}
+	}
 
 	repository := &SQLiteRepository{db: db}
 	if err := repository.migrate(ctx); err != nil {
@@ -41,6 +50,13 @@ func (r *SQLiteRepository) Close() error {
 	return nil
 }
 
+func (r *SQLiteRepository) PingContext(ctx context.Context) error {
+	if err := r.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("ping account database: %w", err)
+	}
+	return nil
+}
+
 func (r *SQLiteRepository) migrate(ctx context.Context) error {
 	const schema = `
 CREATE TABLE IF NOT EXISTS accounts (
@@ -49,6 +65,8 @@ CREATE TABLE IF NOT EXISTS accounts (
 	username TEXT NOT NULL DEFAULT '',
 	display_name TEXT NOT NULL DEFAULT '',
 	status TEXT NOT NULL CHECK (status IN ('pending', 'online', 'paused', 'error')),
+	status_reason TEXT NOT NULL DEFAULT '',
+	last_verified_at TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );
@@ -57,7 +75,69 @@ CREATE INDEX IF NOT EXISTS accounts_status_created_idx
 	if _, err := r.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate account database: %w", err)
 	}
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{name: "status_reason", definition: "status_reason TEXT NOT NULL DEFAULT ''"},
+		{name: "last_verified_at", definition: "last_verified_at TEXT NOT NULL DEFAULT ''"},
+	} {
+		exists, err := r.columnExists(ctx, "accounts", column.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := r.db.ExecContext(
+			ctx,
+			"ALTER TABLE accounts ADD COLUMN "+column.definition,
+		); err != nil {
+			return fmt.Errorf("add accounts.%s column: %w", column.name, err)
+		}
+	}
 	return nil
+}
+
+func (r *SQLiteRepository) columnExists(
+	ctx context.Context,
+	table string,
+	column string,
+) (bool, error) {
+	rows, err := r.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return false, fmt.Errorf("inspect %s schema: %w", table, err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			dataType   string
+			notNull    int
+			defaultVal any
+			primaryKey int
+		)
+		if err := rows.Scan(
+			&cid,
+			&name,
+			&dataType,
+			&notNull,
+			&defaultVal,
+			&primaryKey,
+		); err != nil {
+			return false, fmt.Errorf("scan %s schema: %w", table, err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate %s schema: %w", table, err)
+	}
+	return false, nil
 }
 
 func (r *SQLiteRepository) Create(ctx context.Context, input CreateInput, now time.Time) (Account, error) {
@@ -97,13 +177,18 @@ func (r *SQLiteRepository) Upsert(
 	now time.Time,
 ) (Account, error) {
 	const query = `
-INSERT INTO accounts (id, phone_number, username, display_name, status, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO accounts (
+	id, phone_number, username, display_name, status, status_reason, last_verified_at,
+	created_at, updated_at
+)
+VALUES (?, ?, ?, ?, ?, '', ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
 	phone_number = excluded.phone_number,
 	username = excluded.username,
 	display_name = excluded.display_name,
 	status = excluded.status,
+	status_reason = '',
+	last_verified_at = excluded.last_verified_at,
 	updated_at = excluded.updated_at`
 	timestamp := now.Format(time.RFC3339Nano)
 	if _, err := r.db.ExecContext(
@@ -114,6 +199,7 @@ ON CONFLICT(id) DO UPDATE SET
 		input.Username,
 		input.DisplayName,
 		status,
+		timestamp,
 		timestamp,
 		timestamp,
 	); err != nil {
@@ -129,7 +215,8 @@ ON CONFLICT(id) DO UPDATE SET
 
 func (r *SQLiteRepository) List(ctx context.Context, filter Filter) ([]Account, error) {
 	query := `
-SELECT id, phone_number, username, display_name, status, created_at, updated_at
+SELECT id, phone_number, username, display_name, status, status_reason,
+	last_verified_at, created_at, updated_at
 FROM accounts`
 	args := make([]any, 0, 3)
 	if filter.Status != "" {
@@ -167,7 +254,8 @@ FROM accounts`
 
 func (r *SQLiteRepository) Get(ctx context.Context, id int64) (Account, error) {
 	const query = `
-SELECT id, phone_number, username, display_name, status, created_at, updated_at
+SELECT id, phone_number, username, display_name, status, status_reason,
+	last_verified_at, created_at, updated_at
 FROM accounts
 WHERE id = ?`
 	item, err := scanAccount(r.db.QueryRowContext(ctx, query, id))
@@ -201,6 +289,36 @@ WHERE id = ?`
 	item, err := r.Get(ctx, id)
 	if err != nil {
 		return Account{}, fmt.Errorf("read account %d after status update: %w", id, err)
+	}
+	return item, nil
+}
+
+func (r *SQLiteRepository) RecordVerification(
+	ctx context.Context,
+	id int64,
+	status string,
+	reason string,
+	now time.Time,
+) (Account, error) {
+	const query = `
+UPDATE accounts
+SET status = ?, status_reason = ?, last_verified_at = ?, updated_at = ?
+WHERE id = ?`
+	timestamp := now.Format(time.RFC3339Nano)
+	result, err := r.db.ExecContext(ctx, query, status, reason, timestamp, timestamp, id)
+	if err != nil {
+		return Account{}, fmt.Errorf("record account %d verification: %w", id, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Account{}, fmt.Errorf("check verified account %d: %w", id, err)
+	}
+	if affected == 0 {
+		return Account{}, ErrNotFound
+	}
+	item, err := r.Get(ctx, id)
+	if err != nil {
+		return Account{}, fmt.Errorf("read account %d after verification: %w", id, err)
 	}
 	return item, nil
 }
@@ -264,12 +382,15 @@ func scanAccount(row rowScanner) (Account, error) {
 	var item Account
 	var createdAt string
 	var updatedAt string
+	var lastVerifiedAt string
 	if err := row.Scan(
 		&item.ID,
 		&item.PhoneNumber,
 		&item.Username,
 		&item.DisplayName,
 		&item.Status,
+		&item.StatusReason,
+		&lastVerifiedAt,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
@@ -284,6 +405,17 @@ func scanAccount(row rowScanner) (Account, error) {
 	item.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
 	if err != nil {
 		return Account{}, fmt.Errorf("parse updated_at for account %d: %w", item.ID, err)
+	}
+	if lastVerifiedAt != "" {
+		verifiedAt, parseErr := time.Parse(time.RFC3339Nano, lastVerifiedAt)
+		if parseErr != nil {
+			return Account{}, fmt.Errorf(
+				"parse last_verified_at for account %d: %w",
+				item.ID,
+				parseErr,
+			)
+		}
+		item.LastVerifiedAt = &verifiedAt
 	}
 	return item, nil
 }
