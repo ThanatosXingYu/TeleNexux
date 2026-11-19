@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -68,6 +69,7 @@ type fakeChatReader struct {
 }
 
 type recordingChatReader struct {
+	mu           sync.Mutex
 	calls        []int64
 	errByAccount map[int64]error
 }
@@ -81,11 +83,69 @@ func (r *recordingChatReader) CollectMessages(
 	_ int,
 	_ int,
 ) (telegramchat.MessageCollection, error) {
+	r.mu.Lock()
 	r.calls = append(r.calls, accountID)
+	r.mu.Unlock()
 	if err := r.errByAccount[accountID]; err != nil {
 		return telegramchat.MessageCollection{}, err
 	}
 	return telegramchat.MessageCollection{Complete: true}, nil
+}
+
+type concurrencyChatReader struct {
+	mu              sync.Mutex
+	entered         chan int64
+	release         chan struct{}
+	activeByAccount map[int64]int
+	maxByAccount    map[int64]int
+	active          int
+	maxActive       int
+	calls           map[int64]int
+}
+
+func newConcurrencyChatReader() *concurrencyChatReader {
+	return &concurrencyChatReader{
+		entered:         make(chan int64, 8),
+		release:         make(chan struct{}),
+		activeByAccount: make(map[int64]int),
+		maxByAccount:    make(map[int64]int),
+		calls:           make(map[int64]int),
+	}
+}
+
+func (r *concurrencyChatReader) CollectMessages(
+	ctx context.Context,
+	accountID int64,
+	_ string,
+	_ int64,
+	_ int,
+	_ int,
+	_ int,
+) (telegramchat.MessageCollection, error) {
+	r.mu.Lock()
+	r.calls[accountID]++
+	r.active++
+	r.activeByAccount[accountID]++
+	r.maxActive = max(r.maxActive, r.active)
+	r.maxByAccount[accountID] = max(r.maxByAccount[accountID], r.activeByAccount[accountID])
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		r.active--
+		r.activeByAccount[accountID]--
+		r.mu.Unlock()
+	}()
+	select {
+	case r.entered <- accountID:
+	case <-ctx.Done():
+		return telegramchat.MessageCollection{}, ctx.Err()
+	}
+	select {
+	case <-r.release:
+		return telegramchat.MessageCollection{Complete: true}, nil
+	case <-ctx.Done():
+		return telegramchat.MessageCollection{}, ctx.Err()
+	}
 }
 
 type collectionSequence struct {
@@ -681,8 +741,7 @@ func TestFloodWaitOnlyBlocksAffectedAccountForCurrentRun(t *testing.T) {
 	if err := scheduler.RunOnce(ctx); !errors.Is(err, telegramchat.ErrFloodWait) {
 		t.Fatalf("RunOnce() error = %v, want FloodWait", err)
 	}
-	if len(reader.calls) != 3 ||
-		reader.calls[0] != 7 || reader.calls[1] != 8 || reader.calls[2] != 9 {
+	if !sameAccountCalls(reader.calls, 7, 8, 9) {
 		t.Fatalf("collection calls = %+v", reader.calls)
 	}
 	targets, err := service.ListCollectionTargets(ctx)
@@ -704,23 +763,23 @@ func TestFloodWaitOnlyBlocksAffectedAccountForCurrentRun(t *testing.T) {
 			}
 		}
 	}
-	reader.calls = nil
+	reader = &recordingChatReader{errByAccount: reader.errByAccount}
 	scheduler = New(service, &fakeAccountLookup{}, reader, time.Minute, testLogger())
 	scheduler.now = func() time.Time { return now }
 	if err := scheduler.RunOnce(ctx); err != nil {
 		t.Fatalf("cooldown RunOnce() error = %v", err)
 	}
-	if len(reader.calls) != 2 || reader.calls[0] != 8 || reader.calls[1] != 9 {
+	if !sameAccountCalls(reader.calls, 8, 9) {
 		t.Fatalf("cooldown collection calls = %+v", reader.calls)
 	}
 	now = now.Add(6 * time.Minute)
-	reader.calls = nil
+	reader = &recordingChatReader{errByAccount: reader.errByAccount}
 	scheduler = New(service, &fakeAccountLookup{}, reader, time.Minute, testLogger())
 	scheduler.now = func() time.Time { return now }
 	if err := scheduler.RunOnce(ctx); !errors.Is(err, telegramchat.ErrFloodWait) {
 		t.Fatalf("retry RunOnce() error = %v, want FloodWait", err)
 	}
-	if len(reader.calls) != 3 || reader.calls[0] != 7 {
+	if !sameAccountCalls(reader.calls, 7, 8, 9) {
 		t.Fatalf("retry collection calls = %+v", reader.calls)
 	}
 }
@@ -753,13 +812,201 @@ func TestSchedulerRotatesTargetsAcrossAccountsForFairness(t *testing.T) {
 	if err := scheduler.RunOnce(ctx); err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
-	want := []int64{7, 8, 7}
-	if len(reader.calls) != len(want) {
-		t.Fatalf("collection calls = %+v, want %+v", reader.calls, want)
+	if len(reader.calls) != 3 {
+		t.Fatalf("collection calls = %+v, want three targets", reader.calls)
 	}
-	for index := range want {
-		if reader.calls[index] != want[index] {
-			t.Fatalf("collection calls = %+v, want %+v", reader.calls, want)
+	counts := make(map[int64]int)
+	for _, accountID := range reader.calls {
+		counts[accountID]++
+	}
+	if counts[7] != 2 || counts[8] != 1 {
+		t.Fatalf("collection calls = %+v, want account 7 twice and account 8 once", reader.calls)
+	}
+}
+
+func TestSchedulerRunsAccountsConcurrentlyButSerializesEachAccount(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	service := testOperationsService(t)
+	for _, rule := range []struct {
+		accountID int64
+		peerID    int64
+	}{
+		{accountID: 7, peerID: 42},
+		{accountID: 7, peerID: 43},
+		{accountID: 8, peerID: 99},
+	} {
+		if _, err := service.CreateRule(
+			ctx,
+			fmt.Sprintf("Target %d", rule.peerID),
+			rule.accountID,
+			"chat",
+			rule.peerID,
+			"Ops",
+			nil,
+		); err != nil {
+			t.Fatalf("CreateRule() error = %v", err)
 		}
 	}
+	reader := newConcurrencyChatReader()
+	scheduler := New(service, &fakeAccountLookup{}, reader, time.Minute, testLogger())
+	result := make(chan error, 1)
+	go func() {
+		result <- scheduler.RunOnce(ctx)
+	}()
+
+	entered := make(map[int64]bool)
+	for len(entered) < 2 {
+		select {
+		case accountID := <-reader.entered:
+			entered[accountID] = true
+		case <-ctx.Done():
+			close(reader.release)
+			t.Fatalf("accounts did not run concurrently: %v", entered)
+		}
+	}
+	if !entered[7] || !entered[8] {
+		close(reader.release)
+		t.Fatalf("first collection accounts = %v, want 7 and 8", entered)
+	}
+	close(reader.release)
+	if err := <-result; err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+
+	reader.mu.Lock()
+	maxActive := reader.maxActive
+	accountSevenMax := reader.maxByAccount[7]
+	reader.mu.Unlock()
+	if maxActive != 2 || accountSevenMax != 1 {
+		t.Fatalf("max concurrency = %d, account 7 max = %d; want 2 and 1",
+			maxActive, accountSevenMax)
+	}
+}
+
+func TestSchedulerBacksOffFailedAccountWithoutBlockingOthers(t *testing.T) {
+	ctx := context.Background()
+	service := testOperationsService(t)
+	for _, accountID := range []int64{7, 8} {
+		if _, err := service.CreateRule(
+			ctx,
+			fmt.Sprintf("Account %d", accountID),
+			accountID,
+			"chat",
+			42,
+			"Ops",
+			nil,
+		); err != nil {
+			t.Fatalf("CreateRule(%d) error = %v", accountID, err)
+		}
+	}
+	now := time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC)
+	transientErr := fmt.Errorf("%w: temporary network failure", telegramchat.ErrTelegram)
+	failingReader := &recordingChatReader{errByAccount: map[int64]error{7: transientErr}}
+	scheduler := New(service, &fakeAccountLookup{}, failingReader, time.Minute, testLogger())
+	scheduler.now = func() time.Time { return now }
+	if err := scheduler.RunOnce(ctx); !errors.Is(err, telegramchat.ErrTelegram) {
+		t.Fatalf("RunOnce() error = %v, want Telegram failure", err)
+	}
+	if !sameAccountCalls(failingReader.calls, 7, 8) {
+		t.Fatalf("collection calls = %+v, want both accounts", failingReader.calls)
+	}
+
+	targets, err := service.ListCollectionTargets(ctx)
+	if err != nil {
+		t.Fatalf("ListCollectionTargets() error = %v", err)
+	}
+	for _, target := range targets {
+		switch target.AccountID {
+		case 7:
+			if target.AccountConsecutiveFailures != 1 ||
+				target.NextCollectionAt == nil ||
+				!target.NextCollectionAt.Equal(now.Add(time.Minute)) ||
+				target.FloodWait {
+				t.Fatalf("failed account state = %+v", target)
+			}
+		case 8:
+			if target.AccountConsecutiveFailures != 0 ||
+				target.LastSuccessfulAt == nil {
+				t.Fatalf("healthy account state = %+v", target)
+			}
+		}
+	}
+
+	recoveringReader := &recordingChatReader{}
+	scheduler = New(
+		service,
+		&fakeAccountLookup{},
+		recoveringReader,
+		time.Minute,
+		testLogger(),
+	)
+	scheduler.now = func() time.Time { return now }
+	if err := scheduler.RunOnce(ctx); err != nil {
+		t.Fatalf("cooldown RunOnce() error = %v", err)
+	}
+	if len(recoveringReader.calls) != 1 || recoveringReader.calls[0] != 8 {
+		t.Fatalf("cooldown collection calls = %+v, want only account 8", recoveringReader.calls)
+	}
+}
+
+func TestSchedulerAppliesPerAccountTargetBudget(t *testing.T) {
+	ctx := context.Background()
+	service := testOperationsService(t)
+	for _, rule := range []struct {
+		accountID int64
+		peerID    int64
+	}{
+		{accountID: 7, peerID: 42},
+		{accountID: 7, peerID: 43},
+		{accountID: 7, peerID: 44},
+		{accountID: 7, peerID: 45},
+		{accountID: 8, peerID: 99},
+	} {
+		if _, err := service.CreateRule(
+			ctx,
+			fmt.Sprintf("Target %d", rule.peerID),
+			rule.accountID,
+			"chat",
+			rule.peerID,
+			"Ops",
+			nil,
+		); err != nil {
+			t.Fatalf("CreateRule() error = %v", err)
+		}
+	}
+	reader := &recordingChatReader{}
+	scheduler := New(service, &fakeAccountLookup{}, reader, time.Minute, testLogger())
+	scheduler.targetBudget = 2
+	if err := scheduler.RunOnce(ctx); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	counts := make(map[int64]int)
+	for _, accountID := range reader.calls {
+		counts[accountID]++
+	}
+	if counts[7] != 2 || counts[8] != 1 {
+		t.Fatalf("collection calls = %+v, want account 7 budgeted twice", reader.calls)
+	}
+	status := scheduler.Status()
+	if status.QueuedTargets != 2 {
+		t.Fatalf("queued targets = %d, want 2", status.QueuedTargets)
+	}
+}
+
+func sameAccountCalls(actual []int64, expected ...int64) bool {
+	if len(actual) != len(expected) {
+		return false
+	}
+	counts := make(map[int64]int, len(actual))
+	for _, accountID := range actual {
+		counts[accountID]++
+	}
+	for _, accountID := range expected {
+		counts[accountID]--
+		if counts[accountID] < 0 {
+			return false
+		}
+	}
+	return true
 }

@@ -1996,9 +1996,16 @@ func TestMonitorStatusIncludesCollectionHealth(t *testing.T) {
 		nil,
 		operationsService,
 		fakeMonitorRunner{status: monitorscheduler.Status{
-			Running:   false,
-			NextRunAt: &nextRun,
-			LastError: "partial",
+			Running:       false,
+			QueuedTargets: 2,
+			NextRunAt:     &nextRun,
+			LastError:     "partial",
+			Accounts: []monitorscheduler.AccountStatus{{
+				AccountID:           7,
+				TargetCount:         2,
+				QueuedTargets:       2,
+				ConsecutiveFailures: 1,
+			}},
 		}},
 	).Handler()
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/status", nil)
@@ -2010,8 +2017,13 @@ func TestMonitorStatusIncludesCollectionHealth(t *testing.T) {
 		t.Fatalf("status = %d; body: %s", recorder.Code, recorder.Body.String())
 	}
 	var payload struct {
-		Running    bool       `json:"running"`
-		NextRunAt  *time.Time `json:"next_run_at"`
+		Running   bool       `json:"running"`
+		Queued    int        `json:"queued_targets"`
+		NextRunAt *time.Time `json:"next_run_at"`
+		Accounts  []struct {
+			AccountID int64 `json:"account_id"`
+			Queued    int   `json:"queued_targets"`
+		} `json:"accounts"`
 		Collection struct {
 			TargetCount          int `json:"target_count"`
 			FloodWaitTargetCount int `json:"flood_wait_target_count"`
@@ -2022,8 +2034,12 @@ func TestMonitorStatusIncludesCollectionHealth(t *testing.T) {
 		t.Fatalf("decode monitor status: %v", err)
 	}
 	if payload.Running ||
+		payload.Queued != 2 ||
 		payload.NextRunAt == nil ||
 		!payload.NextRunAt.Equal(nextRun) ||
+		len(payload.Accounts) != 1 ||
+		payload.Accounts[0].AccountID != 7 ||
+		payload.Accounts[0].Queued != 2 ||
 		payload.Collection.TargetCount != 1 ||
 		payload.Collection.FloodWaitTargetCount != 1 ||
 		payload.Collection.ConsecutiveFailures != 1 {

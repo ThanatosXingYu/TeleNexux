@@ -18,20 +18,22 @@ const EvidenceSchemaVersion = 2
 var ErrBatchConflict = errors.New("ingestion batch ID conflicts with different content")
 
 type CollectionTarget struct {
-	AccountID              int64      `json:"account_id"`
-	PeerType               string     `json:"peer_type"`
-	PeerID                 int64      `json:"peer_id"`
-	PeerTitle              string     `json:"peer_title"`
-	LastMessageID          int        `json:"last_message_id"`
-	ConsecutiveFailures    int        `json:"consecutive_failures"`
-	LastError              string     `json:"last_error,omitempty"`
-	BacklogDetected        bool       `json:"backlog_detected"`
-	FloodWait              bool       `json:"flood_wait"`
-	NextCollectionAt       *time.Time `json:"next_collection_at,omitempty"`
-	LastSuccessfulAt       *time.Time `json:"last_successful_at,omitempty"`
-	CheckpointDelaySeconds int64      `json:"checkpoint_delay_seconds"`
-	LastBatchFetched       int        `json:"last_batch_fetched"`
-	LastBatchAt            *time.Time `json:"last_batch_at,omitempty"`
+	AccountID                  int64      `json:"account_id"`
+	PeerType                   string     `json:"peer_type"`
+	PeerID                     int64      `json:"peer_id"`
+	PeerTitle                  string     `json:"peer_title"`
+	LastMessageID              int        `json:"last_message_id"`
+	ConsecutiveFailures        int        `json:"consecutive_failures"`
+	LastError                  string     `json:"last_error,omitempty"`
+	BacklogDetected            bool       `json:"backlog_detected"`
+	FloodWait                  bool       `json:"flood_wait"`
+	NextCollectionAt           *time.Time `json:"next_collection_at,omitempty"`
+	LastSuccessfulAt           *time.Time `json:"last_successful_at,omitempty"`
+	CheckpointDelaySeconds     int64      `json:"checkpoint_delay_seconds"`
+	LastBatchFetched           int        `json:"last_batch_fetched"`
+	LastBatchAt                *time.Time `json:"last_batch_at,omitempty"`
+	AccountConsecutiveFailures int        `json:"account_consecutive_failures"`
+	AccountLastError           string     `json:"account_last_error,omitempty"`
 }
 
 type IngestBatchInput struct {
@@ -98,6 +100,8 @@ SELECT r.account_id, r.peer_type, r.peer_id, MAX(r.peer_title),
 	COALESCE(c.last_error, ''),
 	COALESCE(c.backlog_detected, 0),
 	COALESCE(st.next_collection_at, ''),
+	COALESCE(st.consecutive_failures, 0),
+	COALESCE(st.last_error, ''),
 	COALESCE(c.last_success_at, ''),
 	COALESCE(b.fetched_count, 0),
 	COALESCE(b.finished_at, '')
@@ -141,6 +145,8 @@ ORDER BY r.account_id, r.peer_type, r.peer_id`)
 			&target.LastError,
 			&backlog,
 			&nextCollection,
+			&target.AccountConsecutiveFailures,
+			&target.AccountLastError,
 			&lastSuccessful,
 			&target.LastBatchFetched,
 			&lastBatch,
@@ -167,9 +173,6 @@ ORDER BY r.account_id, r.peer_type, r.peer_id`)
 			)
 		}
 		target.FloodWait = strings.Contains(strings.ToLower(target.LastError), "rate limited")
-		if target.NextCollectionAt != nil && target.NextCollectionAt.After(s.now().UTC()) {
-			target.FloodWait = true
-		}
 		if lastBatch != "" {
 			value, err := time.Parse(time.RFC3339Nano, lastBatch)
 			if err != nil {

@@ -589,6 +589,7 @@
     );
     setText("[data-monitor-update-queue]", status?.queued_update_events ?? "0");
     setText("[data-monitor-targets]", collection.target_count ?? "0");
+    setText("[data-monitor-queued]", status?.queued_targets ?? "0");
     setText("[data-monitor-backlog]", collection.backlog_target_count ?? "0");
     setText("[data-monitor-delay]", formatDuration(collection.max_checkpoint_delay_seconds));
     setText("[data-monitor-failures]", collection.consecutive_failures ?? "0");
@@ -620,6 +621,10 @@
     const healthWrap = document.querySelector("[data-monitor-health-wrap]");
     const healthEmpty = document.querySelector("[data-monitor-health-empty]");
     const healthState = document.querySelector("[data-monitor-health-state]");
+    const accountBody = document.querySelector("[data-monitor-account-body]");
+    const accountWrap = document.querySelector("[data-monitor-account-wrap]");
+    const accountEmpty = document.querySelector("[data-monitor-account-empty]");
+    const accountState = document.querySelector("[data-monitor-account-state]");
     const listenerBody = document.querySelector("[data-monitor-listener-body]");
     const listenerWrap = document.querySelector("[data-monitor-listener-wrap]");
     const listenerEmpty = document.querySelector("[data-monitor-listener-empty]");
@@ -700,6 +705,64 @@
       }
     };
 
+    const renderAccounts = (accountStates) => {
+      if (!accountBody) {
+        return;
+      }
+      const accountMap = accountMapFrom(accounts);
+      accountBody.replaceChildren();
+      accountStates.forEach((item) => {
+        const account = accountMap.get(Number(item.account_id));
+        const row = document.createElement("tr");
+        appendCell(row, account ? accountLabel(account) : `账号 ${item.account_id}`);
+        const nextRun = item.next_collection_at
+          ? new Date(item.next_collection_at).getTime()
+          : 0;
+        let state = element("span", "badge badge-neutral", "等待调度");
+        if (item.running) {
+          state = element("span", "badge badge-blue", "采集处理中");
+        } else if (item.flood_wait || nextRun > Date.now()) {
+          state = element("span", "badge badge-red", "退避中");
+        } else if (Number(item.consecutive_failures) > 0) {
+          state = element("span", "badge badge-red", "需关注");
+        }
+        appendCell(row, state);
+        appendCell(
+          row,
+          `${Number(item.processed_targets) || 0} / ${Number(item.target_count) || 0}`,
+        );
+        appendCell(row, Number(item.queued_targets) || 0);
+        appendCell(row, item.next_collection_at ? formatDate(item.next_collection_at) : "立即");
+        appendCell(
+          row,
+          Number(item.consecutive_failures)
+            ? element("span", "badge badge-red", String(item.consecutive_failures))
+            : element("span", "badge badge-blue", "0"),
+        );
+        appendCell(row, item.last_error || "—");
+        accountBody.append(row);
+      });
+      accountWrap?.toggleAttribute("hidden", accountStates.length === 0);
+      accountEmpty?.toggleAttribute("hidden", accountStates.length > 0);
+      if (accountState) {
+        const running = accountStates.some((item) => item.running);
+        const attention = accountStates.some((item) =>
+          item.flood_wait || item.consecutive_failures > 0);
+        accountState.className = attention
+          ? "badge badge-red"
+          : running
+            ? "badge badge-blue"
+            : "badge badge-neutral";
+        accountState.textContent = attention
+          ? "需关注"
+          : running
+            ? "运行中"
+            : accountStates.length
+              ? "等待调度"
+              : "无账号";
+      }
+    };
+
     const renderListeners = (listeners) => {
       if (!listenerBody) {
         return;
@@ -762,11 +825,15 @@
         setText("[data-monitor-pending-count]", alerts.length);
         if (statusResult.status === "fulfilled") {
           createMonitorStatus(statusResult.value, notice);
+          renderAccounts(Array.isArray(statusResult.value?.accounts)
+            ? statusResult.value.accounts
+            : []);
           renderListeners(Array.isArray(statusResult.value?.listeners)
             ? statusResult.value.listeners
             : []);
         } else {
           createMonitorStatus(null, notice);
+          renderAccounts([]);
           renderListeners([]);
           showNotice(notice, statusResult.reason.message, true);
         }

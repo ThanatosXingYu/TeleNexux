@@ -38,13 +38,28 @@ type ChatReader interface {
 }
 
 const (
-	collectionPageSize = 50
-	collectionMaxPages = 20
+	collectionPageSize    = 50
+	collectionMaxPages    = 20
+	defaultAccountWorkers = 3
+	defaultTargetBudget   = 4
 )
+
+type AccountStatus struct {
+	AccountID           int64      `json:"account_id"`
+	TargetCount         int        `json:"target_count"`
+	QueuedTargets       int        `json:"queued_targets"`
+	ProcessedTargets    int        `json:"processed_targets"`
+	Running             bool       `json:"running"`
+	NextCollectionAt    *time.Time `json:"next_collection_at,omitempty"`
+	ConsecutiveFailures int        `json:"consecutive_failures"`
+	FloodWait           bool       `json:"flood_wait"`
+	LastError           string     `json:"last_error,omitempty"`
+}
 
 type Status struct {
 	Running             bool                          `json:"running"`
 	Mode                string                        `json:"mode"`
+	QueuedTargets       int                           `json:"queued_targets"`
 	LastTrigger         string                        `json:"last_trigger,omitempty"`
 	PollIntervalSeconds int64                         `json:"poll_interval_seconds"`
 	PollRuns            int64                         `json:"poll_runs"`
@@ -56,6 +71,7 @@ type Status struct {
 	LastFinished        *time.Time                    `json:"last_finished_at,omitempty"`
 	NextRunAt           *time.Time                    `json:"next_run_at,omitempty"`
 	LastError           string                        `json:"last_error,omitempty"`
+	Accounts            []AccountStatus               `json:"accounts,omitempty"`
 	Listeners           []telegramchat.ListenerStatus `json:"listeners,omitempty"`
 }
 
@@ -67,19 +83,24 @@ type accountTargetGroup struct {
 	blocked          bool
 	active           bool
 	checked          bool
+	failures         int
+	floodWait        bool
+	lastError        string
 }
 
 type Scheduler struct {
-	operations   *operations.Service
-	accounts     AccountLookup
-	chats        ChatReader
-	interval     time.Duration
-	initialDelay time.Duration
-	logger       *slog.Logger
-	now          func() time.Time
-	mu           sync.Mutex
-	runMu        sync.Mutex
-	status       Status
+	operations     *operations.Service
+	accounts       AccountLookup
+	chats          ChatReader
+	interval       time.Duration
+	initialDelay   time.Duration
+	logger         *slog.Logger
+	now            func() time.Time
+	accountWorkers int
+	targetBudget   int
+	mu             sync.Mutex
+	runMu          sync.Mutex
+	status         Status
 }
 
 func New(
@@ -93,13 +114,15 @@ func New(
 		interval = time.Minute
 	}
 	return &Scheduler{
-		operations:   service,
-		accounts:     accounts,
-		chats:        chats,
-		interval:     interval,
-		initialDelay: 15 * time.Second,
-		logger:       logger,
-		now:          time.Now,
+		operations:     service,
+		accounts:       accounts,
+		chats:          chats,
+		interval:       interval,
+		initialDelay:   15 * time.Second,
+		logger:         logger,
+		now:            time.Now,
+		accountWorkers: defaultAccountWorkers,
+		targetBudget:   defaultTargetBudget,
 		status: Status{
 			Mode:                "polling",
 			PollIntervalSeconds: int64(interval / time.Second),
@@ -183,135 +206,263 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	s.setRunning(true, started)
 	targets, err := s.operations.ListCollectionTargets(ctx)
 	if err != nil {
+		s.resetAccountStatuses(nil)
 		s.finish(started, err)
 		return err
 	}
 	groups := groupTargetsByAccount(targets)
+	s.resetAccountStatuses(groups)
+	workerCount := s.accountWorkers
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+	if workerCount > len(groups) {
+		workerCount = len(groups)
+	}
+	jobs := make(chan int, len(groups))
+	errs := make([]error, len(groups))
+	var workers sync.WaitGroup
+	for range workerCount {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				errs[index] = s.runAccountGroup(ctx, &groups[index])
+			}
+		}()
+	}
+	for index := range groups {
+		jobs <- index
+	}
+	close(jobs)
+	workers.Wait()
+
 	var runErr error
-	for {
-		processed := false
-		for index := range groups {
-			group := &groups[index]
-			if group.next >= len(group.targets) ||
-				group.blocked ||
-				(!group.nextCollectionAt.IsZero() &&
-					s.now().Before(group.nextCollectionAt)) {
-				continue
-			}
-			if err := ctx.Err(); err != nil {
-				runErr = errors.Join(runErr, err)
-				s.finish(started, runErr)
-				return runErr
-			}
-			target := group.targets[group.next]
-			group.next++
-			processed = true
-			if !group.checked {
-				group.checked = true
-				item, err := s.accounts.Get(ctx, group.accountID)
-				if errors.Is(err, account.ErrNotFound) {
-					group.blocked = true
-					continue
-				}
-				if err != nil {
-					group.blocked = true
-					runErr = errors.Join(runErr, err)
-					continue
-				}
-				group.active = item.Status == account.StatusOnline
-			}
-			if !group.active {
-				group.blocked = true
-				continue
-			}
-			collection, err := s.chats.CollectMessages(
-				ctx,
-				target.AccountID,
-				target.PeerType,
-				target.PeerID,
-				target.LastMessageID,
-				collectionPageSize,
-				collectionMaxPages,
-			)
-			if err != nil {
-				if recordErr := s.operations.RecordBatchFailure(ctx, operations.IngestBatchInput{
-					Source:           "scheduler",
-					AccountID:        target.AccountID,
-					PeerType:         target.PeerType,
-					PeerID:           target.PeerID,
-					PeerTitle:        target.PeerTitle,
-					CheckpointBefore: target.LastMessageID,
-					BacklogDetected:  target.BacklogDetected || collection.Backlog,
-				}, err); recordErr != nil {
-					s.logger.Warn("record monitor batch failure",
-						"account_id", target.AccountID,
-						"peer_type", target.PeerType,
-						"peer_id", target.PeerID,
-						"error", recordErr)
-				}
-				runErr = errors.Join(runErr, err)
-				if errors.Is(err, telegramchat.ErrSessionMissing) ||
-					errors.Is(err, telegramchat.ErrSessionInvalid) {
-					reason := "授权会话不存在，请重新登录"
-					if errors.Is(err, telegramchat.ErrSessionInvalid) {
-						reason = "Telegram 授权已失效，请重新登录"
-					}
-					if updateErr := s.recordAccountOffline(ctx, group.accountID, reason); updateErr != nil {
-						runErr = errors.Join(runErr, updateErr)
-					}
-					group.blocked = true
-				} else if errors.Is(err, telegramchat.ErrFloodWait) {
-					wait := s.interval
-					var floodWait *telegramchat.FloodWaitError
-					if errors.As(err, &floodWait) && floodWait.Wait > 0 {
-						wait = floodWait.Wait
-					}
-					if wait <= 0 {
-						wait = time.Minute
-					}
-					group.nextCollectionAt = s.now().UTC().Add(wait)
-					if deferErr := s.operations.DeferAccountCollection(
-						context.WithoutCancel(ctx),
-						group.accountID,
-						group.nextCollectionAt,
-						err.Error(),
-					); deferErr != nil {
-						s.logger.Warn("defer account collection",
-							"account_id", group.accountID,
-							"error", deferErr)
-					}
-					group.blocked = true
-				}
-				continue
-			}
-			if err := s.ingestCollection(ctx, target, collection); err != nil {
-				runErr = errors.Join(runErr, err)
-				continue
-			}
-			if err := s.operations.ClearAccountCollectionDeferral(
-				context.WithoutCancel(ctx),
-				group.accountID,
-			); err != nil {
-				runErr = errors.Join(runErr, err)
-			}
-			group.nextCollectionAt = time.Time{}
-			if collection.Backlog {
-				s.logger.Warn(
-					"monitor collection remains backlogged",
-					"account_id", target.AccountID,
-					"peer_type", target.PeerType,
-					"peer_id", target.PeerID,
-					"checkpoint", target.LastMessageID,
-					"pages_read", collection.PagesRead,
-				)
-			}
-		}
-		if !processed {
-			break
-		}
+	for _, err := range errs {
+		runErr = errors.Join(runErr, err)
 	}
 	s.finish(started, runErr)
 	return runErr
+}
+
+func (s *Scheduler) runAccountGroup(
+	ctx context.Context,
+	group *accountTargetGroup,
+) error {
+	if group == nil || group.blocked {
+		return nil
+	}
+	s.updateAccountStatus(*group, true)
+	defer func() {
+		s.updateAccountStatus(*group, false)
+	}()
+	if !group.nextCollectionAt.IsZero() &&
+		s.now().Before(group.nextCollectionAt) {
+		return nil
+	}
+
+	budget := s.targetBudget
+	if budget <= 0 {
+		budget = 1
+	}
+	var runErr error
+	processed := 0
+	for group.next < len(group.targets) && processed < budget {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(runErr, err)
+		}
+		target := group.targets[group.next]
+		group.next++
+		processed++
+		stop, err := s.runAccountTarget(ctx, group, target)
+		runErr = errors.Join(runErr, err)
+		if stop {
+			group.blocked = true
+			return runErr
+		}
+	}
+	return runErr
+}
+
+func (s *Scheduler) runAccountTarget(
+	ctx context.Context,
+	group *accountTargetGroup,
+	target operations.CollectionTarget,
+) (bool, error) {
+	if !group.checked {
+		group.checked = true
+		item, err := s.accounts.Get(ctx, group.accountID)
+		if errors.Is(err, account.ErrNotFound) {
+			return true, nil
+		}
+		if err != nil {
+			return true, err
+		}
+		group.active = item.Status == account.StatusOnline
+	}
+	if !group.active {
+		return true, nil
+	}
+
+	collection, err := s.chats.CollectMessages(
+		ctx,
+		target.AccountID,
+		target.PeerType,
+		target.PeerID,
+		target.LastMessageID,
+		collectionPageSize,
+		collectionMaxPages,
+	)
+	if err != nil {
+		if ctx.Err() != nil {
+			return true, errors.Join(err, ctx.Err())
+		}
+		return s.handleCollectionFailure(ctx, group, target, collection, err)
+	}
+	if err := s.ingestCollection(ctx, target, collection); err != nil {
+		return false, err
+	}
+	clearErr := s.clearAccountDeferral(ctx, group.accountID)
+	group.nextCollectionAt = time.Time{}
+	group.failures = 0
+	group.floodWait = false
+	group.lastError = ""
+	if collection.Backlog {
+		s.logger.Warn(
+			"monitor collection remains backlogged",
+			"account_id", target.AccountID,
+			"peer_type", target.PeerType,
+			"peer_id", target.PeerID,
+			"checkpoint", target.LastMessageID,
+			"pages_read", collection.PagesRead,
+		)
+	}
+	return false, clearErr
+}
+
+func (s *Scheduler) handleCollectionFailure(
+	ctx context.Context,
+	group *accountTargetGroup,
+	target operations.CollectionTarget,
+	collection telegramchat.MessageCollection,
+	collectionErr error,
+) (bool, error) {
+	var runErr error
+	if err := s.recordBatchFailure(ctx, target, collection, collectionErr); err != nil {
+		s.logger.Warn("record monitor batch failure",
+			"account_id", target.AccountID,
+			"peer_type", target.PeerType,
+			"peer_id", target.PeerID,
+			"error", err)
+		runErr = errors.Join(runErr, err)
+	}
+	runErr = errors.Join(runErr, collectionErr)
+	group.lastError = collectionErr.Error()
+	group.floodWait = errors.Is(collectionErr, telegramchat.ErrFloodWait)
+	if errors.Is(collectionErr, telegramchat.ErrSessionMissing) ||
+		errors.Is(collectionErr, telegramchat.ErrSessionInvalid) {
+		reason := "授权会话不存在，请重新登录"
+		if errors.Is(collectionErr, telegramchat.ErrSessionInvalid) {
+			reason = "Telegram 授权已失效，请重新登录"
+		}
+		if err := s.recordAccountOffline(ctx, group.accountID, reason); err != nil {
+			runErr = errors.Join(runErr, err)
+		}
+		return true, runErr
+	}
+	if !isAccountCollectionFailure(collectionErr) {
+		return false, runErr
+	}
+	wait := s.accountFailureBackoff(group.failures + 1)
+	var floodWait *telegramchat.FloodWaitError
+	if errors.As(collectionErr, &floodWait) && floodWait.Wait > 0 {
+		wait = floodWait.Wait
+	}
+	if err := s.deferAccountCollection(
+		ctx,
+		group,
+		wait,
+		collectionErr.Error(),
+	); err != nil {
+		runErr = errors.Join(runErr, err)
+	}
+	return true, runErr
+}
+
+func isAccountCollectionFailure(err error) bool {
+	return errors.Is(err, telegramchat.ErrFloodWait) ||
+		errors.Is(err, telegramchat.ErrTimeout) ||
+		errors.Is(err, telegramchat.ErrTelegram) ||
+		errors.Is(err, context.DeadlineExceeded)
+}
+
+func (s *Scheduler) accountFailureBackoff(failures int) time.Duration {
+	if failures < 1 {
+		failures = 1
+	}
+	wait := s.interval
+	for attempt := 1; attempt < failures && wait < 30*time.Minute; attempt++ {
+		wait *= 2
+	}
+	if wait > 30*time.Minute {
+		wait = 30 * time.Minute
+	}
+	if wait <= 0 {
+		wait = time.Minute
+	}
+	return wait
+}
+
+func (s *Scheduler) recordBatchFailure(
+	ctx context.Context,
+	target operations.CollectionTarget,
+	collection telegramchat.MessageCollection,
+	collectionErr error,
+) error {
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return s.operations.RecordBatchFailure(recordCtx, operations.IngestBatchInput{
+		Source:           "scheduler",
+		AccountID:        target.AccountID,
+		PeerType:         target.PeerType,
+		PeerID:           target.PeerID,
+		PeerTitle:        target.PeerTitle,
+		CheckpointBefore: target.LastMessageID,
+		BacklogDetected:  target.BacklogDetected || collection.Backlog,
+	}, collectionErr)
+}
+
+func (s *Scheduler) deferAccountCollection(
+	ctx context.Context,
+	group *accountTargetGroup,
+	wait time.Duration,
+	reason string,
+) error {
+	group.nextCollectionAt = s.now().UTC().Add(wait)
+	group.failures++
+	deferCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := s.operations.DeferAccountCollection(
+		deferCtx,
+		group.accountID,
+		group.nextCollectionAt,
+		reason,
+	); err != nil {
+		return fmt.Errorf("defer account %d collection: %w", group.accountID, err)
+	}
+	return nil
+}
+
+func (s *Scheduler) clearAccountDeferral(
+	ctx context.Context,
+	accountID int64,
+) error {
+	clearCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := s.operations.ClearAccountCollectionDeferral(clearCtx, accountID); err != nil {
+		return fmt.Errorf("clear account %d collection deferral: %w", accountID, err)
+	}
+	return nil
 }
 
 func groupTargetsByAccount(
@@ -327,6 +478,14 @@ func groupTargetsByAccount(
 			groups = append(groups, accountTargetGroup{accountID: target.AccountID})
 		}
 		groups[index].targets = append(groups[index].targets, target)
+		groups[index].failures = max(
+			groups[index].failures,
+			target.AccountConsecutiveFailures,
+		)
+		if target.AccountLastError != "" {
+			groups[index].lastError = target.AccountLastError
+		}
+		groups[index].floodWait = groups[index].floodWait || target.FloodWait
 		if target.NextCollectionAt != nil &&
 			target.NextCollectionAt.After(groups[index].nextCollectionAt) {
 			groups[index].nextCollectionAt = target.NextCollectionAt.UTC()
@@ -416,6 +575,7 @@ func (s *Scheduler) Status() Status {
 	}
 	s.mu.Lock()
 	status := s.status
+	status.Accounts = append([]AccountStatus(nil), s.status.Accounts...)
 	s.mu.Unlock()
 	if reporter, ok := s.chats.(interface {
 		ListenerStatuses() []telegramchat.ListenerStatus
@@ -432,6 +592,66 @@ func (s *Scheduler) Status() Status {
 		}
 	}
 	return status
+}
+
+func (s *Scheduler) resetAccountStatuses(groups []accountTargetGroup) {
+	statuses := make([]AccountStatus, 0, len(groups))
+	queued := 0
+	for index := range groups {
+		item := accountStatus(groups[index], false)
+		statuses = append(statuses, item)
+		queued += item.QueuedTargets
+	}
+	s.mu.Lock()
+	s.status.Accounts = statuses
+	s.status.QueuedTargets = queued
+	s.mu.Unlock()
+}
+
+func (s *Scheduler) updateAccountStatus(
+	group accountTargetGroup,
+	running bool,
+) {
+	item := accountStatus(group, running)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	queued := 0
+	found := false
+	for index := range s.status.Accounts {
+		if s.status.Accounts[index].AccountID == item.AccountID {
+			s.status.Accounts[index] = item
+			found = true
+		}
+		queued += s.status.Accounts[index].QueuedTargets
+	}
+	if !found {
+		s.status.Accounts = append(s.status.Accounts, item)
+		queued += item.QueuedTargets
+	}
+	s.status.QueuedTargets = queued
+}
+
+func accountStatus(
+	group accountTargetGroup,
+	running bool,
+) AccountStatus {
+	processed := min(group.next, len(group.targets))
+	var nextCollectionAt *time.Time
+	if !group.nextCollectionAt.IsZero() {
+		value := group.nextCollectionAt.UTC()
+		nextCollectionAt = &value
+	}
+	return AccountStatus{
+		AccountID:           group.accountID,
+		TargetCount:         len(group.targets),
+		QueuedTargets:       max(0, len(group.targets)-processed),
+		ProcessedTargets:    processed,
+		Running:             running,
+		NextCollectionAt:    nextCollectionAt,
+		ConsecutiveFailures: group.failures,
+		FloodWait:           group.floodWait,
+		LastError:           group.lastError,
+	}
 }
 
 func (s *Scheduler) setRunning(running bool, started time.Time) {

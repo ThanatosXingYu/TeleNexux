@@ -31,6 +31,7 @@
       <div><dt>实时连接</dt><dd data-monitor-listeners>—</dd></div>
       <div><dt>事件队列</dt><dd data-monitor-update-queue>—</dd></div>
       <div><dt>采集目标</dt><dd data-monitor-targets>—</dd></div>
+      <div><dt>本轮待处理</dt><dd data-monitor-queued>—</dd></div>
       <div><dt>积压目标</dt><dd data-monitor-backlog>—</dd></div>
       <div><dt>最长成功延迟</dt><dd data-monitor-delay>—</dd></div>
       <div><dt>连续失败</dt><dd data-monitor-failures>—</dd></div>
@@ -52,6 +53,24 @@
     </div>
   </section>
 </div>
+
+<section class="card">
+  <div class="card-header">
+    <h2>账号调度</h2>
+    <span class="badge badge-neutral" data-monitor-account-state>读取中</span>
+  </div>
+  <div class="business-table-wrap" data-monitor-account-wrap hidden>
+    <table class="business-table">
+      <thead><tr><th>账号</th><th>运行状态</th><th>本轮处理</th><th>待处理</th><th>下次可运行</th><th>连续失败</th><th>最近错误</th></tr></thead>
+      <tbody data-monitor-account-body></tbody>
+    </table>
+  </div>
+  <div class="empty-state compact" data-monitor-account-empty hidden>
+    <span class="empty-icon"><span class="icon icon-users" aria-hidden="true"></span></span>
+    <h2>没有待调度账号</h2>
+    <p>启用账号监控规则后，这里会显示账号级队列、退避和并发状态。</p>
+  </div>
+</section>
 
 <section class="card">
   <div class="card-header">

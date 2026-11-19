@@ -63,8 +63,10 @@ func TestBusinessPagesExposeRealDataControls(t *testing.T) {
 		"/monitor": {
 			"data-monitor-rules-body",
 			"data-monitor-health-body",
+			"data-monitor-account-body",
 			"data-monitor-listener-body",
 			"data-monitor-run",
+			"data-monitor-queued",
 			"data-monitor-delivery-queued",
 			"data-monitor-delivery-failed",
 		},
