@@ -40,6 +40,19 @@ curl http://localhost:9487/healthz
 只监听本机；需要局域网访问时必须使用反向代理提供 TLS 和额外访问控制，
 并显式设置 `HTTP_ADDR`。
 
+## Docker 部署
+
+```sh
+docker compose up --build -d
+docker compose ps
+```
+
+Compose 仅把宿主机端口发布到 `127.0.0.1:9487`，容器内部监听
+`0.0.0.0:9487`。不得把端口映射直接改成 `0.0.0.0:9487:9487`；公网访问
+必须先经过提供 TLS、身份认证和访问控制的反向代理。生产数据保存在
+`telenexus-data` 卷中，停止容器不会删除该卷。`.dockerignore` 会排除
+`temp/`、本地数据、授权会话和真实环境文件，避免它们进入构建上下文。
+
 ## 账号登录
 
 登录流程使用 Telegram MTProto：

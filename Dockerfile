@@ -13,7 +13,7 @@ FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /app
 COPY --from=build /out/telenexus /app/telenexus
 COPY --from=build --chown=nonroot:nonroot /out/data /data
-ENV HTTP_ADDR=:9487
+ENV HTTP_ADDR=0.0.0.0:9487
 ENV DATABASE_PATH=/data/telenexus.db
 VOLUME ["/data"]
 EXPOSE 9487
