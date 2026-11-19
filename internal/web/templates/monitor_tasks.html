@@ -13,7 +13,7 @@
 <section class="card">
   <div class="business-table-wrap" data-tasks-wrap hidden>
     <table class="business-table">
-      <thead><tr><th>规则</th><th>监听取话</th><th>关键词</th><th>更新于</th><th>状态</th><th>操作</th></tr></thead>
+      <thead><tr><th>规则</th><th>监听取话</th><th>关键词</th><th>通知渠道</th><th>更新于</th><th>状态</th><th>操作</th></tr></thead>
       <tbody data-tasks-body></tbody>
     </table>
   </div>
@@ -55,6 +55,13 @@
       <span>关键词</span>
       <textarea name="keywords" rows="3" maxlength="1000" placeholder="每行一个关键词；留空表示该会话的全部新消息"></textarea>
       <small class="field-hint">监控命中后生成告警；留空时告警匹配关键词为空。</small>
+    </label>
+    <label class="field">
+      <span>通知渠道</span>
+      <select name="notification_channel_id" data-monitor-channel required>
+        <option value="1">站内通知</option>
+      </select>
+      <small class="field-hint">告警会写入站内通知中心，并保留渠道投递记录。</small>
     </label>
     <p class="form-notice" data-monitor-rule-notice hidden></p>
     <div class="dialog-actions">

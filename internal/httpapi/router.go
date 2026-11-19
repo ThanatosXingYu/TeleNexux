@@ -126,7 +126,18 @@ type OperationsService interface {
 		peerTitle string,
 		keywords []string,
 	) (operations.Rule, error)
+	CreateRuleWithChannel(
+		ctx context.Context,
+		name string,
+		accountID int64,
+		peerType string,
+		peerID int64,
+		peerTitle string,
+		notificationChannelID int64,
+		keywords []string,
+	) (operations.Rule, error)
 	ListRules(ctx context.Context, enabledOnly bool) ([]operations.Rule, error)
+	ListNotificationChannels(ctx context.Context) ([]operations.NotificationChannel, error)
 	SetRuleEnabled(ctx context.Context, id int64, enabled bool) error
 	DeleteRule(ctx context.Context, id int64) error
 	ListAlerts(ctx context.Context, state string, limit int) ([]operations.Alert, error)
@@ -205,6 +216,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/monitor/rules", a.requireAPI(a.createMonitorRule))
 	mux.HandleFunc("PUT /api/v1/monitor/rules/{id}", a.requireAPI(a.updateMonitorRule))
 	mux.HandleFunc("DELETE /api/v1/monitor/rules/{id}", a.requireAPI(a.deleteMonitorRule))
+	mux.HandleFunc("GET /api/v1/monitor/channels", a.requireAPI(a.listNotificationChannels))
 	mux.HandleFunc("POST /api/v1/monitor/run", a.requireAPI(a.runMonitor))
 	mux.HandleFunc("GET /api/v1/monitor/status", a.requireAPI(a.monitorStatus))
 	mux.HandleFunc("GET /api/v1/monitor/alerts", a.requireAPI(a.listMonitorAlerts))
@@ -396,6 +408,20 @@ func (a *API) listMonitorRules(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+func (a *API) listNotificationChannels(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	items, err := a.operations.ListNotificationChannels(r.Context())
+	if err != nil {
+		a.logger.Error("list notification channels", "error", err)
+		writeError(w, http.StatusInternalServerError, "notification_channels_failed",
+			"无法读取通知渠道")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func (a *API) createMonitorRule(w http.ResponseWriter, r *http.Request) {
 	if !a.prepareOperations(w) {
 		return
@@ -406,18 +432,20 @@ func (a *API) createMonitorRule(w http.ResponseWriter, r *http.Request) {
 		PeerType  string   `json:"peer_type"`
 		PeerID    int64    `json:"peer_id"`
 		PeerTitle string   `json:"peer_title"`
+		ChannelID int64    `json:"notification_channel_id"`
 		Keywords  []string `json:"keywords"`
 	}
 	if !decodeJSONBody(w, r, &input) {
 		return
 	}
-	item, err := a.operations.CreateRule(
+	item, err := a.operations.CreateRuleWithChannel(
 		r.Context(),
 		input.Name,
 		input.AccountID,
 		input.PeerType,
 		input.PeerID,
 		input.PeerTitle,
+		input.ChannelID,
 		input.Keywords,
 	)
 	if err != nil {

@@ -2,6 +2,7 @@ package operations
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -110,6 +111,154 @@ func TestMessagesCreateDeduplicatedAlertsAndRemainSearchable(t *testing.T) {
 	}
 	if report.Total != 1 || len(report.ByDay) != 1 || len(report.ByAccount) != 1 {
 		t.Fatalf("BuildReport() = %+v", report)
+	}
+}
+
+func TestNotificationChannelIsAppliedToRulesAndAlerts(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+
+	channels, err := service.ListNotificationChannels(ctx)
+	if err != nil {
+		t.Fatalf("ListNotificationChannels() error = %v", err)
+	}
+	if len(channels) != 1 || channels[0].ID != 1 ||
+		channels[0].Kind != "in_app" || !channels[0].Enabled {
+		t.Fatalf("ListNotificationChannels() = %+v", channels)
+	}
+
+	rule, err := service.CreateRuleWithChannel(
+		ctx,
+		"Channel alerts",
+		7,
+		"chat",
+		42,
+		"Ops",
+		channels[0].ID,
+		[]string{"deploy"},
+	)
+	if err != nil {
+		t.Fatalf("CreateRuleWithChannel() error = %v", err)
+	}
+	if rule.NotificationChannelID != 1 || rule.NotificationChannelName != "站内通知" {
+		t.Fatalf("CreateRuleWithChannel() = %+v", rule)
+	}
+
+	_, alerts, err := service.IngestMessages(ctx, []MessageRecord{{
+		AccountID: 7,
+		PeerType:  "chat",
+		PeerID:    42,
+		PeerTitle: "Ops",
+		MessageID: 200,
+		Text:      "deploy now",
+		SentAt:    now,
+	}})
+	if err != nil {
+		t.Fatalf("IngestMessages() error = %v", err)
+	}
+	if len(alerts) != 1 || alerts[0].ChannelID != 1 ||
+		alerts[0].ChannelName != "站内通知" {
+		t.Fatalf("IngestMessages() alerts = %+v", alerts)
+	}
+}
+
+func TestCreateRuleValidatesNotificationChannel(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	if _, err := service.db.ExecContext(
+		ctx,
+		`UPDATE notification_channels SET enabled = 0 WHERE id = 1`,
+	); err != nil {
+		t.Fatalf("disable notification channel: %v", err)
+	}
+	if _, err := service.CreateRuleWithChannel(
+		ctx,
+		"Disabled",
+		7,
+		"chat",
+		42,
+		"Ops",
+		1,
+		nil,
+	); err == nil || err.Error() != "notification channel is disabled" {
+		t.Fatalf("CreateRuleWithChannel() disabled error = %v", err)
+	}
+	if _, err := service.CreateRuleWithChannel(
+		ctx,
+		"Missing",
+		7,
+		"chat",
+		42,
+		"Ops",
+		999,
+		nil,
+	); err == nil || err.Error() != "notification channel was not found" {
+		t.Fatalf("CreateRuleWithChannel() missing error = %v", err)
+	}
+}
+
+func TestOpenMigratesLegacyMonitorRulesToDefaultChannel(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE monitor_rules (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL,
+	account_id INTEGER NOT NULL,
+	peer_type TEXT NOT NULL,
+	peer_id INTEGER NOT NULL,
+	peer_title TEXT NOT NULL DEFAULT '',
+	keywords_json TEXT NOT NULL DEFAULT '[]',
+	enabled INTEGER NOT NULL DEFAULT 1,
+	last_message_id INTEGER NOT NULL DEFAULT 0,
+	last_run_at TEXT NOT NULL DEFAULT '',
+	last_error TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	service, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open() migrated database error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	result, err := service.db.ExecContext(ctx, `
+INSERT INTO monitor_rules (
+	name, account_id, peer_type, peer_id, peer_title, keywords_json, enabled,
+	last_message_id, last_run_at, last_error, created_at, updated_at
+) VALUES ('Legacy', 7, 'chat', 42, 'Ops', '[]', 1, 0, '', '', ?, ?)`,
+		now.Format(time.RFC3339Nano),
+		now.Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		t.Fatalf("insert legacy rule: %v", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("read legacy rule ID: %v", err)
+	}
+	rule, err := service.GetRule(ctx, id)
+	if err != nil {
+		t.Fatalf("GetRule() error = %v", err)
+	}
+	if rule.NotificationChannelID != 1 || rule.NotificationChannelName != "站内通知" {
+		t.Fatalf("migrated rule = %+v", rule)
 	}
 }
 

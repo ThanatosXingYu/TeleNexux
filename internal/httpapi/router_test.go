@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/ThanatosXingYu/TeleNexux/internal/account"
 	"github.com/ThanatosXingYu/TeleNexux/internal/auth"
+	"github.com/ThanatosXingYu/TeleNexux/internal/operations"
 	"github.com/ThanatosXingYu/TeleNexux/internal/settings"
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramauth"
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramchat"
@@ -824,6 +826,74 @@ func TestRefreshAccountsPersistsExpiredSession(t *testing.T) {
 	}
 	if accounts.created.Status != account.StatusError {
 		t.Fatalf("account status = %q, want %q", accounts.created.Status, account.StatusError)
+	}
+}
+
+func TestMonitorNotificationChannelAPI(t *testing.T) {
+	ctx := context.Background()
+	operationsService, err := operations.Open(
+		ctx,
+		filepath.Join(t.TempDir(), "operations.db"),
+	)
+	if err != nil {
+		t.Fatalf("open operations service: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := operationsService.Close(); err != nil {
+			t.Errorf("close operations service: %v", err)
+		}
+	})
+	webHandler, err := web.New()
+	if err != nil {
+		t.Fatalf("create web handler: %v", err)
+	}
+	manager, token, csrf := testAuthentication()
+	handler := authenticatedTestHandler{
+		next: New(
+			nil,
+			nil,
+			nil,
+			nil,
+			manager,
+			webHandler.Handler(),
+			slog.New(slog.NewTextHandler(io.Discard, nil)),
+			nil,
+			operationsService,
+			nil,
+		).Handler(),
+		token: token,
+		csrf:  csrf,
+	}
+
+	channelsRequest := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/channels", nil)
+	channelsRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(channelsRecorder, channelsRequest)
+	if channelsRecorder.Code != http.StatusOK ||
+		!strings.Contains(channelsRecorder.Body.String(), `"name":"站内通知"`) {
+		t.Fatalf("channels response = %d %s",
+			channelsRecorder.Code, channelsRecorder.Body.String())
+	}
+
+	ruleRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/monitor/rules",
+		strings.NewReader(`{
+			"name":"Deploy alerts",
+			"account_id":7,
+			"peer_type":"chat",
+			"peer_id":42,
+			"peer_title":"Ops",
+			"notification_channel_id":1,
+			"keywords":["deploy"]
+		}`),
+	)
+	ruleRequest.Header.Set("Content-Type", "application/json")
+	ruleRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(ruleRecorder, ruleRequest)
+	if ruleRecorder.Code != http.StatusCreated ||
+		!strings.Contains(ruleRecorder.Body.String(), `"notification_channel_name":"站内通知"`) {
+		t.Fatalf("create rule response = %d %s",
+			ruleRecorder.Code, ruleRecorder.Body.String())
 	}
 }
 

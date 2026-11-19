@@ -649,7 +649,9 @@
     const formNotice = document.querySelector("[data-monitor-rule-notice]");
     const accountSelect = document.querySelector("[data-monitor-account]");
     const chatSelect = document.querySelector("[data-monitor-chat]");
+    const channelSelect = document.querySelector("[data-monitor-channel]");
     let accounts = [];
+    let channels = [];
     let chatRequest = 0;
 
     const loadChats = async () => {
@@ -696,6 +698,7 @@
         );
         appendCell(row, peer);
         appendCell(row, Array.isArray(rule.keywords) && rule.keywords.length ? rule.keywords.join("、") : "全部消息");
+        appendCell(row, rule.notification_channel_name || "站内通知");
         appendCell(row, formatDate(rule.updated_at));
         const toggle = document.createElement("input");
         toggle.type = "checkbox";
@@ -747,11 +750,13 @@
     const load = async () => {
       showNotice(error);
       try {
-        const [rulesPayload, accountItems] = await Promise.all([
+        const [rulesPayload, channelPayload, accountItems] = await Promise.all([
           api("/api/v1/monitor/rules"),
+          api("/api/v1/monitor/channels"),
           loadAccounts(),
         ]);
         accounts = accountItems;
+        channels = Array.isArray(channelPayload?.items) ? channelPayload.items : [];
         renderRules(Array.isArray(rulesPayload?.items) ? rulesPayload.items : []);
       } catch (requestError) {
         showNotice(error, requestError.message, true);
@@ -768,6 +773,12 @@
           label: `${accountLabel(account)} · ${formatPhone(account.phone_number)}`,
         })), online.length ? "请选择在线账号" : "没有在线账号");
         fillSelect(chatSelect, [], "请选择在线账号");
+        fillSelect(channelSelect, channels
+          .filter((channel) => channel.enabled)
+          .map((channel) => ({
+            value: String(channel.id),
+            label: channel.name,
+          })), "请选择通知渠道");
         dialog?.showModal();
       });
     });
@@ -800,6 +811,7 @@
             peer_id: Number(peerID),
             peer_title: titleParts.join(":"),
             keywords,
+            notification_channel_id: Number(data.get("notification_channel_id")),
           }),
         });
         dialog?.close();
@@ -846,7 +858,7 @@
           copy.append(
             heading,
             element("p", "", alert.message_preview || "监控命中"),
-            element("small", "", `${alert.peer_title || "会话"} · ${formatDate(alert.created_at)}${alert.matched_keyword ? ` · 命中 ${alert.matched_keyword}` : ""}`),
+            element("small", "", `${alert.peer_title || "会话"} · ${alert.notification_channel_name || "站内通知"} · ${formatDate(alert.created_at)}${alert.matched_keyword ? ` · 命中 ${alert.matched_keyword}` : ""}`),
           );
           card.append(icon, copy);
           if (alert.state === "pending") {
