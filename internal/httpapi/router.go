@@ -35,6 +35,8 @@ const (
 	telegramAuthWindow       = time.Minute
 	telegramAuthAttemptLimit = 12
 	telegramAuthConcurrency  = 3
+	accountVerificationTTL   = 10 * time.Minute
+	accountValidationTimeout = 35 * time.Second
 )
 
 type AccountService interface {
@@ -1314,7 +1316,8 @@ func (a *API) refreshAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var wait sync.WaitGroup
-	semaphore := make(chan struct{}, 3)
+	semaphore := make(chan struct{}, telegramAuthConcurrency)
+	failures := make([]error, len(items))
 	for i := range items {
 		if items[i].Status != account.StatusOnline && items[i].Status != account.StatusError {
 			continue
@@ -1324,10 +1327,19 @@ func (a *API) refreshAccounts(w http.ResponseWriter, r *http.Request) {
 			defer wait.Done()
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
-			items[index] = a.refreshAccountStatus(r.Context(), items[index])
+			items[index], failures[index] = a.refreshAccountStatus(r.Context(), items[index])
 		}(i)
 	}
 	wait.Wait()
+	for _, failure := range failures {
+		if failure == nil {
+			continue
+		}
+		a.logger.Error("persist refreshed Telegram account status", "error", failure)
+		writeError(w, http.StatusInternalServerError, "account_refresh_incomplete",
+			"账号状态校验已完成，但部分结果未能保存，请重试")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":  items,
 		"limit":  len(items),
@@ -1357,14 +1369,29 @@ func (a *API) refreshAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "could not load account")
 		return
 	}
-	writeJSON(w, http.StatusOK, a.refreshAccountStatus(r.Context(), item))
+	updated, err := a.refreshAccountStatus(r.Context(), item)
+	if err != nil {
+		a.logger.Error("persist refreshed Telegram account status", "account_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "account_refresh_failed",
+			"账号状态校验已完成，但结果未能保存，请重试")
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }
 
-func (a *API) refreshAccountStatus(ctx context.Context, item account.Account) account.Account {
+func (a *API) refreshAccountStatus(
+	ctx context.Context,
+	item account.Account,
+) (account.Account, error) {
 	if item.Status != account.StatusOnline && item.Status != account.StatusError {
-		return item
+		return item, nil
 	}
-	err := a.chats.ValidateSession(ctx, item.ID)
+	validateCtx, validateCancel := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		accountValidationTimeout,
+	)
+	err := a.chats.ValidateSession(validateCtx, item.ID)
+	validateCancel()
 	status := account.StatusOnline
 	reason := ""
 	if err != nil {
@@ -1384,11 +1411,9 @@ func (a *API) refreshAccountStatus(ctx context.Context, item account.Account) ac
 	defer cancel()
 	updated, err := a.accounts.RecordVerification(updateCtx, item.ID, status, reason)
 	if err != nil {
-		a.logger.Error("persist Telegram account status",
-			"account_id", item.ID, "status", status, "error", err)
-		return item
+		return item, fmt.Errorf("record account %d verification: %w", item.ID, err)
 	}
-	return updated
+	return updated, nil
 }
 
 func (a *API) prepareChatService(w http.ResponseWriter) bool {
@@ -1681,10 +1706,37 @@ func (a *API) authorizedAccount(w http.ResponseWriter, r *http.Request) (int64, 
 		return 0, false
 	}
 	if item.Status != account.StatusOnline {
-		writeError(w, http.StatusConflict, "account_not_online", "account is not currently online")
+		writeError(w, http.StatusConflict, "account_not_online", accountOfflineMessage(item))
 		return 0, false
 	}
+	if !accountVerificationFresh(item) {
+		item, err = a.refreshAccountStatus(r.Context(), item)
+		if err != nil {
+			a.logger.Error("verify stale Telegram account status", "account_id", accountID, "error", err)
+			writeError(w, http.StatusInternalServerError, "account_refresh_failed",
+				"账号状态校验结果未能保存，请重试")
+			return 0, false
+		}
+		if item.Status != account.StatusOnline {
+			writeError(w, http.StatusConflict, "account_not_online", accountOfflineMessage(item))
+			return 0, false
+		}
+	}
 	return accountID, true
+}
+
+func accountVerificationFresh(item account.Account) bool {
+	if item.LastVerifiedAt == nil {
+		return false
+	}
+	return time.Since(item.LastVerifiedAt.UTC()) <= accountVerificationTTL
+}
+
+func accountOfflineMessage(item account.Account) string {
+	if reason := strings.TrimSpace(item.StatusReason); reason != "" {
+		return "该账号当前不可用：" + reason
+	}
+	return "该账号当前不可用，请重新校验状态或重新登录"
 }
 
 func (a *API) writeChatError(
