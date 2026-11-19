@@ -209,6 +209,12 @@ func (s *Service) Close() error {
 }
 
 func (s *Service) migrate(ctx context.Context) error {
+	var ftsExists int
+	if err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(1) FROM sqlite_master
+WHERE type = 'table' AND name = 'indexed_messages_fts'`).Scan(&ftsExists); err != nil {
+		return fmt.Errorf("inspect message search index: %w", err)
+	}
 	const schema = `
 CREATE TABLE IF NOT EXISTS account_groups (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -325,6 +331,36 @@ CREATE INDEX IF NOT EXISTS indexed_messages_sent_idx
 	ON indexed_messages(sent_at DESC, account_id, message_id);
 CREATE INDEX IF NOT EXISTS indexed_messages_peer_idx
 	ON indexed_messages(account_id, peer_type, peer_id, message_id DESC);
+CREATE VIRTUAL TABLE IF NOT EXISTS indexed_messages_fts USING fts5(
+	text,
+	sender,
+	peer_title,
+	content = 'indexed_messages',
+	content_rowid = 'rowid',
+	tokenize = 'trigram'
+);
+CREATE TRIGGER IF NOT EXISTS indexed_messages_fts_insert
+AFTER INSERT ON indexed_messages
+BEGIN
+	INSERT INTO indexed_messages_fts(rowid, text, sender, peer_title)
+	VALUES (new.rowid, new.text, new.sender, new.peer_title);
+END;
+CREATE TRIGGER IF NOT EXISTS indexed_messages_fts_delete
+AFTER DELETE ON indexed_messages
+BEGIN
+	INSERT INTO indexed_messages_fts(
+		indexed_messages_fts, rowid, text, sender, peer_title
+	) VALUES ('delete', old.rowid, old.text, old.sender, old.peer_title);
+END;
+CREATE TRIGGER IF NOT EXISTS indexed_messages_fts_update
+AFTER UPDATE ON indexed_messages
+BEGIN
+	INSERT INTO indexed_messages_fts(
+		indexed_messages_fts, rowid, text, sender, peer_title
+	) VALUES ('delete', old.rowid, old.text, old.sender, old.peer_title);
+	INSERT INTO indexed_messages_fts(rowid, text, sender, peer_title)
+	VALUES (new.rowid, new.text, new.sender, new.peer_title);
+END;
 CREATE TABLE IF NOT EXISTS monitor_checkpoints (
 	account_id INTEGER NOT NULL,
 	peer_type TEXT NOT NULL,
@@ -486,6 +522,13 @@ BEGIN
 END;`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate operations database: %w", err)
+	}
+	if ftsExists == 0 {
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO indexed_messages_fts(indexed_messages_fts) VALUES('rebuild')`,
+		); err != nil {
+			return fmt.Errorf("build message search index: %w", err)
+		}
 	}
 	if _, err := s.db.ExecContext(ctx, `
 INSERT OR IGNORE INTO notification_channels (
@@ -1463,9 +1506,17 @@ func (s *Service) SearchMessages(ctx context.Context, filter MessageQuery) (Mess
 	where := make([]string, 0, 5)
 	args := make([]any, 0, 6)
 	if filter.Query != "" {
-		where = append(where, "(text LIKE ? ESCAPE '!' OR sender LIKE ? ESCAPE '!' OR peer_title LIKE ? ESCAPE '!')")
-		pattern := "%" + escapeLike(filter.Query) + "%"
-		args = append(args, pattern, pattern, pattern)
+		if utf8.RuneCountInString(filter.Query) >= 3 {
+			where = append(where, `rowid IN (
+	SELECT rowid FROM indexed_messages_fts
+	WHERE indexed_messages_fts MATCH ?
+)`)
+			args = append(args, ftsPhrase(filter.Query))
+		} else {
+			where = append(where, "(text LIKE ? ESCAPE '!' OR sender LIKE ? ESCAPE '!' OR peer_title LIKE ? ESCAPE '!')")
+			pattern := "%" + escapeLike(filter.Query) + "%"
+			args = append(args, pattern, pattern, pattern)
+		}
 	}
 	if filter.AccountID > 0 {
 		where = append(where, "account_id = ?")
@@ -1967,6 +2018,10 @@ func truncate(value string, maximum int) string {
 func escapeLike(value string) string {
 	replacer := strings.NewReplacer(`!`, `!!`, `%`, `!%`, `_`, `!_`)
 	return replacer.Replace(value)
+}
+
+func ftsPhrase(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }
 
 func boolInt(value bool) int {

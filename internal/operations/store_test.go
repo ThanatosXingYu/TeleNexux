@@ -118,6 +118,47 @@ func TestMessagesCreateDeduplicatedAlertsAndRemainSearchable(t *testing.T) {
 	}
 }
 
+func TestMessageSearchUsesFullTextIndexAndKeepsShortQueryFallback(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	message := MessageRecord{
+		AccountID: 7,
+		PeerType:  "chat",
+		PeerID:    42,
+		PeerTitle: "运营中心",
+		MessageID: 301,
+		Sender:    "Alice",
+		Text:      "中华人民共和国 项目更新",
+		SentAt:    now,
+	}
+	if _, _, err := service.IngestMessages(ctx, []MessageRecord{message}); err != nil {
+		t.Fatalf("IngestMessages() error = %v", err)
+	}
+	for _, query := range []string{"人民共和", "人民", "运营"} {
+		page, err := service.SearchMessages(ctx, MessageQuery{Query: query, Limit: 20})
+		if err != nil {
+			t.Fatalf("SearchMessages(%q) error = %v", query, err)
+		}
+		if page.Total != 1 || len(page.Items) != 1 {
+			t.Fatalf("SearchMessages(%q) = %+v", query, page)
+		}
+	}
+
+	message.Text = "内容已经更新"
+	if _, _, err := service.IngestMessages(ctx, []MessageRecord{message}); err != nil {
+		t.Fatalf("IngestMessages(update) error = %v", err)
+	}
+	page, err := service.SearchMessages(ctx, MessageQuery{Query: "人民共和", Limit: 20})
+	if err != nil {
+		t.Fatalf("SearchMessages(updated) error = %v", err)
+	}
+	if page.Total != 0 || len(page.Items) != 0 {
+		t.Fatalf("stale full-text result = %+v", page)
+	}
+}
+
 func TestMonitorAlertLifecycleTracksOwnershipAndState(t *testing.T) {
 	ctx := context.Background()
 	service := newTestService(t)
