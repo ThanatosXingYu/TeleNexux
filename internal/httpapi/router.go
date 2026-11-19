@@ -231,94 +231,137 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/auth/session", a.authSession)
 	mux.HandleFunc("POST /api/v1/auth/setup", a.setupAdministrator)
 	mux.HandleFunc("POST /api/v1/auth/login", a.loginAdministrator)
-	mux.HandleFunc("POST /api/v1/auth/logout", a.requireAPI(a.logoutAdministrator))
-	mux.HandleFunc("GET /api/v1/health", a.requireAPI(a.healthDetails))
-	mux.HandleFunc("GET /api/v1/audit/events", a.requireAPI(a.listAuditEvents))
-	mux.HandleFunc("GET /api/v1/dashboard", a.requireAPI(a.dashboard))
-	mux.HandleFunc("GET /api/v1/groups", a.requireAPI(a.listGroups))
-	mux.HandleFunc("POST /api/v1/groups", a.requireAPI(a.createGroup))
-	mux.HandleFunc("DELETE /api/v1/groups/{id}", a.requireAPI(a.deleteGroup))
-	mux.HandleFunc("PUT /api/v1/groups/{id}/accounts", a.requireAPI(a.updateGroupAccounts))
-	mux.HandleFunc("GET /api/v1/monitor/rules", a.requireAPI(a.listMonitorRules))
-	mux.HandleFunc("POST /api/v1/monitor/rules", a.requireAPI(a.createMonitorRule))
-	mux.HandleFunc("PUT /api/v1/monitor/rules/{id}", a.requireAPI(a.updateMonitorRule))
-	mux.HandleFunc("DELETE /api/v1/monitor/rules/{id}", a.requireAPI(a.deleteMonitorRule))
-	mux.HandleFunc("GET /api/v1/monitor/channels", a.requireAPI(a.listNotificationChannels))
-	mux.HandleFunc("POST /api/v1/monitor/run", a.requireAPI(a.runMonitor))
-	mux.HandleFunc("GET /api/v1/monitor/status", a.requireAPI(a.monitorStatus))
-	mux.HandleFunc("GET /api/v1/monitor/targets", a.requireAPI(a.listMonitorTargets))
-	mux.HandleFunc("GET /api/v1/monitor/alerts", a.requireAPI(a.listMonitorAlerts))
+	mux.HandleFunc("POST /api/v1/auth/logout",
+		a.requireAPIPermission(auth.PermissionSession, a.logoutAdministrator))
+	mux.HandleFunc("GET /api/v1/health",
+		a.requireAPIPermission(auth.PermissionHealthRead, a.healthDetails))
+	mux.HandleFunc("GET /api/v1/audit/events",
+		a.requireAPIPermission(auth.PermissionAuditRead, a.listAuditEvents))
+	mux.HandleFunc("GET /api/v1/dashboard",
+		a.requireAPIPermission(auth.PermissionDashboardRead, a.dashboard))
+	mux.HandleFunc("GET /api/v1/groups",
+		a.requireAPIPermission(auth.PermissionGroupRead, a.listGroups))
+	mux.HandleFunc("POST /api/v1/groups",
+		a.requireAPIPermission(auth.PermissionGroupWrite, a.createGroup))
+	mux.HandleFunc("DELETE /api/v1/groups/{id}",
+		a.requireAPIPermission(auth.PermissionGroupWrite, a.deleteGroup))
+	mux.HandleFunc("PUT /api/v1/groups/{id}/accounts",
+		a.requireAPIPermission(auth.PermissionGroupWrite, a.updateGroupAccounts))
+	mux.HandleFunc("GET /api/v1/monitor/rules",
+		a.requireAPIPermission(auth.PermissionMonitorRead, a.listMonitorRules))
+	mux.HandleFunc("POST /api/v1/monitor/rules",
+		a.requireAPIPermission(auth.PermissionMonitorWrite, a.createMonitorRule))
+	mux.HandleFunc("PUT /api/v1/monitor/rules/{id}",
+		a.requireAPIPermission(auth.PermissionMonitorWrite, a.updateMonitorRule))
+	mux.HandleFunc("DELETE /api/v1/monitor/rules/{id}",
+		a.requireAPIPermission(auth.PermissionMonitorWrite, a.deleteMonitorRule))
+	mux.HandleFunc("GET /api/v1/monitor/channels",
+		a.requireAPIPermission(auth.PermissionMonitorRead, a.listNotificationChannels))
+	mux.HandleFunc("POST /api/v1/monitor/run",
+		a.requireAPIPermission(auth.PermissionMonitorOperate, a.runMonitor))
+	mux.HandleFunc("GET /api/v1/monitor/status",
+		a.requireAPIPermission(auth.PermissionMonitorRead, a.monitorStatus))
+	mux.HandleFunc("GET /api/v1/monitor/targets",
+		a.requireAPIPermission(auth.PermissionMonitorRead, a.listMonitorTargets))
+	mux.HandleFunc("GET /api/v1/monitor/alerts",
+		a.requireAPIPermission(auth.PermissionMonitorRead, a.listMonitorAlerts))
 	mux.HandleFunc(
 		"POST /api/v1/monitor/alerts/{id}/resolve",
-		a.requireAPI(a.resolveMonitorAlert),
+		a.requireAPIPermission(auth.PermissionMonitorOperate, a.resolveMonitorAlert),
 	)
 	mux.HandleFunc(
 		"PATCH /api/v1/monitor/alerts/{id}",
-		a.requireAPI(a.updateMonitorAlert),
+		a.requireAPIPermission(auth.PermissionMonitorOperate, a.updateMonitorAlert),
 	)
-	mux.HandleFunc("GET /api/v1/messages", a.requireAPI(a.searchMessages))
-	mux.HandleFunc("POST /api/v1/messages/cleanup", a.requireAPI(a.cleanupMessages))
-	mux.HandleFunc("GET /api/v1/retention", a.requireAPI(a.getRetentionPolicy))
-	mux.HandleFunc("PUT /api/v1/retention", a.requireAPI(a.updateRetentionPolicy))
-	mux.HandleFunc("GET /api/v1/retention/legal-holds", a.requireAPI(a.listLegalHolds))
-	mux.HandleFunc("POST /api/v1/retention/legal-holds", a.requireAPI(a.createLegalHold))
+	mux.HandleFunc("GET /api/v1/messages",
+		a.requireAPIPermission(auth.PermissionMessageRead, a.searchMessages))
+	mux.HandleFunc("POST /api/v1/messages/cleanup",
+		a.requireAPIPermission(auth.PermissionMessageWrite, a.cleanupMessages))
+	mux.HandleFunc("GET /api/v1/retention",
+		a.requireAPIPermission(auth.PermissionRetentionRead, a.getRetentionPolicy))
+	mux.HandleFunc("PUT /api/v1/retention",
+		a.requireAPIPermission(auth.PermissionRetentionWrite, a.updateRetentionPolicy))
+	mux.HandleFunc("GET /api/v1/retention/legal-holds",
+		a.requireAPIPermission(auth.PermissionRetentionRead, a.listLegalHolds))
+	mux.HandleFunc("POST /api/v1/retention/legal-holds",
+		a.requireAPIPermission(auth.PermissionRetentionWrite, a.createLegalHold))
 	mux.HandleFunc(
 		"DELETE /api/v1/retention/legal-holds/{id}",
-		a.requireAPI(a.releaseLegalHold),
+		a.requireAPIPermission(auth.PermissionRetentionWrite, a.releaseLegalHold),
 	)
-	mux.HandleFunc("GET /api/v1/reports", a.requireAPI(a.messageReport))
+	mux.HandleFunc("GET /api/v1/reports",
+		a.requireAPIPermission(auth.PermissionReportRead, a.messageReport))
 	mux.Handle("GET /", a.requirePage(a.web))
 
-	mux.HandleFunc("GET /api/v1/accounts", a.requireAPI(a.listAccounts))
-	mux.HandleFunc("POST /api/v1/accounts", a.requireAPI(a.createAccount))
-	mux.HandleFunc("POST /api/v1/accounts/refresh", a.requireAPI(a.refreshAccounts))
-	mux.HandleFunc("GET /api/v1/accounts/{id}", a.requireAPI(a.getAccount))
-	mux.HandleFunc("PUT /api/v1/accounts/{id}", a.requireAPI(a.updateAccount))
-	mux.HandleFunc("DELETE /api/v1/accounts/{id}", a.requireAPI(a.deleteAccount))
-	mux.HandleFunc("POST /api/v1/accounts/{id}/restore", a.requireAPI(a.restoreAccount))
-	mux.HandleFunc("POST /api/v1/accounts/{id}/refresh", a.requireAPI(a.refreshAccount))
-	mux.HandleFunc("GET /api/v1/accounts/{id}/chats", a.requireAPI(a.listAccountChats))
-	mux.HandleFunc("GET /api/v1/accounts/{id}/search", a.requireAPI(a.searchAccountChats))
+	mux.HandleFunc("GET /api/v1/accounts",
+		a.requireAPIPermission(auth.PermissionAccountRead, a.listAccounts))
+	mux.HandleFunc("POST /api/v1/accounts",
+		a.requireAPIPermission(auth.PermissionAccountWrite, a.createAccount))
+	mux.HandleFunc("POST /api/v1/accounts/refresh",
+		a.requireAPIPermission(auth.PermissionAccountWrite, a.refreshAccounts))
+	mux.HandleFunc("GET /api/v1/accounts/{id}",
+		a.requireAPIPermission(auth.PermissionAccountRead, a.getAccount))
+	mux.HandleFunc("PUT /api/v1/accounts/{id}",
+		a.requireAPIPermission(auth.PermissionAccountWrite, a.updateAccount))
+	mux.HandleFunc("DELETE /api/v1/accounts/{id}",
+		a.requireAPIPermission(auth.PermissionAccountWrite, a.deleteAccount))
+	mux.HandleFunc("POST /api/v1/accounts/{id}/restore",
+		a.requireAPIPermission(auth.PermissionAccountWrite, a.restoreAccount))
+	mux.HandleFunc("POST /api/v1/accounts/{id}/refresh",
+		a.requireAPIPermission(auth.PermissionAccountWrite, a.refreshAccount))
+	mux.HandleFunc("GET /api/v1/accounts/{id}/chats",
+		a.requireAPIPermission(auth.PermissionChatRead, a.listAccountChats))
+	mux.HandleFunc("GET /api/v1/accounts/{id}/search",
+		a.requireAPIPermission(auth.PermissionChatRead, a.searchAccountChats))
 	mux.HandleFunc(
 		"GET /api/v1/accounts/{id}/chats/{peerType}/{peerID}/messages",
-		a.requireAPI(a.listChatMessages),
+		a.requireAPIPermission(auth.PermissionChatRead, a.listChatMessages),
 	)
 	mux.HandleFunc(
 		"POST /api/v1/accounts/{id}/chats/{peerType}/{peerID}/messages/delete",
-		a.requireAPI(a.deleteChatMessages),
+		a.requireAPIPermission(auth.PermissionChatOperate, a.deleteChatMessages),
 	)
 	mux.HandleFunc(
 		"POST /api/v1/accounts/{id}/chats/{peerType}/{peerID}/messages/forward",
-		a.requireAPI(a.forwardChatMessages),
+		a.requireAPIPermission(auth.PermissionChatOperate, a.forwardChatMessages),
 	)
-	mux.HandleFunc("GET /api/v1/accounts/{id}/profile", a.requireAPI(a.getCurrentProfile))
-	mux.HandleFunc("PUT /api/v1/accounts/{id}/profile", a.requireAPI(a.updateCurrentProfile))
+	mux.HandleFunc("GET /api/v1/accounts/{id}/profile",
+		a.requireAPIPermission(auth.PermissionAccountRead, a.getCurrentProfile))
+	mux.HandleFunc("PUT /api/v1/accounts/{id}/profile",
+		a.requireAPIPermission(auth.PermissionAccountWrite, a.updateCurrentProfile))
 	mux.HandleFunc(
 		"GET /api/v1/accounts/{id}/chats/{peerType}/{peerID}/profile",
-		a.requireAPI(a.getChatProfile),
+		a.requireAPIPermission(auth.PermissionChatRead, a.getChatProfile),
 	)
 	mux.HandleFunc(
 		"GET /api/v1/accounts/{id}/chats/{peerType}/{peerID}/avatar",
-		a.requireAPI(a.getChatAvatar),
+		a.requireAPIPermission(auth.PermissionChatRead, a.getChatAvatar),
 	)
-	mux.HandleFunc("GET /api/v1/settings", a.requireAPI(a.getSettings))
-	mux.HandleFunc("PUT /api/v1/settings", a.requireAPI(a.updateSettings))
-	mux.HandleFunc("GET /api/v1/telegram/auth/config", a.requireAPI(a.telegramAuthConfig))
-	mux.HandleFunc("POST /api/v1/telegram/auth/send-code", a.requireAPI(a.sendTelegramCode))
-	mux.HandleFunc("POST /api/v1/telegram/auth/qr", a.requireAPI(a.startTelegramQR))
-	mux.HandleFunc("GET /api/v1/telegram/auth/qr/{loginID}", a.requireAPI(a.pollTelegramQR))
-	mux.HandleFunc("DELETE /api/v1/telegram/auth/qr/{loginID}", a.requireAPI(a.cancelTelegramQR))
+	mux.HandleFunc("GET /api/v1/settings",
+		a.requireAPIPermission(auth.PermissionSettingsRead, a.getSettings))
+	mux.HandleFunc("PUT /api/v1/settings",
+		a.requireAPIPermission(auth.PermissionSettingsWrite, a.updateSettings))
+	mux.HandleFunc("GET /api/v1/telegram/auth/config",
+		a.requireAPIPermission(auth.PermissionTelegramAuth, a.telegramAuthConfig))
+	mux.HandleFunc("POST /api/v1/telegram/auth/send-code",
+		a.requireAPIPermission(auth.PermissionTelegramAuth, a.sendTelegramCode))
+	mux.HandleFunc("POST /api/v1/telegram/auth/qr",
+		a.requireAPIPermission(auth.PermissionTelegramAuth, a.startTelegramQR))
+	mux.HandleFunc("GET /api/v1/telegram/auth/qr/{loginID}",
+		a.requireAPIPermission(auth.PermissionTelegramAuth, a.pollTelegramQR))
+	mux.HandleFunc("DELETE /api/v1/telegram/auth/qr/{loginID}",
+		a.requireAPIPermission(auth.PermissionTelegramAuth, a.cancelTelegramQR))
 	mux.HandleFunc(
 		"POST /api/v1/telegram/auth/{loginID}/code",
-		a.requireAPI(a.submitTelegramCode),
+		a.requireAPIPermission(auth.PermissionTelegramAuth, a.submitTelegramCode),
 	)
 	mux.HandleFunc(
 		"POST /api/v1/telegram/auth/{loginID}/password",
-		a.requireAPI(a.submitTelegramPassword),
+		a.requireAPIPermission(auth.PermissionTelegramAuth, a.submitTelegramPassword),
 	)
 	mux.HandleFunc(
 		"DELETE /api/v1/telegram/auth/{loginID}",
-		a.requireAPI(a.cancelTelegramLogin),
+		a.requireAPIPermission(auth.PermissionTelegramAuth, a.cancelTelegramLogin),
 	)
 	return a.logRequests(a.recoverPanic(mux))
 }
@@ -1102,7 +1145,10 @@ func (a *API) startAdministratorSession(w http.ResponseWriter, r *http.Request) 
 	return nil
 }
 
-func (a *API) requireAPI(next http.HandlerFunc) http.HandlerFunc {
+func (a *API) requireAPIPermission(
+	permission string,
+	next http.HandlerFunc,
+) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w = responseWriter(w)
 		principal := auth.Principal{Actor: anonymousAuditActor, Role: anonymousAuditRole}
@@ -1114,7 +1160,7 @@ func (a *API) requireAPI(next http.HandlerFunc) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		if !auth.CanAccess(session.Role, auth.PermissionAccess) {
+		if !auth.CanAccess(session.Role, permission) {
 			writeError(w, http.StatusForbidden, "permission_denied", "当前操作者没有访问权限")
 			return
 		}

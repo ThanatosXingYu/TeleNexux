@@ -27,7 +27,30 @@ const (
 	CSRFHeader = "X-CSRF-Token"
 
 	RoleAdministrator = "administrator"
-	PermissionAccess  = "access"
+	RoleOperator      = "operator"
+	RoleViewer        = "viewer"
+
+	PermissionSession        = "session"
+	PermissionHealthRead     = "health:read"
+	PermissionAuditRead      = "audit:read"
+	PermissionDashboardRead  = "dashboard:read"
+	PermissionGroupRead      = "group:read"
+	PermissionGroupWrite     = "group:write"
+	PermissionAccountRead    = "account:read"
+	PermissionAccountWrite   = "account:write"
+	PermissionChatRead       = "chat:read"
+	PermissionChatOperate    = "chat:operate"
+	PermissionMonitorRead    = "monitor:read"
+	PermissionMonitorWrite   = "monitor:write"
+	PermissionMonitorOperate = "monitor:operate"
+	PermissionMessageRead    = "message:read"
+	PermissionMessageWrite   = "message:write"
+	PermissionReportRead     = "report:read"
+	PermissionRetentionRead  = "retention:read"
+	PermissionRetentionWrite = "retention:write"
+	PermissionSettingsRead   = "settings:read"
+	PermissionSettingsWrite  = "settings:write"
+	PermissionTelegramAuth   = "telegram:auth"
 )
 
 var (
@@ -38,6 +61,30 @@ var (
 )
 
 var usernamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{3,64}$`)
+
+var knownPermissions = map[string]struct{}{
+	PermissionSession:        {},
+	PermissionHealthRead:     {},
+	PermissionAuditRead:      {},
+	PermissionDashboardRead:  {},
+	PermissionGroupRead:      {},
+	PermissionGroupWrite:     {},
+	PermissionAccountRead:    {},
+	PermissionAccountWrite:   {},
+	PermissionChatRead:       {},
+	PermissionChatOperate:    {},
+	PermissionMonitorRead:    {},
+	PermissionMonitorWrite:   {},
+	PermissionMonitorOperate: {},
+	PermissionMessageRead:    {},
+	PermissionMessageWrite:   {},
+	PermissionReportRead:     {},
+	PermissionRetentionRead:  {},
+	PermissionRetentionWrite: {},
+	PermissionSettingsRead:   {},
+	PermissionSettingsWrite:  {},
+	PermissionTelegramAuth:   {},
+}
 
 type credentials struct {
 	Username     string `json:"username"`
@@ -157,6 +204,16 @@ func (m *Manager) Login(username, password string) error {
 }
 
 func (m *Manager) CreateSession() (string, Session, error) {
+	return m.CreateRoleSession(RoleAdministrator)
+}
+
+// CreateRoleSession creates a session for a supported local role.
+// Role assignment is intentionally kept inside the process until account
+// management endpoints are added.
+func (m *Manager) CreateRoleSession(role string) (string, Session, error) {
+	if !CanAccess(role, PermissionSession) {
+		return "", Session{}, errors.New("unsupported session role")
+	}
 	m.mu.RLock()
 	actor := m.username
 	configured := m.username != "" && m.passwordHash != ""
@@ -175,7 +232,7 @@ func (m *Manager) CreateSession() (string, Session, error) {
 	now := m.now().UTC()
 	item := session{
 		Actor:     actor,
-		Role:      RoleAdministrator,
+		Role:      role,
 		CSRF:      csrf,
 		ExpiresAt: now.Add(m.sessionTTL),
 	}
@@ -231,7 +288,48 @@ func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 }
 
 func CanAccess(role, permission string) bool {
-	return role == RoleAdministrator && permission == PermissionAccess
+	if _, known := knownPermissions[permission]; !known {
+		return false
+	}
+	if role == RoleAdministrator {
+		return true
+	}
+	switch role {
+	case RoleOperator:
+		switch permission {
+		case PermissionSession,
+			PermissionHealthRead,
+			PermissionDashboardRead,
+			PermissionGroupRead,
+			PermissionAccountRead,
+			PermissionAccountWrite,
+			PermissionChatRead,
+			PermissionChatOperate,
+			PermissionMonitorRead,
+			PermissionMonitorWrite,
+			PermissionMonitorOperate,
+			PermissionMessageRead,
+			PermissionReportRead,
+			PermissionSettingsRead,
+			PermissionTelegramAuth:
+			return true
+		}
+	case RoleViewer:
+		switch permission {
+		case PermissionSession,
+			PermissionHealthRead,
+			PermissionDashboardRead,
+			PermissionGroupRead,
+			PermissionAccountRead,
+			PermissionChatRead,
+			PermissionMonitorRead,
+			PermissionMessageRead,
+			PermissionReportRead,
+			PermissionSettingsRead:
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) load() error {

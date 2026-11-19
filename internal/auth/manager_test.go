@@ -80,12 +80,70 @@ func TestPrincipalContextAndRolePolicy(t *testing.T) {
 	if !ok || got != principal {
 		t.Fatalf("PrincipalFromContext() = %+v, %v", got, ok)
 	}
-	if !CanAccess(RoleAdministrator, PermissionAccess) {
+	if !CanAccess(RoleAdministrator, PermissionSettingsWrite) {
 		t.Fatal("administrator access was denied")
 	}
-	if CanAccess("viewer", PermissionAccess) ||
+	if CanAccess(RoleViewer, PermissionSettingsWrite) ||
+		CanAccess(RoleViewer, PermissionTelegramAuth) ||
+		CanAccess("unknown", PermissionSession) ||
 		CanAccess(RoleAdministrator, "unknown") {
 		t.Fatal("unknown role or permission was allowed")
+	}
+}
+
+func TestRolePermissionMatrix(t *testing.T) {
+	tests := []struct {
+		name       string
+		role       string
+		permission string
+		want       bool
+	}{
+		{"administrator audit", RoleAdministrator, PermissionAuditRead, true},
+		{"operator run monitor", RoleOperator, PermissionMonitorOperate, true},
+		{"operator change settings", RoleOperator, PermissionSettingsWrite, false},
+		{"operator read audit", RoleOperator, PermissionAuditRead, false},
+		{"operator modify retention", RoleOperator, PermissionRetentionWrite, false},
+		{"viewer read chat", RoleViewer, PermissionChatRead, true},
+		{"viewer operate chat", RoleViewer, PermissionChatOperate, false},
+		{"viewer refresh account", RoleViewer, PermissionAccountWrite, false},
+		{"viewer auth telegram", RoleViewer, PermissionTelegramAuth, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := CanAccess(test.role, test.permission); got != test.want {
+				t.Fatalf(
+					"CanAccess(%q, %q) = %v, want %v",
+					test.role,
+					test.permission,
+					got,
+					test.want,
+				)
+			}
+		})
+	}
+}
+
+func TestManagerCreatesScopedSession(t *testing.T) {
+	manager, err := NewTestManager("operator", "strong-password-123")
+	if err != nil {
+		t.Fatalf("NewTestManager() error = %v", err)
+	}
+	token, created, err := manager.CreateRoleSession(RoleViewer)
+	if err != nil {
+		t.Fatalf("CreateRoleSession() error = %v", err)
+	}
+	if created.Role != RoleViewer {
+		t.Fatalf("session role = %q, want %q", created.Role, RoleViewer)
+	}
+	loaded, err := manager.Lookup(token)
+	if err != nil {
+		t.Fatalf("Lookup() error = %v", err)
+	}
+	if loaded.Role != RoleViewer {
+		t.Fatalf("lookup role = %q, want %q", loaded.Role, RoleViewer)
+	}
+	if _, _, err := manager.CreateRoleSession("owner"); err == nil {
+		t.Fatal("CreateRoleSession() accepted an unsupported role")
 	}
 }
 

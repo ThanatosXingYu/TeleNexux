@@ -1622,9 +1622,12 @@ func TestPanickedAPIRequestIsAuditedAsFailure(t *testing.T) {
 		operations: operationsService,
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	handler := api.logRequests(api.requireAPI(func(http.ResponseWriter, *http.Request) {
-		panic("synthetic panic")
-	}))
+	handler := api.logRequests(api.requireAPIPermission(
+		auth.PermissionAccountRead,
+		func(http.ResponseWriter, *http.Request) {
+			panic("synthetic panic")
+		},
+	))
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/accounts", nil)
 	request.Pattern = "/api/v1/accounts"
 	request.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
@@ -1642,6 +1645,69 @@ func TestPanickedAPIRequestIsAuditedAsFailure(t *testing.T) {
 		page.Items[0].StatusCode != http.StatusInternalServerError ||
 		page.Items[0].Outcome != "failure" {
 		t.Fatalf("panic audit events = %+v", page.Items)
+	}
+}
+
+func TestAPIPermissionEnforcesRoleScope(t *testing.T) {
+	manager, err := auth.NewTestManager("permission-test", "strong-password-123")
+	if err != nil {
+		t.Fatalf("NewTestManager() error = %v", err)
+	}
+	viewerToken, viewer, err := manager.CreateRoleSession(auth.RoleViewer)
+	if err != nil {
+		t.Fatalf("CreateRoleSession(viewer) error = %v", err)
+	}
+	operatorToken, operator, err := manager.CreateRoleSession(auth.RoleOperator)
+	if err != nil {
+		t.Fatalf("CreateRoleSession(operator) error = %v", err)
+	}
+	api := &API{
+		auth:   manager,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	forbiddenHit := false
+	forbidden := api.requireAPIPermission(
+		auth.PermissionAuditRead,
+		func(http.ResponseWriter, *http.Request) {
+			forbiddenHit = true
+		},
+	)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/audit/events", nil)
+	request.AddCookie(&http.Cookie{Name: auth.CookieName, Value: viewerToken})
+	recorder := httptest.NewRecorder()
+	forbidden(recorder, request)
+	if recorder.Code != http.StatusForbidden || forbiddenHit {
+		t.Fatalf(
+			"viewer audit request status = %d, handler hit = %v; body: %s",
+			recorder.Code,
+			forbiddenHit,
+			recorder.Body.String(),
+		)
+	}
+
+	allowedHit := false
+	allowed := api.requireAPIPermission(
+		auth.PermissionMonitorOperate,
+		func(w http.ResponseWriter, _ *http.Request) {
+			allowedHit = true
+			w.WriteHeader(http.StatusNoContent)
+		},
+	)
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/monitor/run", strings.NewReader(`{}`))
+	request.AddCookie(&http.Cookie{Name: auth.CookieName, Value: operatorToken})
+	request.Header.Set(auth.CSRFHeader, operator.CSRF)
+	recorder = httptest.NewRecorder()
+	allowed(recorder, request)
+	if recorder.Code != http.StatusNoContent || !allowedHit {
+		t.Fatalf(
+			"operator monitor request status = %d, handler hit = %v; body: %s",
+			recorder.Code,
+			allowedHit,
+			recorder.Body.String(),
+		)
+	}
+	if viewer.Role != auth.RoleViewer {
+		t.Fatalf("viewer session role = %q", viewer.Role)
 	}
 }
 
