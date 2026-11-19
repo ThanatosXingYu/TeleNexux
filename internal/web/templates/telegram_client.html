@@ -60,7 +60,7 @@
           </button>
           <label class="tg-search">
             <span class="icon icon-search" aria-hidden="true"></span>
-            <input type="search" data-chat-search placeholder="搜索" autocomplete="off" aria-label="搜索会话">
+            <input type="search" data-chat-search placeholder="搜索会话或用户名" autocomplete="off" aria-label="搜索会话或用户名">
             <button class="tg-search-clear" type="button" data-clear-search aria-label="清空搜索" hidden>
               <span class="icon icon-x" aria-hidden="true"></span>
             </button>
@@ -270,6 +270,10 @@
         <button type="button" role="menuitem" data-app-context-action="refresh">
           <span class="icon icon-refresh-cw" aria-hidden="true"></span>
           <span>刷新当前会话</span>
+        </button>
+        <button type="button" role="menuitem" data-app-context-action="select">
+          <span class="icon icon-check-check" aria-hidden="true"></span>
+          <span>多选消息</span>
         </button>
         <button type="button" role="menuitem" data-app-context-action="profile">
           <span class="icon icon-info" aria-hidden="true"></span>

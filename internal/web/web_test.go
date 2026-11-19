@@ -333,6 +333,8 @@ func TestAccountWorkspaceRendersStandaloneChatViewer(t *testing.T) {
 		`data-message-list`,
 		`data-profile-panel`,
 		`data-app-context-menu`,
+		`搜索会话或用户名`,
+		`data-app-context-action="select"`,
 		`仅为我删除`,
 		`name="scope" value="me"`,
 		`class="tg-rail-folders"`,

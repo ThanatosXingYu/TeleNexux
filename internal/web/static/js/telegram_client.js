@@ -980,6 +980,9 @@
     const top = Math.min(event.clientY, window.innerHeight - menuRect.height - 8);
     menu.style.left = `${Math.max(8, left)}px`;
     menu.style.top = `${Math.max(8, top)}px`;
+    window.requestAnimationFrame(() => {
+      menu.querySelector("button:not([disabled])")?.focus({preventScroll: true});
+    });
   };
 
   const openContextMenu = (event, message) => {
@@ -1371,6 +1374,14 @@
     hideContextMenu();
     if (action === "refresh") {
       loadChats(true);
+      return;
+    }
+    if (action === "select") {
+      if (!state.selectedChat) {
+        showToast("请先打开一个会话");
+        return;
+      }
+      setSelectionMode(true);
       return;
     }
     if (action === "profile") {
