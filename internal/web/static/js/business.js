@@ -535,13 +535,42 @@
     load();
   };
 
+  const formatDuration = (seconds) => {
+    const value = Math.max(0, Number(seconds) || 0);
+    if (value === 0) {
+      return "0 秒";
+    }
+    if (value < 60) {
+      return `${Math.round(value)} 秒`;
+    }
+    if (value < 3600) {
+      return `${Math.round(value / 60)} 分钟`;
+    }
+    if (value < 86400) {
+      return `${Math.round(value / 3600)} 小时`;
+    }
+    return `${Math.round(value / 86400)} 天`;
+  };
+
   const createMonitorStatus = (status, notice) => {
+    const collection = status?.collection || {};
     setText("[data-monitor-state]", status?.running ? "运行中" : "空闲");
     setText("[data-monitor-started]", formatDate(status?.last_started_at));
     setText("[data-monitor-finished]", formatDate(status?.last_finished_at));
+    setText("[data-monitor-next]", formatDate(status?.next_run_at));
+    setText("[data-monitor-targets]", collection.target_count ?? "0");
+    setText("[data-monitor-backlog]", collection.backlog_target_count ?? "0");
+    setText("[data-monitor-delay]", formatDuration(collection.max_checkpoint_delay_seconds));
+    setText("[data-monitor-failures]", collection.consecutive_failures ?? "0");
+    setText("[data-monitor-flood]", collection.flood_wait_target_count ?? "0");
+    setText("[data-monitor-success]", formatDate(collection.last_successful_at));
     setText("[data-monitor-error]", status?.last_error || "—");
     if (status?.last_error) {
       showNotice(notice, status.last_error, true);
+    } else if (Number(collection.backlog_target_count) > 0) {
+      showNotice(notice, "部分监控目标仍有历史消息积压，checkpoint 暂未推进。", true);
+    } else if (Number(collection.flood_wait_target_count) > 0) {
+      showNotice(notice, "部分目标受到 Telegram FloodWait 限制，将按周期重试。", true);
     }
   };
 

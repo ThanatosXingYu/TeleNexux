@@ -17,6 +17,7 @@ import (
 
 	"github.com/ThanatosXingYu/TeleNexux/internal/account"
 	"github.com/ThanatosXingYu/TeleNexux/internal/auth"
+	"github.com/ThanatosXingYu/TeleNexux/internal/monitorscheduler"
 	"github.com/ThanatosXingYu/TeleNexux/internal/operations"
 	"github.com/ThanatosXingYu/TeleNexux/internal/settings"
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramauth"
@@ -52,6 +53,18 @@ type authenticatedTestHandler struct {
 	next  http.Handler
 	token string
 	csrf  string
+}
+
+type fakeMonitorRunner struct {
+	status monitorscheduler.Status
+}
+
+func (f fakeMonitorRunner) RunOnce(context.Context) error {
+	return nil
+}
+
+func (f fakeMonitorRunner) Status() monitorscheduler.Status {
+	return f.status
 }
 
 func (h authenticatedTestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -1435,6 +1448,92 @@ func TestPanickedAPIRequestIsAuditedAsFailure(t *testing.T) {
 		page.Items[0].StatusCode != http.StatusInternalServerError ||
 		page.Items[0].Outcome != "failure" {
 		t.Fatalf("panic audit events = %+v", page.Items)
+	}
+}
+
+func TestMonitorStatusIncludesCollectionHealth(t *testing.T) {
+	ctx := context.Background()
+	operationsService, err := operations.Open(
+		ctx,
+		filepath.Join(t.TempDir(), "monitor-status.db"),
+	)
+	if err != nil {
+		t.Fatalf("operations.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := operationsService.Close(); err != nil {
+			t.Errorf("operations.Close() error = %v", err)
+		}
+	})
+	if _, err := operationsService.CreateRule(
+		ctx,
+		"Status",
+		7,
+		"chat",
+		42,
+		"Ops",
+		nil,
+	); err != nil {
+		t.Fatalf("CreateRule() error = %v", err)
+	}
+	if err := operationsService.RecordBatchFailure(ctx, operations.IngestBatchInput{
+		Source:           "test",
+		AccountID:        7,
+		PeerType:         "chat",
+		PeerID:           42,
+		CheckpointBefore: 100,
+	}, errors.New("Telegram request is rate limited: retry after 30s")); err != nil {
+		t.Fatalf("RecordBatchFailure() error = %v", err)
+	}
+	nextRun := time.Date(2026, 11, 20, 15, 0, 0, 0, time.UTC)
+	manager, token, _ := testAuthentication()
+	webHandler, err := web.New()
+	if err != nil {
+		t.Fatalf("web.New() error = %v", err)
+	}
+	handler := New(
+		nil,
+		nil,
+		nil,
+		nil,
+		manager,
+		webHandler.Handler(),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		nil,
+		operationsService,
+		fakeMonitorRunner{status: monitorscheduler.Status{
+			Running:   false,
+			NextRunAt: &nextRun,
+			LastError: "partial",
+		}},
+	).Handler()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/status", nil)
+	request = request.Clone(ctx)
+	request.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Running    bool       `json:"running"`
+		NextRunAt  *time.Time `json:"next_run_at"`
+		Collection struct {
+			TargetCount          int `json:"target_count"`
+			FloodWaitTargetCount int `json:"flood_wait_target_count"`
+			ConsecutiveFailures  int `json:"consecutive_failures"`
+		} `json:"collection"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode monitor status: %v", err)
+	}
+	if payload.Running ||
+		payload.NextRunAt == nil ||
+		!payload.NextRunAt.Equal(nextRun) ||
+		payload.Collection.TargetCount != 1 ||
+		payload.Collection.FloodWaitTargetCount != 1 ||
+		payload.Collection.ConsecutiveFailures != 1 {
+		t.Fatalf("monitor status payload = %+v", payload)
 	}
 }
 

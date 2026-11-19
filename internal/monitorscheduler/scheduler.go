@@ -38,6 +38,7 @@ type Status struct {
 	Running      bool       `json:"running"`
 	LastStarted  *time.Time `json:"last_started_at,omitempty"`
 	LastFinished *time.Time `json:"last_finished_at,omitempty"`
+	NextRunAt    *time.Time `json:"next_run_at,omitempty"`
 	LastError    string     `json:"last_error,omitempty"`
 }
 
@@ -76,7 +77,9 @@ func (s *Scheduler) Start(ctx context.Context) {
 		return
 	}
 	go func() {
-		timer := time.NewTimer(15 * time.Second)
+		nextRun := time.Now().UTC().Add(15 * time.Second)
+		s.setNextRun(nextRun)
+		timer := time.NewTimer(time.Until(nextRun))
 		defer timer.Stop()
 		for {
 			select {
@@ -86,7 +89,9 @@ func (s *Scheduler) Start(ctx context.Context) {
 				if err := s.RunOnce(ctx); err != nil {
 					s.logger.Warn("monitor scheduler run failed", "error", err)
 				}
-				timer.Reset(s.interval)
+				nextRun = time.Now().UTC().Add(s.interval)
+				s.setNextRun(nextRun)
+				timer.Reset(time.Until(nextRun))
 			}
 		}
 	}()
@@ -222,6 +227,12 @@ func (s *Scheduler) setRunning(running bool, started time.Time) {
 	if running {
 		s.status.LastStarted = &started
 	}
+}
+
+func (s *Scheduler) setNextRun(nextRun time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status.NextRunAt = &nextRun
 }
 
 func (s *Scheduler) finish(started time.Time, runErr error) {

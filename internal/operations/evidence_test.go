@@ -3,6 +3,7 @@ package operations
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -161,9 +162,89 @@ func TestRecordBatchFailureUpdatesCollectionHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MonitorSummary() error = %v", err)
 	}
-	if summary.TargetCount != 1 || summary.ConsecutiveFailures != 1 {
+	if summary.TargetCount != 1 || summary.ConsecutiveFailures != 1 ||
+		summary.NeverSuccessfulTargets != 1 {
 		t.Fatalf("MonitorSummary() = %+v", summary)
 	}
+}
+
+func TestMonitorSummaryReportsWorstCheckpointDelayAndFloodWait(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	now := time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)
+
+	for _, rule := range []struct {
+		name      string
+		accountID int64
+		peerType  string
+		peerID    int64
+	}{
+		{name: "Oldest", accountID: 7, peerType: "chat", peerID: 42},
+		{name: "Newest", accountID: 8, peerType: "channel", peerID: 99},
+		{name: "Rate limited", accountID: 9, peerType: "user", peerID: 100},
+	} {
+		if _, err := service.CreateRule(
+			ctx,
+			rule.name,
+			rule.accountID,
+			rule.peerType,
+			rule.peerID,
+			rule.name,
+			nil,
+		); err != nil {
+			t.Fatalf("CreateRule(%q) error = %v", rule.name, err)
+		}
+	}
+
+	recordSuccess := func(accountID int64, peerType string, peerID int64, messageID int, at time.Time) {
+		t.Helper()
+		service.now = func() time.Time { return at }
+		if _, err := service.IngestBatch(ctx, IngestBatchInput{
+			BatchID:         "batch-" + ruleName(accountID),
+			Source:          "test",
+			AccountID:       accountID,
+			PeerType:        peerType,
+			PeerID:          peerID,
+			CheckpointAfter: messageID,
+			Complete:        true,
+		}); err != nil {
+			t.Fatalf("IngestBatch(%d) error = %v", accountID, err)
+		}
+	}
+	recordSuccess(7, "chat", 42, 10, now.Add(-30*time.Minute))
+	recordSuccess(8, "channel", 99, 20, now.Add(-10*time.Minute))
+
+	service.now = func() time.Time { return now }
+	if err := service.RecordBatchFailure(ctx, IngestBatchInput{
+		Source:           "test",
+		AccountID:        9,
+		PeerType:         "user",
+		PeerID:           100,
+		CheckpointBefore: 30,
+	}, errors.New("Telegram request is rate limited: retry after 30s")); err != nil {
+		t.Fatalf("RecordBatchFailure() error = %v", err)
+	}
+
+	summary, err := service.MonitorSummary(ctx)
+	if err != nil {
+		t.Fatalf("MonitorSummary() error = %v", err)
+	}
+	if summary.TargetCount != 3 ||
+		summary.BacklogTargetCount != 0 ||
+		summary.FloodWaitTargetCount != 1 ||
+		summary.ConsecutiveFailures != 1 ||
+		summary.NeverSuccessfulTargets != 1 ||
+		summary.MaxCheckpointDelay != int64((30*time.Minute).Seconds()) {
+		t.Fatalf("MonitorSummary() = %+v", summary)
+	}
+	if summary.LastSuccessfulAt == nil ||
+		!summary.LastSuccessfulAt.Equal(now.Add(-10*time.Minute)) {
+		t.Fatalf("LastSuccessfulAt = %v", summary.LastSuccessfulAt)
+	}
+}
+
+func ruleName(accountID int64) string {
+	return fmt.Sprintf("%d", accountID)
 }
 
 func TestIngestBatchRejectsInvalidScope(t *testing.T) {

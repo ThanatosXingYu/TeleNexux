@@ -153,6 +153,7 @@ type OperationsService interface {
 	ListAlerts(ctx context.Context, state string, limit int) ([]operations.Alert, error)
 	ResolveAlert(ctx context.Context, id int64) error
 	IngestMessages(ctx context.Context, messages []operations.MessageRecord) (int, []operations.Alert, error)
+	MonitorSummary(ctx context.Context) (operations.MonitorSummary, error)
 	SearchMessages(ctx context.Context, filter operations.MessageQuery) (operations.MessagePage, error)
 	BuildReport(ctx context.Context, days int) (operations.Report, error)
 	Dashboard(ctx context.Context, telegramReady bool) (operations.Dashboard, error)
@@ -576,12 +577,28 @@ func (a *API) runMonitor(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusAccepted, a.monitor.Status())
 }
 
-func (a *API) monitorStatus(w http.ResponseWriter, _ *http.Request) {
+func (a *API) monitorStatus(w http.ResponseWriter, r *http.Request) {
 	if a.monitor == nil {
 		writeError(w, http.StatusServiceUnavailable, "monitor_unavailable", "监控调度器尚未初始化")
 		return
 	}
-	writeJSON(w, http.StatusOK, a.monitor.Status())
+	if !a.prepareOperations(w) {
+		return
+	}
+	summary, err := a.operations.MonitorSummary(r.Context())
+	if err != nil {
+		a.logger.Error("read monitor collection health", "error", err)
+		writeError(w, http.StatusInternalServerError, "monitor_status_failed",
+			"无法读取监控采集状态")
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		monitorscheduler.Status
+		Collection operations.MonitorSummary `json:"collection"`
+	}{
+		Status:     a.monitor.Status(),
+		Collection: summary,
+	})
 }
 
 func (a *API) listMonitorAlerts(w http.ResponseWriter, r *http.Request) {

@@ -73,11 +73,13 @@ type EvidenceEvent struct {
 }
 
 type MonitorSummary struct {
-	TargetCount         int        `json:"target_count"`
-	BacklogTargetCount  int        `json:"backlog_target_count"`
-	ConsecutiveFailures int        `json:"consecutive_failures"`
-	MaxCheckpointDelay  int64      `json:"max_checkpoint_delay_seconds"`
-	LastSuccessfulAt    *time.Time `json:"last_successful_at,omitempty"`
+	TargetCount            int        `json:"target_count"`
+	BacklogTargetCount     int        `json:"backlog_target_count"`
+	FloodWaitTargetCount   int        `json:"flood_wait_target_count"`
+	ConsecutiveFailures    int        `json:"consecutive_failures"`
+	NeverSuccessfulTargets int        `json:"never_successful_targets"`
+	MaxCheckpointDelay     int64      `json:"max_checkpoint_delay_seconds"`
+	LastSuccessfulAt       *time.Time `json:"last_successful_at,omitempty"`
 }
 
 func (s *Service) ListCollectionTargets(ctx context.Context) ([]CollectionTarget, error) {
@@ -851,17 +853,36 @@ WHERE account_id = ?`
 
 func (s *Service) MonitorSummary(ctx context.Context) (MonitorSummary, error) {
 	var summary MonitorSummary
-	var lastSuccessful string
+	var (
+		lastSuccessful string
+		oldestSuccess  string
+	)
 	if err := s.db.QueryRowContext(ctx, `
 SELECT COUNT(1),
-	COALESCE(SUM(CASE WHEN backlog_detected = 1 THEN 1 ELSE 0 END), 0),
-	COALESCE(SUM(consecutive_failures), 0),
-	COALESCE(MAX(last_success_at), '')
-FROM monitor_checkpoints`).Scan(
+	COALESCE(SUM(CASE WHEN COALESCE(c.backlog_detected, 0) = 1 THEN 1 ELSE 0 END), 0),
+	COALESCE(SUM(CASE WHEN LOWER(COALESCE(c.last_error, '')) LIKE '%rate limited%'
+		THEN 1 ELSE 0 END), 0),
+	COALESCE(SUM(COALESCE(c.consecutive_failures, 0)), 0),
+	COALESCE(SUM(CASE WHEN COALESCE(c.last_success_at, '') = '' THEN 1 ELSE 0 END), 0),
+	COALESCE(MAX(c.last_success_at), ''),
+	COALESCE(MIN(CASE WHEN COALESCE(c.last_success_at, '') <> ''
+		THEN c.last_success_at END), '')
+FROM (
+	SELECT DISTINCT account_id, peer_type, peer_id
+	FROM monitor_rules
+	WHERE enabled = 1
+) AS targets
+LEFT JOIN monitor_checkpoints AS c
+	ON c.account_id = targets.account_id
+	AND c.peer_type = targets.peer_type
+	AND c.peer_id = targets.peer_id`).Scan(
 		&summary.TargetCount,
 		&summary.BacklogTargetCount,
+		&summary.FloodWaitTargetCount,
 		&summary.ConsecutiveFailures,
+		&summary.NeverSuccessfulTargets,
 		&lastSuccessful,
+		&oldestSuccess,
 	); err != nil {
 		return MonitorSummary{}, fmt.Errorf("summarize monitor checkpoints: %w", err)
 	}
@@ -871,6 +892,12 @@ FROM monitor_checkpoints`).Scan(
 			return MonitorSummary{}, fmt.Errorf("parse monitor success time: %w", err)
 		}
 		summary.LastSuccessfulAt = &value
+	}
+	if oldestSuccess != "" {
+		value, err := time.Parse(time.RFC3339Nano, oldestSuccess)
+		if err != nil {
+			return MonitorSummary{}, fmt.Errorf("parse oldest monitor success time: %w", err)
+		}
 		summary.MaxCheckpointDelay = max(0, int64(s.now().UTC().Sub(value).Seconds()))
 	}
 	return summary, nil
