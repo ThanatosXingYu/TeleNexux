@@ -120,7 +120,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 		}
 		active, checked := activeAccounts[target.AccountID]
 		if !checked {
-			_, err := s.accounts.Get(ctx, target.AccountID)
+			item, err := s.accounts.Get(ctx, target.AccountID)
 			if errors.Is(err, account.ErrNotFound) {
 				activeAccounts[target.AccountID] = false
 				continue
@@ -129,8 +129,8 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 				runErr = err
 				continue
 			}
-			active = true
-			activeAccounts[target.AccountID] = true
+			active = item.Status == account.StatusOnline
+			activeAccounts[target.AccountID] = active
 		}
 		if !active {
 			continue

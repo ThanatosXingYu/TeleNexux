@@ -16,6 +16,7 @@ import (
 
 type fakeAccountLookup struct {
 	inactive map[int64]bool
+	statuses map[int64]string
 }
 
 func (f fakeAccountLookup) Get(
@@ -25,7 +26,15 @@ func (f fakeAccountLookup) Get(
 	if f.inactive[id] {
 		return account.Account{}, account.ErrNotFound
 	}
-	return account.Account{ID: id, PurgeState: account.PurgeStateActive}, nil
+	status := account.StatusOnline
+	if statusValue, ok := f.statuses[id]; ok {
+		status = statusValue
+	}
+	return account.Account{
+		ID:         id,
+		Status:     status,
+		PurgeState: account.PurgeStateActive,
+	}, nil
 }
 
 type fakeChatReader struct {
@@ -273,6 +282,53 @@ func TestRunOnceSkipsAccountsPendingDeletion(t *testing.T) {
 	}
 	if len(targets) != 1 || targets[0].ConsecutiveFailures != 0 {
 		t.Fatalf("pending deletion target changed checkpoint state: %+v", targets)
+	}
+}
+
+func TestRunOnceSkipsInactiveAccounts(t *testing.T) {
+	for _, status := range []string{
+		account.StatusPending,
+		account.StatusPaused,
+		account.StatusError,
+	} {
+		t.Run(status, func(t *testing.T) {
+			ctx := context.Background()
+			service := testOperationsService(t)
+			if _, err := service.CreateRule(
+				ctx,
+				"Inactive",
+				10,
+				"chat",
+				99,
+				"Operations",
+				nil,
+			); err != nil {
+				t.Fatalf("CreateRule() error = %v", err)
+			}
+			reader := &collectionSequence{}
+			scheduler := New(
+				service,
+				fakeAccountLookup{statuses: map[int64]string{10: status}},
+				reader,
+				time.Minute,
+				testLogger(),
+			)
+			if err := scheduler.RunOnce(ctx); err != nil {
+				t.Fatalf("RunOnce() error = %v", err)
+			}
+			if reader.index != 0 {
+				t.Fatalf("scheduler read Telegram for account with status %q", status)
+			}
+			targets, err := service.ListCollectionTargets(ctx)
+			if err != nil {
+				t.Fatalf("ListCollectionTargets() error = %v", err)
+			}
+			if len(targets) != 1 ||
+				targets[0].ConsecutiveFailures != 0 ||
+				targets[0].LastError != "" {
+				t.Fatalf("inactive account changed collection state: %+v", targets)
+			}
+		})
 	}
 }
 
