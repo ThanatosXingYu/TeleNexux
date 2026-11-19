@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const EvidenceSchemaVersion = 2
+const EvidenceSchemaVersion = 3
 
 var ErrBatchConflict = errors.New("ingestion batch ID conflicts with different content")
 
@@ -393,7 +393,7 @@ func (s *Service) appendMessageEventTx(
 	if err != nil {
 		return nil, fmt.Errorf("encode evidence media: %w", err)
 	}
-	raw, err := json.Marshal(message)
+	raw, err := json.Marshal(evidenceRawMessage(message))
 	if err != nil {
 		return nil, fmt.Errorf("encode raw evidence message: %w", err)
 	}
@@ -1125,6 +1125,11 @@ func messageContentHash(message MessageRecord) string {
 func mediaEvidence(message MessageRecord) map[string]any {
 	media := message.Media
 	result := map[string]any{}
+	hasMedia := message.MediaType != "" || media.Type != "" ||
+		media.Kind != "" || media.ID != 0
+	if !hasMedia {
+		return result
+	}
 	if message.MediaType != "" {
 		result["type"] = message.MediaType
 	}
@@ -1167,12 +1172,6 @@ func mediaEvidence(message MessageRecord) map[string]any {
 	if media.Round {
 		result["round"] = true
 	}
-	if media.AccessHash != 0 {
-		result["access_hash"] = media.AccessHash
-	}
-	if media.FileReference != "" {
-		result["file_reference"] = media.FileReference
-	}
 	if media.AccessHash != 0 || media.FileReference != "" {
 		result["reference_sha256"] = sha256Hex(fmt.Sprintf(
 			"%d\x00%s\x00%d",
@@ -1181,7 +1180,63 @@ func mediaEvidence(message MessageRecord) map[string]any {
 			media.AccessHash,
 		))
 	}
+	result["metadata_sha256"] = mediaMetadataHash(message)
+	result["storage_state"] = "reference_only"
 	return result
+}
+
+func mediaMetadataHash(message MessageRecord) string {
+	media := message.Media
+	mediaType := media.Type
+	if mediaType == "" {
+		mediaType = message.MediaType
+	}
+	return sha256Hex(strings.Join([]string{
+		mediaType,
+		media.Kind,
+		fmt.Sprintf("%d", media.ID),
+		fmt.Sprintf("%d", media.DCID),
+		media.MimeType,
+		media.FileName,
+		fmt.Sprintf("%d", media.Size),
+		fmt.Sprintf("%d", media.Width),
+		fmt.Sprintf("%d", media.Height),
+		fmt.Sprintf("%t", media.Spoiler),
+		fmt.Sprintf("%t", media.Video),
+		fmt.Sprintf("%t", media.Voice),
+		fmt.Sprintf("%t", media.Round),
+	}, "\x00"))
+}
+
+type rawEvidenceMessage struct {
+	AccountID int64       `json:"account_id"`
+	PeerType  string      `json:"peer_type"`
+	PeerID    int64       `json:"peer_id"`
+	PeerTitle string      `json:"peer_title"`
+	MessageID int         `json:"message_id"`
+	Sender    string      `json:"sender"`
+	Text      string      `json:"text"`
+	MediaType string      `json:"media_type,omitempty"`
+	Media     MediaRecord `json:"media"`
+	SentAt    time.Time   `json:"sent_at"`
+}
+
+func evidenceRawMessage(message MessageRecord) rawEvidenceMessage {
+	media := message.Media
+	media.AccessHash = 0
+	media.FileReference = ""
+	return rawEvidenceMessage{
+		AccountID: message.AccountID,
+		PeerType:  message.PeerType,
+		PeerID:    message.PeerID,
+		PeerTitle: message.PeerTitle,
+		MessageID: message.MessageID,
+		Sender:    message.Sender,
+		Text:      message.Text,
+		MediaType: message.MediaType,
+		Media:     media,
+		SentAt:    message.SentAt,
+	}
 }
 
 func evidenceEventID(

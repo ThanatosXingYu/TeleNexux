@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -122,14 +123,26 @@ func TestIngestBatchTracksMessageVersionsAndDeletion(t *testing.T) {
 		t.Fatalf("decode evidence media: %v", err)
 	}
 	referenceHash, _ := media["reference_sha256"].(string)
+	metadataHash, _ := media["metadata_sha256"].(string)
 	if media["kind"] != "document" ||
 		media["file_name"] != "report.pdf" ||
 		media["id"] != float64(7001) ||
-		referenceHash == "" {
+		media["storage_state"] != "reference_only" ||
+		referenceHash == "" ||
+		metadataHash == "" {
 		t.Fatalf("evidence media = %+v", media)
 	}
-	if events[1].SchemaVersion != 2 {
-		t.Fatalf("evidence schema version = %d, want 2", events[1].SchemaVersion)
+	for _, field := range []string{"access_hash", "file_reference"} {
+		if _, exists := media[field]; exists {
+			t.Fatalf("evidence media retained ephemeral field %q: %+v", field, media)
+		}
+	}
+	if strings.Contains(string(events[1].Raw), "private-reference") ||
+		strings.Contains(string(events[1].Raw), "access_hash") {
+		t.Fatalf("raw evidence retained media locator: %s", events[1].Raw)
+	}
+	if events[1].SchemaVersion != 3 {
+		t.Fatalf("evidence schema version = %d, want 3", events[1].SchemaVersion)
 	}
 
 	if _, err := service.RecordDeletion(ctx, 7, "chat", 42, []int{101}, "test"); err != nil {

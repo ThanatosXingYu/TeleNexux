@@ -2,7 +2,6 @@ package monitorscheduler
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -397,7 +396,8 @@ func TestRunOncePersistsNewMessagesAndCheckpoint(t *testing.T) {
 	}
 	if media["kind"] != "document" ||
 		media["file_name"] != "report.pdf" ||
-		media["file_reference"] != base64.StdEncoding.EncodeToString([]byte("private-reference")) {
+		media["storage_state"] != "reference_only" ||
+		media["reference_sha256"] == "" {
 		t.Fatalf("scheduler evidence media = %+v", media)
 	}
 	status := scheduler.Status()
