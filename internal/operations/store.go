@@ -310,6 +310,63 @@ CREATE INDEX IF NOT EXISTS evidence_events_message_idx
 	ON evidence_events(account_id, peer_type, peer_id, message_id, version DESC);
 CREATE INDEX IF NOT EXISTS evidence_events_batch_idx
 	ON evidence_events(batch_id, sequence);
+CREATE TABLE IF NOT EXISTS retention_policies (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	message_retention_days INTEGER NOT NULL
+		CHECK (message_retention_days BETWEEN 1 AND 3650),
+	version INTEGER NOT NULL DEFAULT 1,
+	updated_by TEXT NOT NULL DEFAULT 'system',
+	updated_at TEXT NOT NULL
+);
+INSERT OR IGNORE INTO retention_policies (
+	id, message_retention_days, version, updated_by, updated_at
+) VALUES (
+	1, 30, 1, 'system',
+	strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+);
+CREATE TABLE IF NOT EXISTS legal_holds (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	scope TEXT NOT NULL CHECK (scope IN ('account', 'chat', 'message')),
+	account_id INTEGER NOT NULL,
+	peer_type TEXT NOT NULL DEFAULT '',
+	peer_id INTEGER NOT NULL DEFAULT 0,
+	message_id INTEGER NOT NULL DEFAULT 0,
+	reason TEXT NOT NULL,
+	created_by TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	released_by TEXT NOT NULL DEFAULT '',
+	released_at TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS legal_holds_active_scope_idx
+	ON legal_holds(scope, account_id, peer_type, peer_id, message_id)
+	WHERE released_at = '';
+CREATE INDEX IF NOT EXISTS legal_holds_account_idx
+	ON legal_holds(account_id, released_at);
+CREATE TABLE IF NOT EXISTS retention_destructions (
+	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+	account_id INTEGER NOT NULL,
+	peer_type TEXT NOT NULL,
+	peer_id INTEGER NOT NULL,
+	message_id INTEGER NOT NULL,
+	content_hash TEXT NOT NULL DEFAULT '',
+	evidence_event_count INTEGER NOT NULL,
+	retention_days INTEGER NOT NULL,
+	destroyed_by TEXT NOT NULL,
+	reason TEXT NOT NULL,
+	destroyed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS retention_destructions_time_idx
+	ON retention_destructions(destroyed_at DESC, sequence DESC);
+CREATE TRIGGER IF NOT EXISTS retention_destructions_no_update
+BEFORE UPDATE ON retention_destructions
+BEGIN
+	SELECT RAISE(ABORT, 'retention destruction records are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS retention_destructions_no_delete
+BEFORE DELETE ON retention_destructions
+BEGIN
+	SELECT RAISE(ABORT, 'retention destruction records are append-only');
+END;
 CREATE TABLE IF NOT EXISTS audit_events (
 	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
 	request_id TEXT NOT NULL UNIQUE,
@@ -1128,25 +1185,6 @@ func (s *Service) Dashboard(ctx context.Context, telegramReady bool) (Dashboard,
 		}
 	}
 	return result, nil
-}
-
-func (s *Service) CleanupMessages(ctx context.Context, retentionDays int) (int64, error) {
-	if retentionDays < 1 {
-		retentionDays = 30
-	}
-	if retentionDays > 3650 {
-		retentionDays = 3650
-	}
-	cutoff := s.now().UTC().AddDate(0, 0, -retentionDays).Format(time.RFC3339Nano)
-	result, err := s.db.ExecContext(ctx, `DELETE FROM indexed_messages WHERE sent_at < ?`, cutoff)
-	if err != nil {
-		return 0, fmt.Errorf("cleanup indexed messages: %w", err)
-	}
-	deleted, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("count cleaned messages: %w", err)
-	}
-	return deleted, nil
 }
 
 func (s *Service) PurgeAccount(ctx context.Context, accountID int64) error {

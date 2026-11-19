@@ -153,7 +153,12 @@ type OperationsService interface {
 	SearchMessages(ctx context.Context, filter operations.MessageQuery) (operations.MessagePage, error)
 	BuildReport(ctx context.Context, days int) (operations.Report, error)
 	Dashboard(ctx context.Context, telegramReady bool) (operations.Dashboard, error)
-	CleanupMessages(ctx context.Context, retentionDays int) (int64, error)
+	CleanupMessages(ctx context.Context, input operations.RetentionCleanupInput) (operations.RetentionResult, error)
+	GetRetentionPolicy(ctx context.Context) (operations.RetentionPolicy, error)
+	SetRetentionPolicy(ctx context.Context, retentionDays int, actor string) (operations.RetentionPolicy, error)
+	ListLegalHolds(ctx context.Context) ([]operations.LegalHold, error)
+	CreateLegalHold(ctx context.Context, input operations.LegalHoldInput) (operations.LegalHold, error)
+	ReleaseLegalHold(ctx context.Context, id int64, actor string) (operations.LegalHold, error)
 	PurgeAccount(ctx context.Context, accountID int64) error
 	RecordAudit(ctx context.Context, input operations.AuditEventInput) error
 	ListAuditEvents(ctx context.Context, filter operations.AuditFilter) (operations.AuditPage, error)
@@ -241,6 +246,14 @@ func (a *API) Handler() http.Handler {
 	)
 	mux.HandleFunc("GET /api/v1/messages", a.requireAPI(a.searchMessages))
 	mux.HandleFunc("POST /api/v1/messages/cleanup", a.requireAPI(a.cleanupMessages))
+	mux.HandleFunc("GET /api/v1/retention", a.requireAPI(a.getRetentionPolicy))
+	mux.HandleFunc("PUT /api/v1/retention", a.requireAPI(a.updateRetentionPolicy))
+	mux.HandleFunc("GET /api/v1/retention/legal-holds", a.requireAPI(a.listLegalHolds))
+	mux.HandleFunc("POST /api/v1/retention/legal-holds", a.requireAPI(a.createLegalHold))
+	mux.HandleFunc(
+		"DELETE /api/v1/retention/legal-holds/{id}",
+		a.requireAPI(a.releaseLegalHold),
+	)
 	mux.HandleFunc("GET /api/v1/reports", a.requireAPI(a.messageReport))
 	mux.Handle("GET /", a.requirePage(a.web))
 
@@ -621,18 +634,130 @@ func (a *API) cleanupMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
+		RetentionDays int  `json:"retention_days"`
+		DryRun        bool `json:"dry_run"`
+	}
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	result, err := a.operations.CleanupMessages(
+		r.Context(),
+		operations.RetentionCleanupInput{
+			RetentionDays: input.RetentionDays,
+			DryRun:        input.DryRun,
+			Actor:         currentActor(r),
+		},
+	)
+	if err != nil {
+		a.writeRetentionError(w, err, "消息留存清理失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *API) getRetentionPolicy(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	policy, err := a.operations.GetRetentionPolicy(r.Context())
+	if err != nil {
+		a.writeRetentionError(w, err, "无法读取消息留存策略")
+		return
+	}
+	writeJSON(w, http.StatusOK, policy)
+}
+
+func (a *API) updateRetentionPolicy(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	var input struct {
 		RetentionDays int `json:"retention_days"`
 	}
 	if !decodeJSONBody(w, r, &input) {
 		return
 	}
-	deleted, err := a.operations.CleanupMessages(r.Context(), input.RetentionDays)
+	policy, err := a.operations.SetRetentionPolicy(
+		r.Context(),
+		input.RetentionDays,
+		currentActor(r),
+	)
 	if err != nil {
-		a.logger.Error("cleanup indexed messages", "error", err)
-		writeError(w, http.StatusInternalServerError, "message_cleanup_failed", "消息索引清理失败")
+		a.writeRetentionError(w, err, "消息留存策略更新失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]int64{"deleted": deleted})
+	writeJSON(w, http.StatusOK, policy)
+}
+
+func (a *API) listLegalHolds(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	items, err := a.operations.ListLegalHolds(r.Context())
+	if err != nil {
+		a.writeRetentionError(w, err, "无法读取法律保留记录")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (a *API) createLegalHold(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	var input struct {
+		Scope     string `json:"scope"`
+		AccountID int64  `json:"account_id"`
+		PeerType  string `json:"peer_type"`
+		PeerID    int64  `json:"peer_id"`
+		MessageID int    `json:"message_id"`
+		Reason    string `json:"reason"`
+	}
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	hold, err := a.operations.CreateLegalHold(r.Context(), operations.LegalHoldInput{
+		Scope:     input.Scope,
+		AccountID: input.AccountID,
+		PeerType:  input.PeerType,
+		PeerID:    input.PeerID,
+		MessageID: input.MessageID,
+		Reason:    input.Reason,
+		CreatedBy: currentActor(r),
+	})
+	if err != nil {
+		a.writeRetentionError(w, err, "法律保留创建失败")
+		return
+	}
+	writeJSON(w, http.StatusCreated, hold)
+}
+
+func (a *API) releaseLegalHold(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	hold, err := a.operations.ReleaseLegalHold(r.Context(), id, currentActor(r))
+	if err != nil {
+		a.writeRetentionError(w, err, "法律保留解除失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, hold)
+}
+
+func (a *API) writeRetentionError(w http.ResponseWriter, err error, message string) {
+	switch {
+	case errors.Is(err, operations.ErrInvalidRetention):
+		writeError(w, http.StatusUnprocessableEntity, "invalid_retention_request", err.Error())
+	case errors.Is(err, operations.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "法律保留记录不存在")
+	default:
+		a.logger.Error("retention operation failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "retention_failed", message)
+	}
 }
 
 func (a *API) messageReport(w http.ResponseWriter, r *http.Request) {
@@ -673,6 +798,14 @@ func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+func currentActor(r *http.Request) string {
+	principal, ok := auth.PrincipalFromContext(r.Context())
+	if !ok {
+		return anonymousAuditActor
+	}
+	return principal.Actor
 }
 
 func parseMessageQuery(r *http.Request) (operations.MessageQuery, error) {
@@ -2176,6 +2309,10 @@ func auditResource(r *http.Request) (string, string) {
 	}
 	if loginID := r.PathValue("loginID"); loginID != "" {
 		return "telegram_login", loginID
+	}
+	if holdID := r.PathValue("id"); holdID != "" &&
+		strings.Contains(pattern, "/retention/legal-holds/") {
+		return "legal_hold", holdID
 	}
 	if ruleID := r.PathValue("id"); ruleID != "" &&
 		strings.Contains(pattern, "/monitor/rules/") {

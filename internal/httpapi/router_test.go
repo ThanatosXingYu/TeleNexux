@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1283,6 +1284,113 @@ func TestPanickedAPIRequestIsAuditedAsFailure(t *testing.T) {
 		page.Items[0].StatusCode != http.StatusInternalServerError ||
 		page.Items[0].Outcome != "failure" {
 		t.Fatalf("panic audit events = %+v", page.Items)
+	}
+}
+
+func TestRetentionAndLegalHoldAPI(t *testing.T) {
+	ctx := context.Background()
+	operationsService, err := operations.Open(
+		ctx,
+		filepath.Join(t.TempDir(), "retention-api.db"),
+	)
+	if err != nil {
+		t.Fatalf("open operations service: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := operationsService.Close(); err != nil {
+			t.Errorf("close operations service: %v", err)
+		}
+	})
+	if _, err := operationsService.IngestBatch(ctx, operations.IngestBatchInput{
+		BatchID:   "retention-api-seed",
+		Source:    "test",
+		AccountID: 9,
+		PeerType:  "chat",
+		PeerID:    77,
+		PeerTitle: "Operations",
+		Messages: []operations.MessageRecord{{
+			AccountID: 9,
+			PeerType:  "chat",
+			PeerID:    77,
+			PeerTitle: "Operations",
+			MessageID: 900,
+			Sender:    "Alice",
+			Text:      "expired",
+			SentAt:    time.Now().UTC().AddDate(0, 0, -60),
+		}},
+	}); err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+	webHandler, err := web.New()
+	if err != nil {
+		t.Fatalf("create web handler: %v", err)
+	}
+	manager, token, csrf := testAuthentication()
+	handler := authenticatedTestHandler{
+		next: New(
+			nil,
+			nil,
+			nil,
+			nil,
+			manager,
+			webHandler.Handler(),
+			slog.New(slog.NewTextHandler(io.Discard, nil)),
+			nil,
+			operationsService,
+			nil,
+		).Handler(),
+		token: token,
+		csrf:  csrf,
+	}
+
+	holdRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/retention/legal-holds",
+		strings.NewReader(
+			`{"scope":"chat","account_id":9,"peer_type":"chat","peer_id":77,"reason":"Matter 2026-02"}`,
+		),
+	)
+	holdRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(holdRecorder, holdRequest)
+	if holdRecorder.Code != http.StatusCreated {
+		t.Fatalf("create hold status = %d; body: %s",
+			holdRecorder.Code, holdRecorder.Body.String())
+	}
+	var hold operations.LegalHold
+	if err := json.NewDecoder(holdRecorder.Body).Decode(&hold); err != nil {
+		t.Fatalf("decode legal hold: %v", err)
+	}
+	if hold.ID <= 0 || hold.CreatedBy != "admin" {
+		t.Fatalf("legal hold = %+v", hold)
+	}
+
+	previewRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(previewRecorder, httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/messages/cleanup",
+		strings.NewReader(`{"dry_run":true}`),
+	))
+	if previewRecorder.Code != http.StatusOK {
+		t.Fatalf("cleanup preview status = %d; body: %s",
+			previewRecorder.Code, previewRecorder.Body.String())
+	}
+	var preview operations.RetentionResult
+	if err := json.NewDecoder(previewRecorder.Body).Decode(&preview); err != nil {
+		t.Fatalf("decode cleanup preview: %v", err)
+	}
+	if preview.CandidateMessages != 0 || preview.HeldMessages != 1 {
+		t.Fatalf("cleanup preview = %+v", preview)
+	}
+
+	releaseRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(releaseRecorder, httptest.NewRequest(
+		http.MethodDelete,
+		"/api/v1/retention/legal-holds/"+strconv.FormatInt(hold.ID, 10),
+		nil,
+	))
+	if releaseRecorder.Code != http.StatusOK {
+		t.Fatalf("release hold status = %d; body: %s",
+			releaseRecorder.Code, releaseRecorder.Body.String())
 	}
 }
 

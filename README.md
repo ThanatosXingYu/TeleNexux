@@ -160,6 +160,12 @@ GET    /api/v1/monitor/status
 GET    /api/v1/monitor/alerts
 POST   /api/v1/monitor/alerts/{id}/resolve
 GET    /api/v1/messages
+POST   /api/v1/messages/cleanup
+GET    /api/v1/retention
+PUT    /api/v1/retention
+GET    /api/v1/retention/legal-holds
+POST   /api/v1/retention/legal-holds
+DELETE /api/v1/retention/legal-holds/{id}
 GET    /api/v1/reports?days=7
 ```
 
@@ -175,6 +181,14 @@ GET    /api/v1/reports?days=7
 为告警。规则可关联通知渠道，当前内置“站内通知”；渠道配置不包含接码服务，
 也不会保存手机号、验证码或登录链接。消息索引默认保留 30 天，可在浏览器中
 检索，不提供会话文件下载。
+
+清理请求可使用 `{"dry_run":true}` 预览候选消息、证据数量和被法律保留阻断
+的消息数量。正式清理会在同一事务中重新检查活动法律保留，删除消息投影和
+对应证据、清空告警预览并写入不可修改的销毁记录；无法确认删除范围时整批
+回滚。法律保留支持 `account`、`chat` 和 `message` 范围，解除后仍保留原始
+保留记录与操作者。自动清理每次最多处理 1000 条过期消息，并通过
+`has_more` 指示后续周期是否仍需处理。
+
 管理台工作台、分组、监控、消息记录和报表页面均读取真实接口，没有数据时
 显示空状态，不生成虚构统计。
 

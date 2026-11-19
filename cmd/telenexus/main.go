@@ -183,14 +183,21 @@ func cleanupMessageIndex(
 			return
 		case <-ticker.C:
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			deleted, err := store.CleanupMessages(cleanupCtx, 30)
+			result, err := store.CleanupMessages(
+				cleanupCtx,
+				operations.RetentionCleanupInput{Actor: "retention_scheduler"},
+			)
 			cancel()
 			if err != nil {
 				logger.Warn("cleanup message index failed", "error", err)
 				continue
 			}
-			if deleted > 0 {
-				logger.Info("message index retention cleanup completed", "deleted", deleted)
+			if result.DeletedMessages > 0 {
+				logger.Info("message retention cleanup completed",
+					"deleted_messages", result.DeletedMessages,
+					"destroyed_evidence_events", result.DestroyedEvidenceEvents,
+					"held_messages", result.HeldMessages,
+					"has_more", result.HasMore)
 			}
 		}
 	}
