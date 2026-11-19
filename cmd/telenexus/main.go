@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ThanatosXingYu/TeleNexux/internal/account"
+	"github.com/ThanatosXingYu/TeleNexux/internal/accounthealth"
 	"github.com/ThanatosXingYu/TeleNexux/internal/accountpurge"
 	"github.com/ThanatosXingYu/TeleNexux/internal/auth"
 	"github.com/ThanatosXingYu/TeleNexux/internal/config"
@@ -149,6 +150,11 @@ func run() error {
 		)
 		scheduler.Start(ctx)
 		monitorRunner = scheduler
+		go runAccountHealthLoop(
+			ctx,
+			accounthealth.New(accountService, telegramChats),
+			logger,
+		)
 	}
 	go cleanupMessageIndex(ctx, operationsStore, logger)
 	var purgeSessionCleaner accountpurge.SessionCleaner
@@ -237,6 +243,41 @@ func runAccountPurgeLoop(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		}
+	}
+}
+
+func runAccountHealthLoop(
+	ctx context.Context,
+	checker *accounthealth.Checker,
+	logger *slog.Logger,
+) {
+	run := func() {
+		checkCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		summary, err := checker.RunOnce(checkCtx)
+		cancel()
+		if err != nil {
+			logger.Error("Telegram account health check failed", "error", err)
+			return
+		}
+		logger.Info(
+			"Telegram account health check completed",
+			"checked", summary.Checked,
+			"online", summary.Online,
+			"offline", summary.Offline,
+			"deferred", summary.Deferred,
+			"duration", summary.Duration,
+		)
+	}
+	run()
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
 		}
 	}
 }
