@@ -175,6 +175,10 @@ POST   /api/v1/telegram/auth/{login_id}/password
 DELETE /api/v1/telegram/auth/{login_id}
 ```
 
+从账号列表重新登录时，二维码与发送验证码请求都应携带
+`{"account_id": <telegram-id>}`。授权完成后服务会校验 Telegram 用户 ID；
+不一致时拒绝保存会话，避免误切换账号。
+
 系统配置与聊天查看：
 
 ```text

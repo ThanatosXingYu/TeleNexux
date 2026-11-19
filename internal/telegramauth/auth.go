@@ -27,6 +27,7 @@ var (
 	ErrInvalidCode     = errors.New("verification code is invalid")
 	ErrCodeExpired     = errors.New("verification code has expired")
 	ErrInvalidPassword = errors.New("two-step verification password is invalid")
+	ErrAccountMismatch = errors.New("authorized Telegram account does not match the requested account")
 	ErrLoginNotFound   = errors.New("login attempt was not found or has expired")
 	ErrLoginStage      = errors.New("login attempt is not at the requested step")
 	ErrFloodWait       = errors.New("Telegram rate limit reached")
@@ -104,13 +105,14 @@ type Service struct {
 }
 
 type loginState struct {
-	mu          sync.Mutex
-	id          string
-	phone       string
-	codeHash    string
-	sessionPath string
-	stage       string
-	expiresAt   time.Time
+	mu                sync.Mutex
+	id                string
+	phone             string
+	codeHash          string
+	sessionPath       string
+	stage             string
+	expiresAt         time.Time
+	expectedAccountID int64
 }
 
 func NewService(driver Driver, config ServiceConfig) (*Service, error) {
@@ -181,11 +183,11 @@ func (s *Service) Configured() bool {
 	return s != nil && s.driver != nil
 }
 
-func (s *Service) StartQR(ctx context.Context) (QRChallenge, error) {
+func (s *Service) StartQR(ctx context.Context, expectedAccountID int64) (QRChallenge, error) {
 	if s == nil || s.qr == nil {
 		return QRChallenge{}, ErrNotConfigured
 	}
-	return s.qr.Start(ctx)
+	return s.qr.Start(ctx, expectedAccountID)
 }
 
 func (s *Service) PollQR(loginID string) (QRResult, error) {
@@ -202,9 +204,16 @@ func (s *Service) CancelQR(loginID string) error {
 	return s.qr.Cancel(loginID)
 }
 
-func (s *Service) SendCode(ctx context.Context, phone string) (Challenge, error) {
+func (s *Service) SendCode(
+	ctx context.Context,
+	phone string,
+	expectedAccountID int64,
+) (Challenge, error) {
 	if !s.Configured() {
 		return Challenge{}, ErrNotConfigured
+	}
+	if expectedAccountID < 0 {
+		return Challenge{}, ErrAccountMismatch
 	}
 	phone, err := normalizePhone(phone)
 	if err != nil {
@@ -234,12 +243,13 @@ func (s *Service) SendCode(ctx context.Context, phone string) (Challenge, error)
 	}
 
 	state := &loginState{
-		id:          loginID,
-		phone:       phone,
-		codeHash:    sent.CodeHash,
-		sessionPath: sessionPath,
-		stage:       StepCode,
-		expiresAt:   s.now().Add(s.loginTTL),
+		id:                loginID,
+		phone:             phone,
+		codeHash:          sent.CodeHash,
+		sessionPath:       sessionPath,
+		stage:             StepCode,
+		expiresAt:         s.now().Add(s.loginTTL),
+		expectedAccountID: expectedAccountID,
 	}
 	s.mu.Lock()
 	s.cleanupExpiredLocked()
@@ -337,6 +347,10 @@ func (s *Service) Cancel(loginID string) error {
 func (s *Service) complete(state *loginState, profile *Profile) (Result, error) {
 	if profile == nil || profile.ID <= 0 {
 		return Result{}, fmt.Errorf("%w: Telegram returned an invalid user", ErrTelegram)
+	}
+	if state.expectedAccountID > 0 && profile.ID != state.expectedAccountID {
+		s.removeLogin(state)
+		return Result{}, ErrAccountMismatch
 	}
 	if strings.TrimSpace(profile.PhoneNumber) == "" {
 		profile.PhoneNumber = state.phone

@@ -2,6 +2,8 @@ package telegramauth
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"image/color"
 	"image/png"
 	"testing"
@@ -33,5 +35,15 @@ func TestRenderQRPNGUsesTheFullCanvas(t *testing.T) {
 	if minimumBlackX > width/5 || maximumBlackX < width*4/5 {
 		t.Fatalf("QR code does not fill canvas: width=%d black range=%d..%d",
 			width, minimumBlackX, maximumBlackX)
+	}
+}
+
+func TestQRServiceRejectsNegativeTargetAccount(t *testing.T) {
+	service, err := NewQRService(1, "test-hash", t.TempDir(), 0)
+	if err != nil {
+		t.Fatalf("NewQRService() error = %v", err)
+	}
+	if _, err := service.Start(context.Background(), -1); !errors.Is(err, ErrAccountMismatch) {
+		t.Fatalf("Start() error = %v, want ErrAccountMismatch", err)
 	}
 }

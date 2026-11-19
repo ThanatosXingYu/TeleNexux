@@ -215,11 +215,14 @@ func (s *fakeAccountService) Restore(
 }
 
 type fakeTelegramAuthService struct {
+	mu          sync.Mutex
 	configured  bool
 	challenge   telegramauth.Challenge
 	result      telegramauth.Result
 	sendErr     error
 	submitErr   error
+	accountID   int64
+	qrAccountID int64
 	sendStarted chan struct{}
 	sendRelease <-chan struct{}
 }
@@ -231,7 +234,11 @@ func (s *fakeTelegramAuthService) Configured() bool {
 func (s *fakeTelegramAuthService) SendCode(
 	ctx context.Context,
 	_ string,
+	expectedAccountID int64,
 ) (telegramauth.Challenge, error) {
+	s.mu.Lock()
+	s.accountID = expectedAccountID
+	s.mu.Unlock()
 	if s.sendStarted != nil {
 		s.sendStarted <- struct{}{}
 	}
@@ -265,7 +272,13 @@ func (s *fakeTelegramAuthService) Cancel(_ string) error {
 	return nil
 }
 
-func (s *fakeTelegramAuthService) StartQR(_ context.Context) (telegramauth.QRChallenge, error) {
+func (s *fakeTelegramAuthService) StartQR(
+	_ context.Context,
+	expectedAccountID int64,
+) (telegramauth.QRChallenge, error) {
+	s.mu.Lock()
+	s.qrAccountID = expectedAccountID
+	s.mu.Unlock()
 	return telegramauth.QRChallenge{}, nil
 }
 
@@ -739,6 +752,81 @@ func TestSendTelegramCodeRequiresJSON(t *testing.T) {
 
 	if recorder.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnsupportedMediaType)
+	}
+}
+
+func TestSendTelegramCodePreservesTargetAccount(t *testing.T) {
+	telegram := &fakeTelegramAuthService{
+		configured: true,
+		challenge:  telegramauth.Challenge{LoginID: "login-id"},
+	}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/telegram/auth/send-code",
+		strings.NewReader(`{"phone_number":"+15550001001","account_id":42}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithTelegram(&fakeAccountService{}, telegram).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body: %s",
+			recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	telegram.mu.Lock()
+	accountID := telegram.accountID
+	telegram.mu.Unlock()
+	if accountID != 42 {
+		t.Fatalf("SendCode() account ID = %d, want 42", accountID)
+	}
+}
+
+func TestStartTelegramQRPreservesTargetAccount(t *testing.T) {
+	telegram := &fakeTelegramAuthService{configured: true}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/telegram/auth/qr",
+		strings.NewReader(`{"account_id":42}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithTelegram(&fakeAccountService{}, telegram).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body: %s",
+			recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	telegram.mu.Lock()
+	accountID := telegram.qrAccountID
+	telegram.mu.Unlock()
+	if accountID != 42 {
+		t.Fatalf("StartQR() account ID = %d, want 42", accountID)
+	}
+}
+
+func TestTelegramAccountMismatchHasActionableResponse(t *testing.T) {
+	telegram := &fakeTelegramAuthService{
+		configured: true,
+		sendErr:    telegramauth.ErrAccountMismatch,
+	}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/telegram/auth/send-code",
+		strings.NewReader(`{"phone_number":"+15550001001","account_id":42}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithTelegram(&fakeAccountService{}, telegram).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body: %s",
+			recorder.Code, http.StatusUnprocessableEntity, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"telegram_account_mismatch"`) {
+		t.Fatalf("body = %s, want telegram_account_mismatch", recorder.Body.String())
 	}
 }
 

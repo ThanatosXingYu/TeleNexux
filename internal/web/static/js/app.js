@@ -1547,6 +1547,7 @@
   let qrRefreshAt = 0;
   let qrCountdownTimer = 0;
   let authCompleted = false;
+  let reloginAccountID = 0;
 
   const stopQRPolling = () => {
     if (qrPollTimer) {
@@ -1674,7 +1675,10 @@
       }).catch(() => {});
     }
     try {
-      const challenge = await requestJSON("/api/v1/telegram/auth/qr", {method: "POST"});
+      const challenge = await requestJSON("/api/v1/telegram/auth/qr", {
+        method: "POST",
+        body: JSON.stringify({account_id: reloginAccountID}),
+      });
       qrLoginID = challenge.login_id;
       setQRRefreshAt(challenge.refresh_at);
       if (qrImage && challenge.image) {
@@ -1729,6 +1733,14 @@
         showNotice(qrNotice, "二维码已过期，请点击“重新生成二维码”。", true);
         return;
       }
+      if (error.code === "telegram_account_mismatch") {
+        stopQRPolling();
+        stopQRCountdown();
+        qrLoginID = "";
+        qrImage?.setAttribute("hidden", "");
+        showNotice(qrNotice, error.message, true);
+        return;
+      }
       qrPollAttempts += 1;
       if (qrPollAttempts >= 8) {
         showNotice(qrNotice, error.message, true);
@@ -1742,6 +1754,7 @@
   const resetLoginDialog = () => {
     cancelLogin();
     authCompleted = false;
+    reloginAccountID = 0;
     phoneForm?.reset();
     usernameForm?.reset();
     codeForm?.reset();
@@ -1778,6 +1791,7 @@
     }
     resetLoginDialog();
     const relogin = Boolean(account?.id);
+    reloginAccountID = relogin ? Number(account.id) : 0;
     if (loginKicker) {
       loginKicker.textContent = relogin ? "恢复 Telegram 授权" : "官方 MTProto 登录";
     }
@@ -1873,6 +1887,7 @@
         method: "POST",
         body: JSON.stringify({
           phone_number: phoneNumber,
+          account_id: reloginAccountID,
         }),
       });
       loginID = challenge.login_id;

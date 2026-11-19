@@ -51,18 +51,19 @@ type QRService struct {
 }
 
 type qrLoginState struct {
-	mu          sync.Mutex
-	id          string
-	sessionPath string
-	stage       string
-	image       string
-	refreshAt   time.Time
-	expiresAt   time.Time
-	profile     *Profile
-	err         error
-	ready       chan struct{}
-	readyOnce   sync.Once
-	cancel      context.CancelFunc
+	mu                sync.Mutex
+	id                string
+	sessionPath       string
+	stage             string
+	image             string
+	refreshAt         time.Time
+	expiresAt         time.Time
+	profile           *Profile
+	err               error
+	ready             chan struct{}
+	readyOnce         sync.Once
+	cancel            context.CancelFunc
+	expectedAccountID int64
 }
 
 func NewQRService(appID int, appHash, sessionDir string, loginTTL time.Duration) (*QRService, error) {
@@ -84,9 +85,15 @@ func NewQRService(appID int, appHash, sessionDir string, loginTTL time.Duration)
 	}, nil
 }
 
-func (s *QRService) Start(ctx context.Context) (QRChallenge, error) {
+func (s *QRService) Start(
+	ctx context.Context,
+	expectedAccountID int64,
+) (QRChallenge, error) {
 	if s == nil {
 		return QRChallenge{}, ErrNotConfigured
+	}
+	if expectedAccountID < 0 {
+		return QRChallenge{}, ErrAccountMismatch
 	}
 	loginID, err := newLoginID()
 	if err != nil {
@@ -98,12 +105,13 @@ func (s *QRService) Start(ctx context.Context) (QRChallenge, error) {
 	}
 	loginCtx, cancel := context.WithTimeout(context.Background(), s.loginTTL)
 	state := &qrLoginState{
-		id:          loginID,
-		sessionPath: filepath.Join(pendingDir, "qr-"+loginID+".session"),
-		stage:       QRStepPending,
-		expiresAt:   time.Now().Add(s.loginTTL),
-		ready:       make(chan struct{}),
-		cancel:      cancel,
+		id:                loginID,
+		sessionPath:       filepath.Join(pendingDir, "qr-"+loginID+".session"),
+		stage:             QRStepPending,
+		expiresAt:         time.Now().Add(s.loginTTL),
+		expectedAccountID: expectedAccountID,
+		ready:             make(chan struct{}),
+		cancel:            cancel,
 	}
 	s.mu.Lock()
 	s.cleanupExpiredLocked()
@@ -232,6 +240,10 @@ func (s *QRService) run(ctx context.Context, state *qrLoginState) {
 	}
 	if profile == nil || profile.ID <= 0 {
 		state.fail(fmt.Errorf("%w: QR login returned an invalid profile", ErrTelegram))
+		return
+	}
+	if state.expectedAccountID > 0 && profile.ID != state.expectedAccountID {
+		state.fail(ErrAccountMismatch)
 		return
 	}
 	_, err = persistSession(state.sessionPath, s.sessionDir, profile)

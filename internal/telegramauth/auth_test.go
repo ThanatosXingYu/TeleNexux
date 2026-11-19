@@ -58,7 +58,7 @@ func TestServiceCompletesCodeLoginAndPersistsSession(t *testing.T) {
 		t.Fatalf("NewService() error = %v", err)
 	}
 
-	challenge, err := service.SendCode(context.Background(), "+15550001001")
+	challenge, err := service.SendCode(context.Background(), "+15550001001", 0)
 	if err != nil {
 		t.Fatalf("SendCode() error = %v", err)
 	}
@@ -99,7 +99,7 @@ func TestServiceSupportsTwoStepPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
 	}
-	challenge, err := service.SendCode(context.Background(), "+15550001002")
+	challenge, err := service.SendCode(context.Background(), "+15550001002", 0)
 	if err != nil {
 		t.Fatalf("SendCode() error = %v", err)
 	}
@@ -127,9 +127,31 @@ func TestServiceRejectsInvalidPhone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
 	}
-	_, err = service.SendCode(context.Background(), "not-a-phone")
+	_, err = service.SendCode(context.Background(), "not-a-phone", 0)
 	if !errors.Is(err, ErrInvalidPhone) {
 		t.Fatalf("SendCode() error = %v, want ErrInvalidPhone", err)
+	}
+}
+
+func TestServiceRejectsMismatchedReloginAccount(t *testing.T) {
+	sessionDir := t.TempDir()
+	service, err := NewService(
+		&fakeDriver{profile: Profile{ID: 42, DisplayName: "Wrong Account"}},
+		ServiceConfig{SessionDir: sessionDir},
+	)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	challenge, err := service.SendCode(context.Background(), "+15550001003", 99)
+	if err != nil {
+		t.Fatalf("SendCode() error = %v", err)
+	}
+	_, err = service.SubmitCode(context.Background(), challenge.LoginID, "12345")
+	if !errors.Is(err, ErrAccountMismatch) {
+		t.Fatalf("SubmitCode() error = %v, want ErrAccountMismatch", err)
+	}
+	if _, err := os.Stat(filepath.Join(sessionDir, "accounts", "42.session")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mismatched session was persisted: %v", err)
 	}
 }
 

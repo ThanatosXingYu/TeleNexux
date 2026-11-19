@@ -61,11 +61,11 @@ type AccountService interface {
 
 type TelegramAuthService interface {
 	Configured() bool
-	SendCode(ctx context.Context, phone string) (telegramauth.Challenge, error)
+	SendCode(ctx context.Context, phone string, expectedAccountID int64) (telegramauth.Challenge, error)
 	SubmitCode(ctx context.Context, loginID, code string) (telegramauth.Result, error)
 	SubmitPassword(ctx context.Context, loginID, password string) (telegramauth.Result, error)
 	Cancel(loginID string) error
-	StartQR(ctx context.Context) (telegramauth.QRChallenge, error)
+	StartQR(ctx context.Context, expectedAccountID int64) (telegramauth.QRChallenge, error)
 	PollQR(loginID string) (telegramauth.QRResult, error)
 	CancelQR(loginID string) error
 }
@@ -2181,8 +2181,14 @@ func (a *API) sendTelegramCode(w http.ResponseWriter, r *http.Request) {
 	}
 	var input struct {
 		PhoneNumber string `json:"phone_number"`
+		AccountID   int64  `json:"account_id"`
 	}
 	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	if input.AccountID < 0 {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_account_id",
+			"account_id must be zero or a positive integer")
 		return
 	}
 	release, ok := a.beginTelegramAuth(w, r)
@@ -2190,7 +2196,7 @@ func (a *API) sendTelegramCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
-	challenge, err := a.telegram.SendCode(r.Context(), input.PhoneNumber)
+	challenge, err := a.telegram.SendCode(r.Context(), input.PhoneNumber, input.AccountID)
 	if err != nil {
 		a.writeTelegramError(w, err)
 		return
@@ -2204,8 +2210,18 @@ func (a *API) startTelegramQR(w http.ResponseWriter, r *http.Request) {
 			"请先配置 TELEGRAM_API_ID 和 TELEGRAM_API_HASH")
 		return
 	}
-	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
-		writeError(w, http.StatusForbidden, "cross_site_request", "cross-site requests are not allowed")
+	if !prepareJSONMutation(w, r) {
+		return
+	}
+	var input struct {
+		AccountID int64 `json:"account_id"`
+	}
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	if input.AccountID < 0 {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_account_id",
+			"account_id must be zero or a positive integer")
 		return
 	}
 	release, ok := a.beginTelegramAuth(w, r)
@@ -2213,7 +2229,7 @@ func (a *API) startTelegramQR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
-	challenge, err := a.telegram.StartQR(r.Context())
+	challenge, err := a.telegram.StartQR(r.Context(), input.AccountID)
 	if err != nil {
 		a.writeTelegramError(w, err)
 		return
@@ -2389,6 +2405,9 @@ func (a *API) writeTelegramError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, "code_expired", "验证码已过期，请重新获取")
 	case errors.Is(err, telegramauth.ErrInvalidPassword):
 		writeError(w, http.StatusUnprocessableEntity, "invalid_password", "二次验证密码不正确")
+	case errors.Is(err, telegramauth.ErrAccountMismatch):
+		writeError(w, http.StatusUnprocessableEntity, "telegram_account_mismatch",
+			"登录的 Telegram 账号与正在恢复的账号不一致，请使用目标账号重新登录")
 	case errors.Is(err, telegramauth.ErrLoginNotFound):
 		writeError(w, http.StatusNotFound, "login_not_found", "登录会话不存在或已过期")
 	case errors.Is(err, telegramauth.ErrLoginStage):
