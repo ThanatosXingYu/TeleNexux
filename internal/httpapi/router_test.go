@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -86,6 +87,7 @@ type fakeAccountService struct {
 	deleteErr   error
 	scheduledID int64
 	restoredID  int64
+	verifyCalls int
 }
 
 func (s *fakeAccountService) Create(_ context.Context, input account.CreateInput) (account.Account, error) {
@@ -154,6 +156,7 @@ func (s *fakeAccountService) RecordVerification(
 	status string,
 	reason string,
 ) (account.Account, error) {
+	s.verifyCalls++
 	if s.updateErr != nil {
 		return account.Account{}, s.updateErr
 	}
@@ -1057,6 +1060,102 @@ func TestRefreshAccountsPersistsExpiredSession(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "重新登录") {
 		t.Fatalf("response = %s, want actionable refresh reason", recorder.Body.String())
+	}
+}
+
+func TestRefreshAccountsPersistsValidSession(t *testing.T) {
+	accounts := &fakeAccountService{
+		items: []account.Account{{
+			ID:     42,
+			Status: account.StatusError,
+		}},
+		created: account.Account{ID: 42, Status: account.StatusError},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/refresh", strings.NewReader(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithDependencies(
+		accounts,
+		&fakeTelegramAuthService{},
+		&fakeTelegramChatService{},
+		nil,
+	).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if accounts.verifyCalls != 1 {
+		t.Fatalf("RecordVerification() calls = %d, want 1", accounts.verifyCalls)
+	}
+	if accounts.created.Status != account.StatusOnline || accounts.created.LastVerifiedAt == nil {
+		t.Fatalf("account verification = %+v, want persisted online status", accounts.created)
+	}
+}
+
+func TestRefreshAccountsKeepsStatusForTransientTelegramFailure(t *testing.T) {
+	accounts := &fakeAccountService{
+		items: []account.Account{{
+			ID:     42,
+			Status: account.StatusOnline,
+		}},
+		created: account.Account{ID: 42, Status: account.StatusOnline},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/refresh", strings.NewReader(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	chats := &fakeTelegramChatService{
+		validateErr: fmt.Errorf("%w: connection reset", telegramchat.ErrTelegram),
+	}
+
+	newTestHandlerWithDependencies(
+		accounts,
+		&fakeTelegramAuthService{},
+		chats,
+		nil,
+	).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if accounts.verifyCalls != 0 {
+		t.Fatalf("RecordVerification() calls = %d, want 0", accounts.verifyCalls)
+	}
+	if !strings.Contains(recorder.Body.String(), `"status":"online"`) {
+		t.Fatalf("response = %s, want preserved online account", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"account_id":42`) ||
+		!strings.Contains(recorder.Body.String(), "已保留原状态") {
+		t.Fatalf("response = %s, want transient validation warning", recorder.Body.String())
+	}
+}
+
+func TestRefreshAccountDefersTransientTelegramFailure(t *testing.T) {
+	accounts := &fakeAccountService{
+		created: account.Account{ID: 42, Status: account.StatusOnline},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/42/refresh", strings.NewReader(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	chats := &fakeTelegramChatService{
+		validateErr: fmt.Errorf("%w: timeout", telegramchat.ErrTimeout),
+	}
+
+	newTestHandlerWithDependencies(
+		accounts,
+		&fakeTelegramAuthService{},
+		chats,
+		nil,
+	).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"account_validation_deferred"`) {
+		t.Fatalf("response = %s, want deferred validation code", recorder.Body.String())
+	}
+	if accounts.verifyCalls != 0 {
+		t.Fatalf("RecordVerification() calls = %d, want 0", accounts.verifyCalls)
 	}
 }
 

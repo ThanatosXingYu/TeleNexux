@@ -39,6 +39,8 @@ const (
 	accountValidationTimeout = 35 * time.Second
 )
 
+var errAccountValidationDeferred = errors.New("Telegram account validation deferred")
+
 type AccountService interface {
 	Create(ctx context.Context, input account.CreateInput) (account.Account, error)
 	UpsertAuthorized(ctx context.Context, input account.CreateInput) (account.Account, error)
@@ -885,6 +887,16 @@ type authSessionResponse struct {
 	CSRFToken     string `json:"csrf_token,omitempty"`
 }
 
+type accountRefreshResult struct {
+	item account.Account
+	err  error
+}
+
+type accountRefreshWarning struct {
+	AccountID int64  `json:"account_id"`
+	Message   string `json:"message"`
+}
+
 const (
 	anonymousAuditActor = "anonymous"
 	anonymousAuditRole  = "anonymous"
@@ -1334,9 +1346,10 @@ func (a *API) refreshAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	var wait sync.WaitGroup
 	semaphore := make(chan struct{}, telegramAuthConcurrency)
-	failures := make([]error, len(items))
+	results := make([]accountRefreshResult, len(items))
 	for i := range items {
 		if items[i].Status != account.StatusOnline && items[i].Status != account.StatusError {
+			results[i].item = items[i]
 			continue
 		}
 		wait.Add(1)
@@ -1344,23 +1357,39 @@ func (a *API) refreshAccounts(w http.ResponseWriter, r *http.Request) {
 			defer wait.Done()
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
-			items[index], failures[index] = a.refreshAccountStatus(r.Context(), items[index])
+			results[index].item, results[index].err = a.refreshAccountStatus(r.Context(), items[index])
 		}(i)
 	}
 	wait.Wait()
-	for _, failure := range failures {
-		if failure == nil {
+	warnings := make([]accountRefreshWarning, 0)
+	for i, result := range results {
+		items[i] = result.item
+		if result.err == nil {
 			continue
 		}
-		a.logger.Error("persist refreshed Telegram account status", "error", failure)
+		if errors.Is(result.err, errAccountValidationDeferred) {
+			warnings = append(warnings, accountRefreshWarning{
+				AccountID: items[i].ID,
+				Message:   "Telegram 暂时不可达或请求受限，已保留原状态，请稍后重试",
+			})
+			continue
+		}
+		a.logger.Error(
+			"persist refreshed Telegram account status",
+			"account_id",
+			items[i].ID,
+			"error",
+			result.err,
+		)
 		writeError(w, http.StatusInternalServerError, "account_refresh_incomplete",
 			"账号状态校验已完成，但部分结果未能保存，请重试")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items":  items,
-		"limit":  len(items),
-		"offset": 0,
+		"items":    items,
+		"warnings": warnings,
+		"limit":    len(items),
+		"offset":   0,
 	})
 }
 
@@ -1388,6 +1417,11 @@ func (a *API) refreshAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := a.refreshAccountStatus(r.Context(), item)
 	if err != nil {
+		if errors.Is(err, errAccountValidationDeferred) {
+			writeError(w, http.StatusServiceUnavailable, "account_validation_deferred",
+				"Telegram 暂时不可达或请求受限，账号状态未变更，请稍后重试")
+			return
+		}
 		a.logger.Error("persist refreshed Telegram account status", "account_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "account_refresh_failed",
 			"账号状态校验已完成，但结果未能保存，请重试")
@@ -1409,24 +1443,40 @@ func (a *API) refreshAccountStatus(
 	)
 	err := a.chats.ValidateSession(validateCtx, item.ID)
 	validateCancel()
-	status := account.StatusOnline
-	reason := ""
 	if err != nil {
-		status = account.StatusError
-		switch {
-		case errors.Is(err, telegramchat.ErrSessionMissing):
-			reason = "授权会话不存在，请重新登录"
-		case errors.Is(err, telegramchat.ErrSessionInvalid):
-			reason = "Telegram 授权已失效，请重新登录"
-		default:
-			reason = "无法连接 Telegram，请稍后重试"
+		if !errors.Is(err, telegramchat.ErrSessionMissing) &&
+			!errors.Is(err, telegramchat.ErrSessionInvalid) {
+			a.logger.Warn("Telegram account validation deferred",
+				"account_id", item.ID, "error", err)
+			return item, fmt.Errorf("%w: %v", errAccountValidationDeferred, err)
 		}
 		a.logger.Warn("validate Telegram account session",
 			"account_id", item.ID, "error", err)
+		reason := "授权会话不存在，请重新登录"
+		if errors.Is(err, telegramchat.ErrSessionInvalid) {
+			reason = "Telegram 授权已失效，请重新登录"
+		}
+		updateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		updated, updateErr := a.accounts.RecordVerification(
+			updateCtx,
+			item.ID,
+			account.StatusError,
+			reason,
+		)
+		if updateErr != nil {
+			return item, fmt.Errorf("record account %d verification: %w", item.ID, updateErr)
+		}
+		return updated, nil
 	}
 	updateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	updated, err := a.accounts.RecordVerification(updateCtx, item.ID, status, reason)
+	updated, err := a.accounts.RecordVerification(
+		updateCtx,
+		item.ID,
+		account.StatusOnline,
+		"",
+	)
 	if err != nil {
 		return item, fmt.Errorf("record account %d verification: %w", item.ID, err)
 	}
@@ -1729,6 +1779,11 @@ func (a *API) authorizedAccount(w http.ResponseWriter, r *http.Request) (int64, 
 	if !accountVerificationFresh(item) {
 		item, err = a.refreshAccountStatus(r.Context(), item)
 		if err != nil {
+			if errors.Is(err, errAccountValidationDeferred) {
+				writeError(w, http.StatusServiceUnavailable, "account_validation_deferred",
+					"Telegram 暂时不可达或请求受限，请稍后重试")
+				return 0, false
+			}
 			a.logger.Error("verify stale Telegram account status", "account_id", accountID, "error", err)
 			writeError(w, http.StatusInternalServerError, "account_refresh_failed",
 				"账号状态校验结果未能保存，请重试")
