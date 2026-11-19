@@ -2,6 +2,7 @@ package operations
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -35,7 +36,18 @@ func TestIngestBatchTracksMessageVersionsAndDeletion(t *testing.T) {
 		Sender:    "Alice",
 		Text:      "urgent deploy",
 		MediaType: "document",
-		SentAt:    now,
+		Media: MediaRecord{
+			Type:          "文件",
+			Kind:          "document",
+			ID:            7001,
+			DCID:          2,
+			MimeType:      "application/pdf",
+			FileName:      "report.pdf",
+			Size:          2048,
+			AccessHash:    8002,
+			FileReference: "private-reference",
+		},
+		SentAt: now,
 	}
 	result, err := service.IngestBatch(ctx, IngestBatchInput{
 		BatchID:         "batch-initial",
@@ -70,6 +82,13 @@ func TestIngestBatchTracksMessageVersionsAndDeletion(t *testing.T) {
 
 	message.Text = "urgent deploy updated"
 	message.MediaType = "photo"
+	message.Media = MediaRecord{
+		Type:   "图片",
+		Kind:   "photo",
+		ID:     7100,
+		Width:  1080,
+		Height: 720,
+	}
 	result, err = service.IngestBatch(ctx, IngestBatchInput{
 		BatchID:          "batch-edit",
 		Source:           "test",
@@ -98,6 +117,20 @@ func TestIngestBatchTracksMessageVersionsAndDeletion(t *testing.T) {
 		events[1].EventType != "message" || events[1].Version != 1 {
 		t.Fatalf("ListEvidenceEvents() = %+v", events)
 	}
+	var media map[string]any
+	if err := json.Unmarshal(events[1].Media, &media); err != nil {
+		t.Fatalf("decode evidence media: %v", err)
+	}
+	referenceHash, _ := media["reference_sha256"].(string)
+	if media["kind"] != "document" ||
+		media["file_name"] != "report.pdf" ||
+		media["id"] != float64(7001) ||
+		referenceHash == "" {
+		t.Fatalf("evidence media = %+v", media)
+	}
+	if events[1].SchemaVersion != 2 {
+		t.Fatalf("evidence schema version = %d, want 2", events[1].SchemaVersion)
+	}
 
 	if _, err := service.RecordDeletion(ctx, 7, "chat", 42, []int{101}, "test"); err != nil {
 		t.Fatalf("RecordDeletion() error = %v", err)
@@ -119,6 +152,63 @@ WHERE account_id = 7 AND peer_type = 'chat' AND peer_id = 42 AND message_id = 10
 	}
 	if deletedAt == "" {
 		t.Fatal("message projection was not tombstoned")
+	}
+}
+
+func TestEvidenceMediaReferenceRefreshDoesNotCreateFalseEdit(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	now := time.Date(2026, 11, 20, 12, 30, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	message := MessageRecord{
+		AccountID: 7,
+		PeerType:  "chat",
+		PeerID:    42,
+		PeerTitle: "Ops",
+		MessageID: 150,
+		Sender:    "Alice",
+		Text:      "photo",
+		MediaType: "图片",
+		Media: MediaRecord{
+			Type:          "图片",
+			Kind:          "photo",
+			ID:            9001,
+			AccessHash:    100,
+			FileReference: "first-reference",
+		},
+		SentAt: now,
+	}
+	ingest := func(batchID string, item MessageRecord) IngestBatchResult {
+		t.Helper()
+		result, err := service.IngestBatch(ctx, IngestBatchInput{
+			BatchID:         batchID,
+			Source:          "test",
+			AccountID:       7,
+			PeerType:        "chat",
+			PeerID:          42,
+			PeerTitle:       "Ops",
+			Messages:        []MessageRecord{item},
+			Complete:        true,
+			CheckpointAfter: 150,
+		})
+		if err != nil {
+			t.Fatalf("IngestBatch(%q) error = %v", batchID, err)
+		}
+		return result
+	}
+	first := ingest("batch-first-reference", message)
+	if first.Events != 1 || first.Inserted != 1 {
+		t.Fatalf("first ingest = %+v", first)
+	}
+	message.Media.AccessHash = 200
+	message.Media.FileReference = "refreshed-reference"
+	second := ingest("batch-refreshed-reference", message)
+	if second.Events != 0 || second.Inserted != 0 {
+		t.Fatalf("reference refresh created an edit: %+v", second)
+	}
+	events, err := service.ListEvidenceEvents(ctx, 7, "chat", 42, 150, 10)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("ListEvidenceEvents() = %+v, %v", events, err)
 	}
 }
 

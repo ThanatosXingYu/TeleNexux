@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const EvidenceSchemaVersion = 1
+const EvidenceSchemaVersion = 2
 
 var ErrBatchConflict = errors.New("ingestion batch ID conflicts with different content")
 
@@ -368,7 +368,7 @@ func (s *Service) appendMessageEventTx(
 	contentHash string,
 	now time.Time,
 ) (*EvidenceEvent, error) {
-	media, err := json.Marshal(map[string]string{"type": message.MediaType})
+	media, err := json.Marshal(mediaEvidence(message))
 	if err != nil {
 		return nil, fmt.Errorf("encode evidence media: %w", err)
 	}
@@ -1024,8 +1024,77 @@ func messageContentHash(message MessageRecord) string {
 		message.Sender,
 		message.Text,
 		message.MediaType,
+		message.Media.Kind,
+		fmt.Sprintf("%d", message.Media.ID),
+		message.Media.MimeType,
+		message.Media.FileName,
+		fmt.Sprintf("%d", message.Media.Size),
+		fmt.Sprintf("%d", message.Media.Width),
+		fmt.Sprintf("%d", message.Media.Height),
 		message.SentAt.UTC().Format(time.RFC3339Nano),
 	}, "\x00"))
+}
+
+func mediaEvidence(message MessageRecord) map[string]any {
+	media := message.Media
+	result := map[string]any{}
+	if message.MediaType != "" {
+		result["type"] = message.MediaType
+	}
+	if media.Type != "" {
+		result["type"] = media.Type
+	}
+	if media.Kind != "" {
+		result["kind"] = media.Kind
+	}
+	if media.ID != 0 {
+		result["id"] = media.ID
+	}
+	if media.DCID != 0 {
+		result["dc_id"] = media.DCID
+	}
+	if media.MimeType != "" {
+		result["mime_type"] = media.MimeType
+	}
+	if media.FileName != "" {
+		result["file_name"] = media.FileName
+	}
+	if media.Size != 0 {
+		result["size"] = media.Size
+	}
+	if media.Width != 0 {
+		result["width"] = media.Width
+	}
+	if media.Height != 0 {
+		result["height"] = media.Height
+	}
+	if media.Spoiler {
+		result["spoiler"] = true
+	}
+	if media.Video {
+		result["video"] = true
+	}
+	if media.Voice {
+		result["voice"] = true
+	}
+	if media.Round {
+		result["round"] = true
+	}
+	if media.AccessHash != 0 {
+		result["access_hash"] = media.AccessHash
+	}
+	if media.FileReference != "" {
+		result["file_reference"] = media.FileReference
+	}
+	if media.AccessHash != 0 || media.FileReference != "" {
+		result["reference_sha256"] = sha256Hex(fmt.Sprintf(
+			"%d\x00%s\x00%d",
+			media.ID,
+			media.FileReference,
+			media.AccessHash,
+		))
+	}
+	return result
 }
 
 func evidenceEventID(

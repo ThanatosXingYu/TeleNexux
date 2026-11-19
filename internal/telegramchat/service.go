@@ -60,13 +60,33 @@ type ChatPage struct {
 }
 
 type Message struct {
-	ID        int       `json:"id"`
-	Sender    string    `json:"sender"`
-	SenderID  int64     `json:"sender_id,omitempty"`
-	Text      string    `json:"text"`
-	MediaType string    `json:"media_type,omitempty"`
-	SentAt    time.Time `json:"sent_at"`
-	Outgoing  bool      `json:"outgoing"`
+	ID        int             `json:"id"`
+	Sender    string          `json:"sender"`
+	SenderID  int64           `json:"sender_id,omitempty"`
+	Text      string          `json:"text"`
+	MediaType string          `json:"media_type,omitempty"`
+	Media     *MediaReference `json:"media,omitempty"`
+	SentAt    time.Time       `json:"sent_at"`
+	Outgoing  bool            `json:"outgoing"`
+}
+
+type MediaReference struct {
+	Type     string `json:"type,omitempty"`
+	Kind     string `json:"kind,omitempty"`
+	ID       int64  `json:"id,omitempty"`
+	DCID     int    `json:"dc_id,omitempty"`
+	MimeType string `json:"mime_type,omitempty"`
+	FileName string `json:"file_name,omitempty"`
+	Size     int64  `json:"size,omitempty"`
+	Width    int    `json:"width,omitempty"`
+	Height   int    `json:"height,omitempty"`
+	Spoiler  bool   `json:"spoiler,omitempty"`
+	Video    bool   `json:"video,omitempty"`
+	Voice    bool   `json:"voice,omitempty"`
+	Round    bool   `json:"round,omitempty"`
+	// Telegram file locators remain backend-only and must not reach browser responses.
+	AccessHash    int64  `json:"-"`
+	FileReference []byte `json:"-"`
 }
 
 type MessagePage struct {

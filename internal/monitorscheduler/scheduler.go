@@ -3,6 +3,7 @@ package monitorscheduler
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"log/slog"
 	"sync"
@@ -169,6 +170,26 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 
 		messages := make([]operations.MessageRecord, 0, len(collection.Items))
 		for _, message := range collection.Items {
+			media := operations.MediaRecord{}
+			if message.Media != nil {
+				media = operations.MediaRecord{
+					Type:          message.Media.Type,
+					Kind:          message.Media.Kind,
+					ID:            message.Media.ID,
+					DCID:          message.Media.DCID,
+					MimeType:      message.Media.MimeType,
+					FileName:      message.Media.FileName,
+					Size:          message.Media.Size,
+					Width:         message.Media.Width,
+					Height:        message.Media.Height,
+					Spoiler:       message.Media.Spoiler,
+					Video:         message.Media.Video,
+					Voice:         message.Media.Voice,
+					Round:         message.Media.Round,
+					AccessHash:    message.Media.AccessHash,
+					FileReference: base64.StdEncoding.EncodeToString(message.Media.FileReference),
+				}
+			}
 			messages = append(messages, operations.MessageRecord{
 				AccountID: target.AccountID,
 				PeerType:  target.PeerType,
@@ -178,6 +199,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 				Sender:    message.Sender,
 				Text:      message.Text,
 				MediaType: message.MediaType,
+				Media:     media,
 				SentAt:    message.SentAt,
 			})
 		}

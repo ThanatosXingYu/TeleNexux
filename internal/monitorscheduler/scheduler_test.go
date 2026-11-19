@@ -2,6 +2,8 @@ package monitorscheduler
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -194,7 +196,23 @@ func TestRunOncePersistsNewMessagesAndCheckpoint(t *testing.T) {
 	reader := fakeChatReader{collection: telegramchat.MessageCollection{
 		Items: []telegramchat.Message{
 			{ID: 100, Sender: "Alice", Text: "baseline", SentAt: now.Add(-time.Minute)},
-			{ID: 101, Sender: "Alice", Text: "scheduled update", MediaType: "photo", SentAt: now},
+			{
+				ID:        101,
+				Sender:    "Alice",
+				Text:      "scheduled update",
+				MediaType: "文件",
+				Media: &telegramchat.MediaReference{
+					Type:          "文件",
+					Kind:          "document",
+					ID:            7001,
+					MimeType:      "application/pdf",
+					FileName:      "report.pdf",
+					Size:          2048,
+					AccessHash:    8002,
+					FileReference: []byte("private-reference"),
+				},
+				SentAt: now,
+			},
 		},
 		NewestID:  101,
 		Complete:  true,
@@ -219,6 +237,19 @@ func TestRunOncePersistsNewMessagesAndCheckpoint(t *testing.T) {
 	if len(targets) != 1 || targets[0].LastMessageID != 101 ||
 		targets[0].ConsecutiveFailures != 0 {
 		t.Fatalf("ListCollectionTargets() = %+v", targets)
+	}
+	events, err := service.ListEvidenceEvents(ctx, 7, "chat", 42, 101, 10)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("ListEvidenceEvents() = %+v, %v", events, err)
+	}
+	var media map[string]any
+	if err := json.Unmarshal(events[0].Media, &media); err != nil {
+		t.Fatalf("decode scheduler evidence media: %v", err)
+	}
+	if media["kind"] != "document" ||
+		media["file_name"] != "report.pdf" ||
+		media["file_reference"] != base64.StdEncoding.EncodeToString([]byte("private-reference")) {
+		t.Fatalf("scheduler evidence media = %+v", media)
 	}
 	status := scheduler.Status()
 	if status.Running || status.LastError != "" || status.LastFinished == nil {

@@ -132,6 +132,7 @@ func mapMessages(result tg.MessagesMessagesClass, limit int) (MessagePage, error
 				SenderID:  senderID,
 				Text:      message.GetMessage(),
 				MediaType: mediaType(message),
+				Media:     mediaReference(message),
 				SentAt:    unixTime(message.GetDate()),
 				Outgoing:  message.GetOut(),
 			})
@@ -340,6 +341,102 @@ func mediaType(message *tg.Message) string {
 	default:
 		return "媒体消息"
 	}
+}
+
+func mediaReference(message *tg.Message) *MediaReference {
+	media, ok := message.GetMedia()
+	if !ok {
+		return nil
+	}
+	reference := &MediaReference{Type: mediaType(message)}
+	switch value := media.(type) {
+	case *tg.MessageMediaPhoto:
+		reference.Kind = "photo"
+		reference.Spoiler = value.Spoiler
+		photo, ok := value.GetPhoto()
+		if !ok {
+			return reference
+		}
+		item, ok := photo.(*tg.Photo)
+		if !ok {
+			return reference
+		}
+		reference.ID = item.GetID()
+		reference.DCID = item.GetDCID()
+		reference.AccessHash = item.GetAccessHash()
+		reference.FileReference = append([]byte(nil), item.GetFileReference()...)
+		reference.Width, reference.Height, reference.Size = photoDimensions(item.GetSizes())
+	case *tg.MessageMediaDocument:
+		reference.Kind = "document"
+		reference.Spoiler = value.Spoiler
+		reference.Video = value.Video
+		reference.Voice = value.Voice
+		reference.Round = value.Round
+		if value.Voice {
+			reference.Type = "语音"
+		} else if value.Round {
+			reference.Type = "视频消息"
+		} else if value.Video {
+			reference.Type = "视频"
+		}
+		document, ok := value.GetDocument()
+		if !ok {
+			return reference
+		}
+		item, ok := document.(*tg.Document)
+		if !ok {
+			return reference
+		}
+		reference.ID = item.GetID()
+		reference.DCID = item.GetDCID()
+		reference.AccessHash = item.GetAccessHash()
+		reference.FileReference = append([]byte(nil), item.GetFileReference()...)
+		reference.MimeType = item.GetMimeType()
+		reference.Size = item.GetSize()
+		for _, attribute := range item.GetAttributes() {
+			if file, ok := attribute.(*tg.DocumentAttributeFilename); ok {
+				reference.FileName = file.GetFileName()
+				break
+			}
+		}
+	case *tg.MessageMediaGeo:
+		reference.Kind = "geo"
+	case *tg.MessageMediaContact:
+		reference.Kind = "contact"
+	case *tg.MessageMediaPoll:
+		reference.Kind = "poll"
+	case *tg.MessageMediaWebPage:
+		reference.Kind = "web_page"
+	default:
+		reference.Kind = "other"
+	}
+	return reference
+}
+
+func photoDimensions(sizes []tg.PhotoSizeClass) (width, height int, size int64) {
+	bestArea := 0
+	for _, candidate := range sizes {
+		var candidateWidth, candidateHeight int
+		var candidateSize int64
+		switch value := candidate.(type) {
+		case *tg.PhotoSize:
+			candidateWidth, candidateHeight = value.W, value.H
+			candidateSize = int64(value.Size)
+		case *tg.PhotoCachedSize:
+			candidateWidth, candidateHeight = value.W, value.H
+			candidateSize = int64(len(value.Bytes))
+		case *tg.PhotoSizeProgressive:
+			candidateWidth, candidateHeight = value.W, value.H
+			if len(value.Sizes) > 0 {
+				candidateSize = int64(value.Sizes[len(value.Sizes)-1])
+			}
+		}
+		area := candidateWidth * candidateHeight
+		if area > bestArea {
+			width, height, size, bestArea = candidateWidth, candidateHeight, candidateSize, area
+		}
+	}
+	return width, height, size
 }
 
 func unixTime(seconds int) time.Time {

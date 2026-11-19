@@ -1,6 +1,8 @@
 package telegramchat
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/gotd/td/tg"
@@ -72,5 +74,54 @@ func TestMapMessagesSortsNewestFirstAndPaginates(t *testing.T) {
 	}
 	if page.Items[0].Sender != "Ada" || page.NextBeforeID != 5 {
 		t.Fatalf("message page = %+v", page)
+	}
+}
+
+func TestMapMessagesIncludesMediaMetadataWithoutBrowserSecrets(t *testing.T) {
+	message := &tg.Message{
+		ID:      9,
+		FromID:  &tg.PeerUser{UserID: 42},
+		Message: "report",
+	}
+	message.SetFlags()
+	documentMedia := &tg.MessageMediaDocument{}
+	documentMedia.SetDocument(&tg.Document{
+		ID:            7001,
+		AccessHash:    8002,
+		FileReference: []byte("private-reference"),
+		DCID:          2,
+		MimeType:      "application/pdf",
+		Size:          2048,
+		Attributes: []tg.DocumentAttributeClass{
+			&tg.DocumentAttributeFilename{FileName: "report.pdf"},
+		},
+	})
+	message.SetMedia(documentMedia)
+	result := &tg.MessagesMessages{Messages: []tg.MessageClass{message}}
+
+	page, err := mapMessages(result, 1)
+	if err != nil {
+		t.Fatalf("mapMessages() error = %v", err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Media == nil {
+		t.Fatalf("mapped messages = %+v", page.Items)
+	}
+	media := page.Items[0].Media
+	if media.Kind != "document" ||
+		media.ID != 7001 ||
+		media.AccessHash != 8002 ||
+		media.MimeType != "application/pdf" ||
+		media.FileName != "report.pdf" ||
+		media.Size != 2048 ||
+		string(media.FileReference) != "private-reference" {
+		t.Fatalf("mapped media = %+v", media)
+	}
+	encoded, err := json.Marshal(page.Items[0])
+	if err != nil {
+		t.Fatalf("marshal mapped message: %v", err)
+	}
+	if strings.Contains(string(encoded), "private-reference") ||
+		strings.Contains(string(encoded), "access_hash") {
+		t.Fatalf("browser message leaked media reference: %s", encoded)
 	}
 }

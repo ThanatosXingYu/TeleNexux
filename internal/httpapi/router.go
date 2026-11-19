@@ -4,6 +4,7 @@ package httpapi
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1629,6 +1630,26 @@ func (a *API) indexMessages(
 	defer cancel()
 	records := make([]operations.MessageRecord, 0, len(items))
 	for _, item := range items {
+		media := operations.MediaRecord{}
+		if item.Media != nil {
+			media = operations.MediaRecord{
+				Type:          item.Media.Type,
+				Kind:          item.Media.Kind,
+				ID:            item.Media.ID,
+				DCID:          item.Media.DCID,
+				MimeType:      item.Media.MimeType,
+				FileName:      item.Media.FileName,
+				Size:          item.Media.Size,
+				Width:         item.Media.Width,
+				Height:        item.Media.Height,
+				Spoiler:       item.Media.Spoiler,
+				Video:         item.Media.Video,
+				Voice:         item.Media.Voice,
+				Round:         item.Media.Round,
+				AccessHash:    item.Media.AccessHash,
+				FileReference: base64.StdEncoding.EncodeToString(item.Media.FileReference),
+			}
+		}
 		records = append(records, operations.MessageRecord{
 			AccountID: accountID,
 			PeerType:  peerType,
@@ -1637,6 +1658,7 @@ func (a *API) indexMessages(
 			Sender:    item.Sender,
 			Text:      item.Text,
 			MediaType: item.MediaType,
+			Media:     media,
 			SentAt:    item.SentAt,
 		})
 	}

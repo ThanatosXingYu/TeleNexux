@@ -1008,7 +1008,26 @@ type MessageRecord struct {
 	Sender    string
 	Text      string
 	MediaType string
+	Media     MediaRecord
 	SentAt    time.Time
+}
+
+type MediaRecord struct {
+	Type          string `json:"type,omitempty"`
+	Kind          string `json:"kind,omitempty"`
+	ID            int64  `json:"id,omitempty"`
+	DCID          int    `json:"dc_id,omitempty"`
+	MimeType      string `json:"mime_type,omitempty"`
+	FileName      string `json:"file_name,omitempty"`
+	Size          int64  `json:"size,omitempty"`
+	Width         int    `json:"width,omitempty"`
+	Height        int    `json:"height,omitempty"`
+	Spoiler       bool   `json:"spoiler,omitempty"`
+	Video         bool   `json:"video,omitempty"`
+	Voice         bool   `json:"voice,omitempty"`
+	Round         bool   `json:"round,omitempty"`
+	AccessHash    int64  `json:"access_hash,omitempty"`
+	FileReference string `json:"file_reference,omitempty"`
 }
 
 func (r Rule) AppliesTo(message MessageRecord) bool {
