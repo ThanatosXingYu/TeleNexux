@@ -619,7 +619,15 @@
         appendCell(row, rule.name);
         appendCell(row, account ? accountLabel(account) : `账号 ${rule.account_id}`);
         appendCell(row, `${rule.peer_title || peerLabels[rule.peer_type] || "会话"} · ${peerLabels[rule.peer_type] || rule.peer_type}`);
-        appendCell(row, Array.isArray(rule.keywords) && rule.keywords.length ? rule.keywords.join("、") : "全部消息");
+        const keywordText = Array.isArray(rule.keywords) && rule.keywords.length
+          ? rule.keywords.join("、")
+          : "全部消息";
+        appendCell(
+          row,
+          Number(rule.cooldown_seconds) > 0
+            ? `${keywordText} · 冷却 ${Number(rule.cooldown_seconds)} 秒`
+            : keywordText,
+        );
         appendCell(row, formatDate(rule.last_run_at));
         appendCell(row, rule.last_error
           ? element("span", "badge badge-red", "运行异常")
@@ -1019,6 +1027,7 @@
             peer_id: Number(peerID),
             peer_title: titleParts.join(":"),
             keywords,
+            cooldown_seconds: Number(data.get("cooldown_seconds")) || 0,
             notification_channel_id: Number(data.get("notification_channel_id")),
           }),
         });

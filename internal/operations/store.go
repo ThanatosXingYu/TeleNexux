@@ -43,6 +43,7 @@ type Rule struct {
 	PeerID                  int64      `json:"peer_id"`
 	PeerTitle               string     `json:"peer_title"`
 	Keywords                []string   `json:"keywords"`
+	CooldownSeconds         int        `json:"cooldown_seconds"`
 	NotificationChannelID   int64      `json:"notification_channel_id"`
 	NotificationChannelName string     `json:"notification_channel_name"`
 	NotificationChannelKind string     `json:"notification_channel_kind"`
@@ -248,6 +249,7 @@ CREATE TABLE IF NOT EXISTS monitor_rules (
 	peer_id INTEGER NOT NULL,
 	peer_title TEXT NOT NULL DEFAULT '',
 	keywords_json TEXT NOT NULL DEFAULT '[]',
+	cooldown_seconds INTEGER NOT NULL DEFAULT 0,
 	notification_channel_id INTEGER NOT NULL DEFAULT 1,
 	enabled INTEGER NOT NULL DEFAULT 1,
 	last_message_id INTEGER NOT NULL DEFAULT 0,
@@ -548,6 +550,14 @@ INSERT OR IGNORE INTO notification_channels (
 	); err != nil {
 		return err
 	}
+	if err := s.ensureColumn(
+		ctx,
+		"monitor_rules",
+		"cooldown_seconds",
+		"cooldown_seconds INTEGER NOT NULL DEFAULT 0",
+	); err != nil {
+		return err
+	}
 	for _, column := range []struct {
 		name       string
 		definition string
@@ -837,6 +847,30 @@ func (s *Service) CreateRuleWithChannel(
 	notificationChannelID int64,
 	keywords []string,
 ) (Rule, error) {
+	return s.CreateRuleWithOptions(
+		ctx,
+		name,
+		accountID,
+		peerType,
+		peerID,
+		peerTitle,
+		notificationChannelID,
+		keywords,
+		0,
+	)
+}
+
+func (s *Service) CreateRuleWithOptions(
+	ctx context.Context,
+	name string,
+	accountID int64,
+	peerType string,
+	peerID int64,
+	peerTitle string,
+	notificationChannelID int64,
+	keywords []string,
+	cooldownSeconds int,
+) (Rule, error) {
 	name = strings.TrimSpace(name)
 	peerTitle = strings.TrimSpace(peerTitle)
 	peerType = strings.ToLower(strings.TrimSpace(peerType))
@@ -852,6 +886,9 @@ func (s *Service) CreateRuleWithChannel(
 	}
 	if utf8.RuneCountInString(peerTitle) > 120 {
 		return Rule{}, errors.New("peer title must contain at most 120 characters")
+	}
+	if cooldownSeconds < 0 || cooldownSeconds > 86400 {
+		return Rule{}, errors.New("rule cooldown must be between 0 and 86400 seconds")
 	}
 	if notificationChannelID <= 0 {
 		notificationChannelID = 1
@@ -883,15 +920,16 @@ func (s *Service) CreateRuleWithChannel(
 	result, err := s.db.ExecContext(ctx, `
 INSERT INTO monitor_rules (
 	name, account_id, peer_type, peer_id, peer_title, keywords_json,
-	notification_channel_id, enabled, last_message_id, last_run_at, last_error,
+	cooldown_seconds, notification_channel_id, enabled, last_message_id, last_run_at, last_error,
 	created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, '', '', ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, '', '', ?, ?)`,
 		name,
 		accountID,
 		peerType,
 		peerID,
 		peerTitle,
 		string(encoded),
+		cooldownSeconds,
 		notificationChannelID,
 		now.Format(time.RFC3339Nano),
 		now.Format(time.RFC3339Nano),
@@ -955,7 +993,8 @@ ORDER BY id`)
 func (s *Service) GetRule(ctx context.Context, id int64) (Rule, error) {
 	rule, err := scanRule(s.db.QueryRowContext(ctx, `
 SELECT r.id, r.name, r.account_id, r.peer_type, r.peer_id, r.peer_title,
-	r.keywords_json, r.notification_channel_id, COALESCE(nc.name, ''), COALESCE(nc.kind, ''),
+	r.keywords_json, r.cooldown_seconds, r.notification_channel_id,
+	COALESCE(nc.name, ''), COALESCE(nc.kind, ''),
 	r.enabled, r.last_message_id, r.last_run_at, r.last_error,
 	r.created_at, r.updated_at
 FROM monitor_rules r
@@ -970,7 +1009,8 @@ WHERE r.id = ?`, id))
 func (s *Service) ListRules(ctx context.Context, enabledOnly bool) ([]Rule, error) {
 	query := `
 SELECT r.id, r.name, r.account_id, r.peer_type, r.peer_id, r.peer_title,
-	r.keywords_json, r.notification_channel_id, COALESCE(nc.name, ''), COALESCE(nc.kind, ''),
+	r.keywords_json, r.cooldown_seconds, r.notification_channel_id,
+	COALESCE(nc.name, ''), COALESCE(nc.kind, ''),
 	r.enabled, r.last_message_id, r.last_run_at, r.last_error,
 	r.created_at, r.updated_at
 FROM monitor_rules r
@@ -1113,6 +1153,25 @@ func (s *Service) insertAlert(
 		title = rule.PeerTitle
 	}
 	preview := truncate(strings.TrimSpace(message.Text), 280)
+	if rule.CooldownSeconds > 0 {
+		var lastAlertAt string
+		err := tx.QueryRowContext(ctx, `
+SELECT created_at FROM monitor_alerts
+WHERE rule_id = ?
+ORDER BY created_at DESC, id DESC
+LIMIT 1`, rule.ID).Scan(&lastAlertAt)
+		if err == nil {
+			lastAlert, parseErr := time.Parse(time.RFC3339Nano, lastAlertAt)
+			if parseErr != nil {
+				return Alert{}, fmt.Errorf("parse previous alert time: %w", parseErr)
+			}
+			if now.Before(lastAlert.Add(time.Duration(rule.CooldownSeconds) * time.Second)) {
+				return Alert{}, nil
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return Alert{}, fmt.Errorf("read previous alert time: %w", err)
+		}
+	}
 	result, err := tx.ExecContext(ctx, `
 INSERT OR IGNORE INTO monitor_alerts (
 	rule_id, account_id, peer_type, peer_id, peer_title, message_id,
@@ -1806,6 +1865,7 @@ func scanRule(row scanner) (Rule, error) {
 		&item.PeerID,
 		&item.PeerTitle,
 		&keywordsJSON,
+		&item.CooldownSeconds,
 		&item.NotificationChannelID,
 		&item.NotificationChannelName,
 		&item.NotificationChannelKind,

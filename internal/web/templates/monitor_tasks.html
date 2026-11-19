@@ -80,6 +80,11 @@
       <small class="field-hint">监控命中后生成告警；留空时告警匹配关键词为空。</small>
     </label>
     <label class="field">
+      <span>告警冷却</span>
+      <input name="cooldown_seconds" type="number" min="0" max="86400" step="30" value="0">
+      <small class="field-hint">单位秒；设置为 0 表示不限制。冷却只抑制重复告警，不会跳过采集。</small>
+    </label>
+    <label class="field">
       <span>通知渠道</span>
       <select name="notification_channel_id" data-monitor-channel required>
         <option value="1">站内通知</option>

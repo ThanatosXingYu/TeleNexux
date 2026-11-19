@@ -159,6 +159,68 @@ func TestMessageSearchUsesFullTextIndexAndKeepsShortQueryFallback(t *testing.T) 
 	}
 }
 
+func TestRuleCooldownSuppressesOnlyRepeatedAlerts(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	now := time.Date(2026, 11, 20, 12, 30, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	rule, err := service.CreateRuleWithOptions(
+		ctx,
+		"Cooled alerts",
+		7,
+		"chat",
+		42,
+		"Ops",
+		1,
+		[]string{"deploy"},
+		60,
+	)
+	if err != nil {
+		t.Fatalf("CreateRuleWithOptions() error = %v", err)
+	}
+	if rule.CooldownSeconds != 60 {
+		t.Fatalf("rule cooldown = %d, want 60", rule.CooldownSeconds)
+	}
+	ingest := func(messageID int) int {
+		t.Helper()
+		inserted, alerts, err := service.IngestMessages(ctx, []MessageRecord{{
+			AccountID: 7,
+			PeerType:  "chat",
+			PeerID:    42,
+			MessageID: messageID,
+			Text:      "deploy now",
+			SentAt:    now,
+		}})
+		if err != nil || inserted != 1 {
+			t.Fatalf("IngestMessages(%d) inserted = %d, error = %v", messageID, inserted, err)
+		}
+		return len(alerts)
+	}
+	if alerts := ingest(501); alerts != 1 {
+		t.Fatalf("first alert count = %d, want 1", alerts)
+	}
+	if alerts := ingest(502); alerts != 0 {
+		t.Fatalf("cooled alert count = %d, want 0", alerts)
+	}
+	now = now.Add(61 * time.Second)
+	if alerts := ingest(503); alerts != 1 {
+		t.Fatalf("alert count after cooldown = %d, want 1", alerts)
+	}
+	if _, err := service.CreateRuleWithOptions(
+		ctx,
+		"Invalid cooldown",
+		7,
+		"chat",
+		42,
+		"Ops",
+		1,
+		nil,
+		-1,
+	); err == nil {
+		t.Fatal("CreateRuleWithOptions() accepted a negative cooldown")
+	}
+}
+
 func TestMonitorAlertLifecycleTracksOwnershipAndState(t *testing.T) {
 	ctx := context.Background()
 	service := newTestService(t)

@@ -75,6 +75,7 @@ func TestBusinessPagesExposeRealDataControls(t *testing.T) {
 			"data-channel-create",
 			"data-channel-list-body",
 			"data-channel-list-error",
+			`name="cooldown_seconds"`,
 		},
 		"/monitor/alerts": {"data-alerts-list", "data-alert-state", "data-alert-action-form"},
 		"/messages":       {"data-message-filter", "data-messages-body"},

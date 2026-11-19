@@ -1341,13 +1341,15 @@ func TestMonitorNotificationChannelAPI(t *testing.T) {
 			"peer_id":42,
 			"peer_title":"Ops",
 			"notification_channel_id":1,
-			"keywords":["deploy"]
+			"keywords":["deploy"],
+			"cooldown_seconds":120
 		}`),
 	)
 	ruleRequest.Header.Set("Content-Type", "application/json")
 	ruleRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(ruleRecorder, ruleRequest)
 	if ruleRecorder.Code != http.StatusCreated ||
+		!strings.Contains(ruleRecorder.Body.String(), `"cooldown_seconds":120`) ||
 		!strings.Contains(ruleRecorder.Body.String(), `"notification_channel_name":"站内通知"`) {
 		t.Fatalf("create rule response = %d %s",
 			ruleRecorder.Code, ruleRecorder.Body.String())

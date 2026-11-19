@@ -149,6 +149,17 @@ type OperationsService interface {
 		notificationChannelID int64,
 		keywords []string,
 	) (operations.Rule, error)
+	CreateRuleWithOptions(
+		ctx context.Context,
+		name string,
+		accountID int64,
+		peerType string,
+		peerID int64,
+		peerTitle string,
+		notificationChannelID int64,
+		keywords []string,
+		cooldownSeconds int,
+	) (operations.Rule, error)
 	ListRules(ctx context.Context, enabledOnly bool) ([]operations.Rule, error)
 	ListNotificationChannels(ctx context.Context) ([]operations.NotificationChannel, error)
 	CreateWebhookChannel(
@@ -607,11 +618,12 @@ func (a *API) createMonitorRule(w http.ResponseWriter, r *http.Request) {
 		PeerTitle string   `json:"peer_title"`
 		ChannelID int64    `json:"notification_channel_id"`
 		Keywords  []string `json:"keywords"`
+		Cooldown  int      `json:"cooldown_seconds"`
 	}
 	if !decodeJSONBody(w, r, &input) {
 		return
 	}
-	item, err := a.operations.CreateRuleWithChannel(
+	item, err := a.operations.CreateRuleWithOptions(
 		r.Context(),
 		input.Name,
 		input.AccountID,
@@ -620,6 +632,7 @@ func (a *API) createMonitorRule(w http.ResponseWriter, r *http.Request) {
 		input.PeerTitle,
 		input.ChannelID,
 		input.Keywords,
+		input.Cooldown,
 	)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_monitor_rule", err.Error())
