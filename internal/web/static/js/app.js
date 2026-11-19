@@ -632,9 +632,29 @@
     error: "已掉线",
   };
   const verificationTTL = 10 * 60 * 1000;
+  const automaticVerificationInterval = 60 * 1000;
+  const verificationTimestampKey = "telenexus.account-verification-at";
   const isDeletedAccount = (account) => (
     Boolean(account?.purge_state) && account.purge_state !== "active"
   );
+
+  const automaticVerificationDue = () => {
+    try {
+      const checkedAt = Number(window.sessionStorage.getItem(verificationTimestampKey));
+      return !Number.isFinite(checkedAt) ||
+        Date.now() - checkedAt >= automaticVerificationInterval;
+    } catch {
+      return true;
+    }
+  };
+
+  const markAutomaticVerification = () => {
+    try {
+      window.sessionStorage.setItem(verificationTimestampKey, String(Date.now()));
+    } catch {
+      // Storage can be unavailable in hardened browser profiles.
+    }
+  };
 
   const accountStatus = (account) => {
     if (isDeletedAccount(account)) {
@@ -1401,18 +1421,22 @@
     }
   };
 
-  document.querySelector("[data-accounts-refresh]")?.addEventListener("click", async (event) => {
-    const button = event.currentTarget;
-    const label = button.querySelector("[data-accounts-refresh-label]");
-    button.disabled = true;
-    button.setAttribute("aria-busy", "true");
+  const verifyAccountStatuses = async (automatic = false) => {
+    const button = document.querySelector("[data-accounts-refresh]");
+    const label = button?.querySelector("[data-accounts-refresh-label]");
+    if (button) {
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+    }
     if (label) {
       label.textContent = "正在校验";
     }
     try {
-      const refresh = loadAccounts(true);
-      showNotice(accountsError, "正在验证 Telegram 授权状态...");
-      if (await refresh) {
+      if (!automatic) {
+        showNotice(accountsError, "正在验证 Telegram 授权状态...");
+      }
+      if (await loadAccounts(true)) {
+        markAutomaticVerification();
         const offline = allAccounts.filter(
           (account) => accountStatus(account).key === "error",
         ).length;
@@ -1430,26 +1454,40 @@
         }
       }
     } finally {
-      button.disabled = false;
-      button.removeAttribute("aria-busy");
+      if (button) {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+      }
       if (label) {
         label.textContent = "刷新状态";
       }
     }
+  };
+
+  document.querySelector("[data-accounts-refresh]")?.addEventListener("click", () => {
+    verifyAccountStatuses();
   });
+
   if (accountBody) {
     loadAccountGroups().then(async () => {
       await loadAccounts();
       const requestedID = Number(new URLSearchParams(window.location.search).get("relogin"));
-      if (!Number.isSafeInteger(requestedID) || requestedID <= 0) {
-        return;
+      if (Number.isSafeInteger(requestedID) && requestedID > 0) {
+        const requestedAccount = allAccounts.find(
+          (account) => Number(account.id) === requestedID,
+        );
+        if (requestedAccount) {
+          openLoginDialog(requestedAccount);
+          window.history.replaceState({}, "", "/accounts");
+          return;
+        }
       }
-      const requestedAccount = allAccounts.find(
-        (account) => Number(account.id) === requestedID,
-      );
-      if (requestedAccount) {
-        openLoginDialog(requestedAccount);
-        window.history.replaceState({}, "", "/accounts");
+      const needsVerification = allAccounts.some((account) => (
+        !isDeletedAccount(account) &&
+        ["stale", "error"].includes(accountStatus(account).key)
+      ));
+      if (needsVerification && automaticVerificationDue()) {
+        await verifyAccountStatuses(true);
       }
     });
     loadTelegramConfig();

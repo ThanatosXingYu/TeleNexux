@@ -15,8 +15,14 @@ func TestIsInvalidSessionError(t *testing.T) {
 	}{
 		{name: "unregistered", err: errors.New("rpc error 401: AUTH_KEY_UNREGISTERED"), want: true},
 		{name: "invalid", err: errors.New("AUTH_KEY_INVALID"), want: true},
+		{name: "missing", err: errors.New("AUTH_KEY_NOT_FOUND"), want: true},
+		{name: "duplicated", err: errors.New("AUTH_KEY_DUPLICATED"), want: true},
+		{name: "auth bytes", err: errors.New("AUTH_BYTES_INVALID"), want: true},
 		{name: "revoked", err: errors.New("SESSION_REVOKED"), want: true},
+		{name: "expired", err: errors.New("SESSION_EXPIRED"), want: true},
+		{name: "password needed", err: errors.New("SESSION_PASSWORD_NEEDED"), want: true},
 		{name: "deactivated", err: errors.New("USER_DEACTIVATED"), want: true},
+		{name: "banned", err: errors.New("USER_DEACTIVATED_BAN"), want: true},
 		{name: "network error", err: errors.New("connection reset"), want: false},
 		{name: "nil", err: nil, want: false},
 	}

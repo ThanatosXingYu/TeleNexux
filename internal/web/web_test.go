@@ -148,6 +148,9 @@ func TestStaticAssetsAreServed(t *testing.T) {
 			if recorder.Header().Get("Content-Security-Policy") == "" {
 				t.Error("security headers were not set")
 			}
+			if recorder.Header().Get("Cache-Control") != "no-cache" {
+				t.Error("static assets must revalidate so updated UI code is visible")
+			}
 		})
 	}
 }

@@ -287,7 +287,12 @@ func isInvalidSessionError(err error) bool {
 	for _, marker := range []string{
 		"AUTH_KEY_UNREGISTERED",
 		"AUTH_KEY_INVALID",
+		"AUTH_KEY_NOT_FOUND",
+		"AUTH_KEY_DUPLICATED",
+		"AUTH_BYTES_INVALID",
 		"SESSION_REVOKED",
+		"SESSION_EXPIRED",
+		"SESSION_PASSWORD_NEEDED",
 		"USER_DEACTIVATED",
 	} {
 		if strings.Contains(message, marker) {
