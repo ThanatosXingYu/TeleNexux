@@ -53,6 +53,37 @@ Compose 仅把宿主机端口发布到 `127.0.0.1:9487`，容器内部监听
 `telenexus-data` 卷中，停止容器不会删除该卷。`.dockerignore` 会排除
 `temp/`、本地数据、授权会话和真实环境文件，避免它们进入构建上下文。
 
+## 备份、校验与恢复
+
+备份通过本机专用命令执行，不开放任意文件路径的 HTTP 接口。先停止写入
+服务，再创建快照：
+
+```sh
+go run ./cmd/telenexus-backup create \
+  --source ./data/telenexus.db \
+  --output ./data/backups
+go run ./cmd/telenexus-backup verify \
+  --backup ./data/backups/telenexus-<timestamp>.db
+go run ./cmd/telenexus-backup drill \
+  --backup ./data/backups/telenexus-<timestamp>.db
+```
+
+`create` 使用 SQLite 在线快照，并验证完整性、必需表和 SHA-256；备份目录
+必须仅操作者可访问，数据库与 `.manifest.json` 权限为 `0600`。`verify`
+检查数据库大小、哈希、完整性及清单；`drill` 在临时目录中实际恢复并返回
+各必需表记录数，演练后自动清理临时文件。恢复目标必须是新的路径，且父目录
+不得是符号链接或允许组/其他用户访问：
+
+```sh
+go run ./cmd/telenexus-backup restore \
+  --backup ./data/backups/telenexus-<timestamp>.db \
+  --target ./data/restore/telenexus.db
+```
+
+恢复命令不会覆盖已有文件。确认恢复库与清单一致后，再将服务切换到该文件；
+回滚时停止服务并切回原数据库及对应备份。授权会话目录不属于 SQLite 快照，
+必须按同等敏感级别单独备份。备份、清单、恢复库和会话均不得提交到 Git。
+
 ## 账号登录
 
 登录流程使用 Telegram MTProto：
