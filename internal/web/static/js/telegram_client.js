@@ -15,6 +15,7 @@
     chatsEmpty: root.querySelector("[data-chats-empty]"),
     chatsEmptyTitle: root.querySelector("[data-chats-empty-title]"),
     chatsEmptyCopy: root.querySelector("[data-chats-empty-copy]"),
+    reloginAccount: root.querySelector("[data-relogin-account]"),
     chatsError: root.querySelector("[data-chats-error]"),
     search: root.querySelector("[data-chat-search]"),
     clearSearch: root.querySelector("[data-clear-search]"),
@@ -104,6 +105,22 @@
     pending: "待验证",
     paused: "已暂停",
     error: "已掉线",
+  };
+
+  const reloginURL = `/accounts?relogin=${encodeURIComponent(accountID)}`;
+
+  const showReloginAction = () => {
+    if (!elements.reloginAccount) {
+      return;
+    }
+    elements.reloginAccount.href = reloginURL;
+    elements.reloginAccount.hidden = false;
+  };
+
+  const hideReloginAction = () => {
+    if (elements.reloginAccount) {
+      elements.reloginAccount.hidden = true;
+    }
   };
 
   const requestJSON = async (path, options = {}) => {
@@ -1157,6 +1174,7 @@
     showNotice(elements.chatsError, "");
     try {
       const payload = await requestJSON(`/api/v1/accounts/${encodeURIComponent(accountID)}/chats?limit=100`);
+      hideReloginAction();
       state.chats = Array.isArray(payload?.items) ? payload.items : [];
       updateFolderCounts();
       renderChats();
@@ -1184,6 +1202,7 @@
         if (elements.accountMeta) {
           elements.accountMeta.textContent = "Telegram 授权已失效";
         }
+        showReloginAction();
         loadAccount();
       }
       showNotice(elements.chatsError, error.message);
@@ -1226,7 +1245,10 @@
         if (elements.chatsEmptyCopy) {
           elements.chatsEmptyCopy.textContent = "请返回账号列表重新登录后再查看会话。";
         }
+        showReloginAction();
         showNotice(elements.chatsError, "该账号的 Telegram 授权已失效，未发送任何聊天请求。");
+      } else {
+        hideReloginAction();
       }
       return online;
     } catch (error) {

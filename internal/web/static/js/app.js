@@ -613,6 +613,7 @@
       day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
+      second: "2-digit",
       hour12: false,
     }).format(date);
   };
@@ -809,14 +810,7 @@
   const createAccountActions = (account) => {
     const actionGroup = document.createElement("div");
     actionGroup.className = "account-actions";
-    if (accountStatus(account).key !== "online") {
-      const relogin = document.createElement("button");
-      relogin.className = "button button-primary button-compact";
-      relogin.type = "button";
-      relogin.textContent = "重新登录";
-      relogin.addEventListener("click", () => openLoginDialog(account));
-      actionGroup.append(relogin);
-    } else {
+    if (accountStatus(account).key === "online") {
       const webAction = document.createElement("a");
       webAction.className = "button button-primary button-compact";
       webAction.href = `/accounts/${encodeURIComponent(account.id)}/web`;
@@ -825,6 +819,23 @@
       webAction.textContent = "打开 Web";
       actionGroup.append(webAction);
     }
+    const refreshAction = document.createElement("button");
+    refreshAction.className = "button button-secondary button-compact";
+    refreshAction.type = "button";
+    const refreshIcon = document.createElement("span");
+    refreshIcon.className = "icon icon-refresh-cw";
+    refreshIcon.setAttribute("aria-hidden", "true");
+    const refreshLabel = document.createElement("span");
+    refreshLabel.textContent = "校验状态";
+    refreshAction.append(refreshIcon, refreshLabel);
+    refreshAction.addEventListener("click", () => refreshSingleAccount(account, refreshAction));
+
+    const relogin = document.createElement("button");
+    relogin.className = "button button-secondary button-compact";
+    relogin.type = "button";
+    relogin.textContent = "重新登录";
+    relogin.addEventListener("click", () => openLoginDialog(account));
+
     const profileAction = document.createElement("button");
     profileAction.className = "button button-secondary button-compact";
     profileAction.type = "button";
@@ -835,7 +846,7 @@
     deleteAction.type = "button";
     deleteAction.textContent = "删除";
     deleteAction.addEventListener("click", () => openDeleteDialog(account));
-    actionGroup.append(profileAction, deleteAction);
+    actionGroup.append(refreshAction, relogin, profileAction, deleteAction);
     return actionGroup;
   };
 
@@ -979,7 +990,7 @@
         tableCell(phone),
         tableCell(username),
         tableCell(status),
-        tableCell(formatAccountDate(account.updated_at)),
+        tableCell(formatAccountDate(account.last_verified_at || account.updated_at)),
         tableCell(createAccountActions(account)),
       );
       accountBody.append(row);
@@ -1099,6 +1110,36 @@
         button.disabled = disabled;
       }
     });
+  };
+
+  const refreshSingleAccount = async (account, button) => {
+    if (!account?.id) {
+      return;
+    }
+    button?.setAttribute("disabled", "");
+    button?.setAttribute("aria-busy", "true");
+    showNotice(accountsError, "");
+    try {
+      const updated = await requestJSON(
+        `/api/v1/accounts/${encodeURIComponent(account.id)}/refresh`,
+        {method: "POST", body: "{}"},
+      );
+      allAccounts = allAccounts.map((item) => (
+        Number(item.id) === Number(updated.id) ? updated : item
+      ));
+      renderAccounts(filteredAccounts());
+      const state = accountStatus(updated);
+      showAccountToast(
+        state.key === "error"
+          ? `账号校验完成：${state.label}${state.reason ? ` · ${state.reason}` : ""}`
+          : "账号状态已重新校验",
+      );
+    } catch (error) {
+      showNotice(accountsError, error.message, true);
+    } finally {
+      button?.removeAttribute("disabled");
+      button?.removeAttribute("aria-busy");
+    }
   };
 
   [accountSearch, accountStatusFilter, accountGroupFilter].forEach((control) => {
@@ -1256,19 +1297,48 @@
 
   document.querySelector("[data-accounts-refresh]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
+    const label = button.querySelector("[data-accounts-refresh-label]");
     button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    if (label) {
+      label.textContent = "正在校验";
+    }
     try {
       const refresh = loadAccounts(true);
       showNotice(accountsError, "正在验证 Telegram 授权状态...");
       if (await refresh) {
-        showAccountToast("账号状态已刷新");
+        const offline = allAccounts.filter(
+          (account) => accountStatus(account).key === "error",
+        ).length;
+        showAccountToast(
+          offline > 0
+            ? `状态校验完成，${offline} 个账号需要重新登录`
+            : `状态校验完成，${allAccounts.length} 个账号授权有效`,
+        );
       }
     } finally {
       button.disabled = false;
+      button.removeAttribute("aria-busy");
+      if (label) {
+        label.textContent = "刷新状态";
+      }
     }
   });
   if (accountBody) {
-    loadAccountGroups().then(() => loadAccounts());
+    loadAccountGroups().then(async () => {
+      await loadAccounts();
+      const requestedID = Number(new URLSearchParams(window.location.search).get("relogin"));
+      if (!Number.isSafeInteger(requestedID) || requestedID <= 0) {
+        return;
+      }
+      const requestedAccount = allAccounts.find(
+        (account) => Number(account.id) === requestedID,
+      );
+      if (requestedAccount) {
+        openLoginDialog(requestedAccount);
+        window.history.replaceState({}, "", "/accounts");
+      }
+    });
     loadTelegramConfig();
   }
 

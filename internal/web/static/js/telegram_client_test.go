@@ -21,6 +21,8 @@ func TestTelegramClientScriptBehaviors(t *testing.T) {
 		`before_id`,
 		`setProfileOpen`,
 		`error.code === "session_invalid"`,
+		`data-relogin-account`,
+		`/accounts?relogin=`,
 		`element.hidden = count === 0`,
 		`classList.toggle("tg-rail-folder-active", active)`,
 		`showToast("当前是只读视图，消息发送功能尚未启用")`,

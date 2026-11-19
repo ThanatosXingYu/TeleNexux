@@ -652,7 +652,7 @@ textarea:focus-visible {
   font-weight: 500;
 }
 
-.tg-chatlist-empty span:last-child {
+.tg-chatlist-empty [data-chats-empty-copy] {
   line-height: 1.5;
 }
 
@@ -1441,6 +1441,10 @@ textarea:focus-visible {
 }
 
 .tg-primary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
   background: var(--tg-primary);
   color: #fff;
 }
