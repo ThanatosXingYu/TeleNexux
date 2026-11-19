@@ -15,6 +15,8 @@ import (
 
 const EvidenceSchemaVersion = 1
 
+var ErrBatchConflict = errors.New("ingestion batch ID conflicts with different content")
+
 type CollectionTarget struct {
 	AccountID           int64
 	PeerType            string
@@ -175,6 +177,16 @@ func (s *Service) IngestBatch(
 	defer func() { _ = tx.Rollback() }()
 
 	now := s.now().UTC()
+	existing, found, err := existingBatchResultTx(ctx, tx, normalized)
+	if err != nil {
+		return IngestBatchResult{}, err
+	}
+	if found {
+		if err := tx.Commit(); err != nil {
+			return IngestBatchResult{}, fmt.Errorf("commit idempotent evidence ingestion: %w", err)
+		}
+		return existing, nil
+	}
 	result, err := s.ingestBatchTx(ctx, tx, normalized, rules, now)
 	if err != nil {
 		return IngestBatchResult{}, err
@@ -460,8 +472,9 @@ func (s *Service) insertBatchTx(
 INSERT INTO ingestion_batches (
 	batch_id, source, account_id, peer_type, peer_id, status, started_at,
 	finished_at, fetched_count, event_count, inserted_count,
-	checkpoint_before, checkpoint_after, backlog_detected, error_text
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
+	checkpoint_before, checkpoint_after, backlog_detected, payload_sha256,
+	error_text
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
 		input.BatchID,
 		input.Source,
 		input.AccountID,
@@ -476,6 +489,7 @@ INSERT INTO ingestion_batches (
 		input.CheckpointBefore,
 		checkpointAfter,
 		boolInt(input.BacklogDetected),
+		batchPayloadHash(input),
 	)
 	if err != nil {
 		return fmt.Errorf("record ingestion batch: %w", err)
@@ -552,8 +566,9 @@ func (s *Service) RecordBatchFailure(
 INSERT INTO ingestion_batches (
 	batch_id, source, account_id, peer_type, peer_id, status, started_at,
 	finished_at, fetched_count, event_count, inserted_count,
-	checkpoint_before, checkpoint_after, backlog_detected, error_text
-) VALUES (?, ?, ?, ?, ?, 'failed', ?, ?, 0, 0, 0, ?, ?, ?, ?)`,
+	checkpoint_before, checkpoint_after, backlog_detected, payload_sha256,
+	error_text
+) VALUES (?, ?, ?, ?, ?, 'failed', ?, ?, 0, 0, 0, ?, ?, ?, ?, ?)`,
 		normalized.BatchID,
 		normalized.Source,
 		normalized.AccountID,
@@ -564,6 +579,7 @@ INSERT INTO ingestion_batches (
 		normalized.CheckpointBefore,
 		normalized.CheckpointBefore,
 		boolInt(normalized.BacklogDetected),
+		batchPayloadHash(normalized),
 		truncate(runErr.Error(), 500),
 	); err != nil {
 		return fmt.Errorf("record failed ingestion batch: %w", err)
@@ -854,6 +870,67 @@ func normalizeBatchInput(input IngestBatchInput) (IngestBatchInput, error) {
 		input.BatchID = value
 	}
 	return input, nil
+}
+
+func existingBatchResultTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	input IngestBatchInput,
+) (IngestBatchResult, bool, error) {
+	var (
+		result      IngestBatchResult
+		payloadHash string
+	)
+	err := tx.QueryRowContext(ctx, `
+SELECT inserted_count, event_count, payload_sha256
+FROM ingestion_batches
+WHERE batch_id = ?`, input.BatchID).Scan(
+		&result.Inserted,
+		&result.Events,
+		&payloadHash,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return IngestBatchResult{}, false, nil
+	}
+	if err != nil {
+		return IngestBatchResult{}, false, fmt.Errorf("read existing ingestion batch: %w", err)
+	}
+	if payloadHash == "" || payloadHash != batchPayloadHash(input) {
+		return IngestBatchResult{}, false, ErrBatchConflict
+	}
+	result.BatchID = input.BatchID
+	result.Alerts = []Alert{}
+	return result, true, nil
+}
+
+func batchPayloadHash(input IngestBatchInput) string {
+	value, err := json.Marshal(struct {
+		Source           string          `json:"source"`
+		AccountID        int64           `json:"account_id"`
+		PeerType         string          `json:"peer_type"`
+		PeerID           int64           `json:"peer_id"`
+		PeerTitle        string          `json:"peer_title"`
+		CheckpointBefore int             `json:"checkpoint_before"`
+		CheckpointAfter  int             `json:"checkpoint_after"`
+		Complete         bool            `json:"complete"`
+		BacklogDetected  bool            `json:"backlog_detected"`
+		Messages         []MessageRecord `json:"messages"`
+	}{
+		Source:           input.Source,
+		AccountID:        input.AccountID,
+		PeerType:         input.PeerType,
+		PeerID:           input.PeerID,
+		PeerTitle:        input.PeerTitle,
+		CheckpointBefore: input.CheckpointBefore,
+		CheckpointAfter:  input.CheckpointAfter,
+		Complete:         input.Complete,
+		BacklogDetected:  input.BacklogDetected,
+		Messages:         input.Messages,
+	})
+	if err != nil {
+		return ""
+	}
+	return sha256Hex(string(value))
 }
 
 func messageContentHash(message MessageRecord) string {

@@ -178,3 +178,78 @@ func TestIngestBatchRejectsInvalidScope(t *testing.T) {
 		t.Fatal("IngestBatch() accepted an unsupported peer type")
 	}
 }
+
+func TestIngestBatchRetryIsIdempotentAndRejectsConflictingContent(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	service.now = func() time.Time {
+		return time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)
+	}
+	if _, err := service.CreateRule(
+		ctx,
+		"Retry alerts",
+		7,
+		"chat",
+		42,
+		"Operations",
+		[]string{"urgent"},
+	); err != nil {
+		t.Fatalf("CreateRule() error = %v", err)
+	}
+	input := IngestBatchInput{
+		BatchID:          "batch-retry",
+		Source:           "test",
+		AccountID:        7,
+		PeerType:         "chat",
+		PeerID:           42,
+		PeerTitle:        "Operations",
+		CheckpointBefore: 100,
+		CheckpointAfter:  101,
+		Complete:         true,
+		Messages: []MessageRecord{{
+			AccountID: 7,
+			PeerType:  "chat",
+			PeerID:    42,
+			PeerTitle: "Operations",
+			MessageID: 101,
+			Sender:    "Alice",
+			Text:      "urgent deploy",
+			SentAt:    service.now(),
+		}},
+	}
+	first, err := service.IngestBatch(ctx, input)
+	if err != nil {
+		t.Fatalf("first IngestBatch() error = %v", err)
+	}
+	second, err := service.IngestBatch(ctx, input)
+	if err != nil {
+		t.Fatalf("retry IngestBatch() error = %v", err)
+	}
+	if second.BatchID != first.BatchID ||
+		second.Inserted != first.Inserted ||
+		second.Events != first.Events ||
+		len(second.Alerts) != 0 {
+		t.Fatalf("retry result = %+v, first = %+v", second, first)
+	}
+	var batchCount, evidenceCount int
+	if err := service.db.QueryRowContext(ctx, `
+SELECT COUNT(1) FROM ingestion_batches WHERE batch_id = 'batch-retry'`).Scan(
+		&batchCount,
+	); err != nil {
+		t.Fatalf("count ingestion batches: %v", err)
+	}
+	if err := service.db.QueryRowContext(ctx, `
+SELECT COUNT(1) FROM evidence_events WHERE batch_id = 'batch-retry'`).Scan(
+		&evidenceCount,
+	); err != nil {
+		t.Fatalf("count evidence events: %v", err)
+	}
+	if batchCount != 1 || evidenceCount != 1 {
+		t.Fatalf("batch/evidence counts = %d/%d, want 1/1", batchCount, evidenceCount)
+	}
+
+	input.Messages[0].Text = "different content"
+	if _, err := service.IngestBatch(ctx, input); !errors.Is(err, ErrBatchConflict) {
+		t.Fatalf("conflicting IngestBatch() error = %v, want ErrBatchConflict", err)
+	}
+}

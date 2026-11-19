@@ -283,6 +283,7 @@ CREATE TABLE IF NOT EXISTS ingestion_batches (
 	checkpoint_before INTEGER NOT NULL DEFAULT 0,
 	checkpoint_after INTEGER NOT NULL DEFAULT 0,
 	backlog_detected INTEGER NOT NULL DEFAULT 0,
+	payload_sha256 TEXT NOT NULL DEFAULT '',
 	error_text TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ingestion_batches_target_idx
@@ -448,6 +449,14 @@ INSERT OR IGNORE INTO notification_channels (
 		if err := s.ensureColumn(ctx, "indexed_messages", column.name, column.definition); err != nil {
 			return err
 		}
+	}
+	if err := s.ensureColumn(
+		ctx,
+		"ingestion_batches",
+		"payload_sha256",
+		"payload_sha256 TEXT NOT NULL DEFAULT ''",
+	); err != nil {
+		return err
 	}
 	if _, err := s.db.ExecContext(ctx, `
 INSERT INTO monitor_checkpoints (
