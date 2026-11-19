@@ -1266,6 +1266,7 @@ func (a *API) indexMessages(
 			MessageID: item.ID,
 			Sender:    item.Sender,
 			Text:      item.Text,
+			MediaType: item.MediaType,
 			SentAt:    item.SentAt,
 		})
 	}

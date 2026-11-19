@@ -87,29 +87,40 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 
 	started := time.Now().UTC()
 	s.setRunning(true, started)
-	rules, err := s.operations.ListRules(ctx, true)
+	targets, err := s.operations.ListCollectionTargets(ctx)
 	if err != nil {
 		s.finish(started, err)
 		return err
 	}
 	var runErr error
-	for _, rule := range rules {
+	for _, target := range targets {
 		if err := ctx.Err(); err != nil {
 			runErr = err
 			break
 		}
 		page, err := s.chats.Messages(
 			ctx,
-			rule.AccountID,
-			rule.PeerType,
-			rule.PeerID,
+			target.AccountID,
+			target.PeerType,
+			target.PeerID,
 			0,
 			50,
 		)
 		if err != nil {
-			if markErr := s.operations.MarkRuleRun(ctx, rule.ID, rule.LastMessageID, err); markErr != nil {
-				s.logger.Warn("record monitor rule failure",
-					"rule_id", rule.ID, "error", markErr)
+			if recordErr := s.operations.RecordBatchFailure(ctx, operations.IngestBatchInput{
+				Source:           "scheduler",
+				AccountID:        target.AccountID,
+				PeerType:         target.PeerType,
+				PeerID:           target.PeerID,
+				PeerTitle:        target.PeerTitle,
+				CheckpointBefore: target.LastMessageID,
+				BacklogDetected:  target.BacklogDetected,
+			}, err); recordErr != nil {
+				s.logger.Warn("record monitor batch failure",
+					"account_id", target.AccountID,
+					"peer_type", target.PeerType,
+					"peer_id", target.PeerID,
+					"error", recordErr)
 			}
 			runErr = err
 			if errors.Is(err, telegramchat.ErrFloodWait) {
@@ -118,31 +129,38 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 			continue
 		}
 
-		maxID := rule.LastMessageID
+		maxID := target.LastMessageID
 		messages := make([]operations.MessageRecord, 0, len(page.Items))
 		for _, message := range page.Items {
 			if message.ID > maxID {
 				maxID = message.ID
 			}
-			if rule.LastMessageID > 0 && message.ID > rule.LastMessageID {
+			if target.LastMessageID > 0 && message.ID > target.LastMessageID {
 				messages = append(messages, operations.MessageRecord{
-					AccountID: rule.AccountID,
-					PeerType:  rule.PeerType,
-					PeerID:    rule.PeerID,
-					PeerTitle: rule.PeerTitle,
+					AccountID: target.AccountID,
+					PeerType:  target.PeerType,
+					PeerID:    target.PeerID,
+					PeerTitle: target.PeerTitle,
 					MessageID: message.ID,
 					Sender:    message.Sender,
 					Text:      message.Text,
+					MediaType: message.MediaType,
 					SentAt:    message.SentAt,
 				})
 			}
 		}
-		if len(messages) > 0 {
-			if _, _, err := s.operations.IngestMessages(ctx, messages); err != nil {
-				runErr = err
-			}
-		}
-		if err := s.operations.MarkRuleRun(ctx, rule.ID, maxID, nil); err != nil {
+		if _, err := s.operations.IngestBatch(ctx, operations.IngestBatchInput{
+			Source:           "scheduler",
+			AccountID:        target.AccountID,
+			PeerType:         target.PeerType,
+			PeerID:           target.PeerID,
+			PeerTitle:        target.PeerTitle,
+			CheckpointBefore: target.LastMessageID,
+			CheckpointAfter:  maxID,
+			Complete:         true,
+			BacklogDetected:  target.BacklogDetected,
+			Messages:         messages,
+		}); err != nil {
 			runErr = err
 		}
 	}

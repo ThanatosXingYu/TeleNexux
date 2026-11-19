@@ -73,15 +73,18 @@ type Alert struct {
 }
 
 type IndexedMessage struct {
-	AccountID int64     `json:"account_id"`
-	PeerType  string    `json:"peer_type"`
-	PeerID    int64     `json:"peer_id"`
-	PeerTitle string    `json:"peer_title"`
-	MessageID int       `json:"message_id"`
-	Sender    string    `json:"sender"`
-	Text      string    `json:"text"`
-	SentAt    time.Time `json:"sent_at"`
-	IndexedAt time.Time `json:"indexed_at"`
+	AccountID     int64     `json:"account_id"`
+	PeerType      string    `json:"peer_type"`
+	PeerID        int64     `json:"peer_id"`
+	PeerTitle     string    `json:"peer_title"`
+	MessageID     int       `json:"message_id"`
+	Sender        string    `json:"sender"`
+	Text          string    `json:"text"`
+	SentAt        time.Time `json:"sent_at"`
+	IndexedAt     time.Time `json:"indexed_at"`
+	LatestEventID string    `json:"latest_event_id,omitempty"`
+	ContentHash   string    `json:"content_hash,omitempty"`
+	SchemaVersion int       `json:"schema_version"`
 }
 
 type MessageQuery struct {
@@ -249,7 +252,64 @@ CREATE TABLE IF NOT EXISTS indexed_messages (
 CREATE INDEX IF NOT EXISTS indexed_messages_sent_idx
 	ON indexed_messages(sent_at DESC, account_id, message_id);
 CREATE INDEX IF NOT EXISTS indexed_messages_peer_idx
-	ON indexed_messages(account_id, peer_type, peer_id, message_id DESC);`
+	ON indexed_messages(account_id, peer_type, peer_id, message_id DESC);
+CREATE TABLE IF NOT EXISTS monitor_checkpoints (
+	account_id INTEGER NOT NULL,
+	peer_type TEXT NOT NULL,
+	peer_id INTEGER NOT NULL,
+	last_message_id INTEGER NOT NULL DEFAULT 0,
+	last_success_at TEXT NOT NULL DEFAULT '',
+	consecutive_failures INTEGER NOT NULL DEFAULT 0,
+	last_error TEXT NOT NULL DEFAULT '',
+	backlog_detected INTEGER NOT NULL DEFAULT 0,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (account_id, peer_type, peer_id)
+);
+CREATE TABLE IF NOT EXISTS ingestion_batches (
+	batch_id TEXT PRIMARY KEY,
+	source TEXT NOT NULL,
+	account_id INTEGER NOT NULL,
+	peer_type TEXT NOT NULL,
+	peer_id INTEGER NOT NULL,
+	status TEXT NOT NULL CHECK (status IN ('completed', 'partial', 'failed')),
+	started_at TEXT NOT NULL,
+	finished_at TEXT NOT NULL,
+	fetched_count INTEGER NOT NULL DEFAULT 0,
+	event_count INTEGER NOT NULL DEFAULT 0,
+	inserted_count INTEGER NOT NULL DEFAULT 0,
+	checkpoint_before INTEGER NOT NULL DEFAULT 0,
+	checkpoint_after INTEGER NOT NULL DEFAULT 0,
+	backlog_detected INTEGER NOT NULL DEFAULT 0,
+	error_text TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ingestion_batches_target_idx
+	ON ingestion_batches(account_id, peer_type, peer_id, finished_at DESC);
+CREATE TABLE IF NOT EXISTS evidence_events (
+	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+	event_id TEXT NOT NULL UNIQUE,
+	batch_id TEXT NOT NULL,
+	account_id INTEGER NOT NULL,
+	peer_type TEXT NOT NULL,
+	peer_id INTEGER NOT NULL,
+	peer_title TEXT NOT NULL DEFAULT '',
+	message_id INTEGER NOT NULL,
+	event_type TEXT NOT NULL CHECK (event_type IN ('message', 'edit', 'delete')),
+	version INTEGER NOT NULL,
+	actor TEXT NOT NULL DEFAULT '',
+	sender TEXT NOT NULL DEFAULT '',
+	text TEXT NOT NULL DEFAULT '',
+	media_json TEXT NOT NULL DEFAULT '{}',
+	raw_json TEXT NOT NULL DEFAULT '{}',
+	sent_at TEXT NOT NULL DEFAULT '',
+	observed_at TEXT NOT NULL,
+	content_sha256 TEXT NOT NULL,
+	schema_version INTEGER NOT NULL,
+	UNIQUE(account_id, peer_type, peer_id, message_id, version)
+);
+CREATE INDEX IF NOT EXISTS evidence_events_message_idx
+	ON evidence_events(account_id, peer_type, peer_id, message_id, version DESC);
+CREATE INDEX IF NOT EXISTS evidence_events_batch_idx
+	ON evidence_events(batch_id, sequence);`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate operations database: %w", err)
 	}
@@ -270,6 +330,32 @@ INSERT OR IGNORE INTO notification_channels (
 		"notification_channel_id INTEGER NOT NULL DEFAULT 1",
 	); err != nil {
 		return err
+	}
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{name: "latest_event_id", definition: "latest_event_id TEXT NOT NULL DEFAULT ''"},
+		{name: "content_hash", definition: "content_hash TEXT NOT NULL DEFAULT ''"},
+		{name: "schema_version", definition: "schema_version INTEGER NOT NULL DEFAULT 1"},
+		{name: "deleted_at", definition: "deleted_at TEXT NOT NULL DEFAULT ''"},
+		{name: "updated_at", definition: "updated_at TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := s.ensureColumn(ctx, "indexed_messages", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `
+INSERT INTO monitor_checkpoints (
+	account_id, peer_type, peer_id, last_message_id, updated_at
+)
+SELECT account_id, peer_type, peer_id, MAX(last_message_id),
+	strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+FROM monitor_rules
+GROUP BY account_id, peer_type, peer_id
+HAVING MAX(last_message_id) > 0
+ON CONFLICT(account_id, peer_type, peer_id) DO NOTHING`); err != nil {
+		return fmt.Errorf("seed monitor checkpoints: %w", err)
 	}
 	return nil
 }
@@ -718,76 +804,8 @@ type MessageRecord struct {
 	MessageID int
 	Sender    string
 	Text      string
+	MediaType string
 	SentAt    time.Time
-}
-
-func (s *Service) IngestMessages(
-	ctx context.Context,
-	messages []MessageRecord,
-) (int, []Alert, error) {
-	if len(messages) == 0 {
-		return 0, nil, nil
-	}
-	rules, err := s.ListRules(ctx, true)
-	if err != nil {
-		return 0, nil, err
-	}
-	now := s.now().UTC()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, nil, fmt.Errorf("begin message ingestion: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	inserted := 0
-	alerts := make([]Alert, 0)
-	for _, message := range messages {
-		if message.AccountID <= 0 || message.PeerID <= 0 || message.MessageID <= 0 {
-			continue
-		}
-		result, err := tx.ExecContext(ctx, `
-INSERT OR IGNORE INTO indexed_messages (
-	account_id, peer_type, peer_id, peer_title, message_id, sender, text, sent_at, indexed_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			message.AccountID,
-			message.PeerType,
-			message.PeerID,
-			truncate(message.PeerTitle, 120),
-			message.MessageID,
-			truncate(message.Sender, 120),
-			truncate(message.Text, 16<<10),
-			message.SentAt.UTC().Format(time.RFC3339Nano),
-			now.Format(time.RFC3339Nano),
-		)
-		if err != nil {
-			return 0, nil, fmt.Errorf("index Telegram message: %w", err)
-		}
-		affected, err := result.RowsAffected()
-		if err != nil {
-			return 0, nil, fmt.Errorf("check indexed Telegram message: %w", err)
-		}
-		inserted += int(affected)
-
-		for _, rule := range rules {
-			if !rule.AppliesTo(message) || message.MessageID <= rule.LastMessageID {
-				continue
-			}
-			keyword := matchedKeyword(rule.Keywords, message.Text)
-			if len(rule.Keywords) > 0 && keyword == "" {
-				continue
-			}
-			alert, err := s.insertAlert(ctx, tx, rule, message, keyword, now)
-			if err != nil {
-				return 0, nil, err
-			}
-			if alert.ID > 0 {
-				alerts = append(alerts, alert)
-			}
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, nil, fmt.Errorf("commit message ingestion: %w", err)
-	}
-	return inserted, alerts, nil
 }
 
 func (r Rule) AppliesTo(message MessageRecord) bool {

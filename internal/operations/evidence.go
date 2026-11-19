@@ -1,0 +1,969 @@
+package operations
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
+
+const EvidenceSchemaVersion = 1
+
+type CollectionTarget struct {
+	AccountID           int64
+	PeerType            string
+	PeerID              int64
+	PeerTitle           string
+	LastMessageID       int
+	ConsecutiveFailures int
+	LastError           string
+	BacklogDetected     bool
+	LastSuccessfulAt    *time.Time
+}
+
+type IngestBatchInput struct {
+	BatchID          string
+	Source           string
+	AccountID        int64
+	PeerType         string
+	PeerID           int64
+	PeerTitle        string
+	CheckpointBefore int
+	CheckpointAfter  int
+	Complete         bool
+	BacklogDetected  bool
+	Messages         []MessageRecord
+}
+
+type IngestBatchResult struct {
+	BatchID  string  `json:"batch_id"`
+	Inserted int     `json:"inserted"`
+	Events   int     `json:"events"`
+	Alerts   []Alert `json:"alerts"`
+}
+
+type EvidenceEvent struct {
+	Sequence      int64           `json:"sequence"`
+	EventID       string          `json:"event_id"`
+	BatchID       string          `json:"batch_id"`
+	AccountID     int64           `json:"account_id"`
+	PeerType      string          `json:"peer_type"`
+	PeerID        int64           `json:"peer_id"`
+	PeerTitle     string          `json:"peer_title"`
+	MessageID     int             `json:"message_id"`
+	EventType     string          `json:"event_type"`
+	Version       int             `json:"version"`
+	Actor         string          `json:"actor,omitempty"`
+	Sender        string          `json:"sender"`
+	Text          string          `json:"text"`
+	Media         json.RawMessage `json:"media"`
+	Raw           json.RawMessage `json:"raw"`
+	SentAt        *time.Time      `json:"sent_at,omitempty"`
+	ObservedAt    time.Time       `json:"observed_at"`
+	ContentSHA256 string          `json:"content_sha256"`
+	SchemaVersion int             `json:"schema_version"`
+}
+
+type MonitorSummary struct {
+	TargetCount         int        `json:"target_count"`
+	BacklogTargetCount  int        `json:"backlog_target_count"`
+	ConsecutiveFailures int        `json:"consecutive_failures"`
+	MaxCheckpointDelay  int64      `json:"max_checkpoint_delay_seconds"`
+	LastSuccessfulAt    *time.Time `json:"last_successful_at,omitempty"`
+}
+
+func (s *Service) ListCollectionTargets(ctx context.Context) ([]CollectionTarget, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT r.account_id, r.peer_type, r.peer_id, MAX(r.peer_title),
+	COALESCE(c.last_message_id, MAX(r.last_message_id)),
+	COALESCE(c.consecutive_failures, 0),
+	COALESCE(c.last_error, ''),
+	COALESCE(c.backlog_detected, 0),
+	COALESCE(c.last_success_at, '')
+FROM monitor_rules r
+LEFT JOIN monitor_checkpoints c
+	ON c.account_id = r.account_id
+	AND c.peer_type = r.peer_type
+	AND c.peer_id = r.peer_id
+WHERE r.enabled = 1
+GROUP BY r.account_id, r.peer_type, r.peer_id
+ORDER BY r.account_id, r.peer_type, r.peer_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list collection targets: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	targets := make([]CollectionTarget, 0)
+	for rows.Next() {
+		var (
+			target         CollectionTarget
+			backlog        int
+			lastSuccessful string
+		)
+		if err := rows.Scan(
+			&target.AccountID,
+			&target.PeerType,
+			&target.PeerID,
+			&target.PeerTitle,
+			&target.LastMessageID,
+			&target.ConsecutiveFailures,
+			&target.LastError,
+			&backlog,
+			&lastSuccessful,
+		); err != nil {
+			return nil, fmt.Errorf("scan collection target: %w", err)
+		}
+		target.BacklogDetected = backlog != 0
+		if lastSuccessful != "" {
+			value, err := time.Parse(time.RFC3339Nano, lastSuccessful)
+			if err != nil {
+				return nil, fmt.Errorf("parse collection success time: %w", err)
+			}
+			target.LastSuccessfulAt = &value
+		}
+		targets = append(targets, target)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate collection targets: %w", err)
+	}
+	return targets, nil
+}
+
+func (s *Service) IngestMessages(
+	ctx context.Context,
+	messages []MessageRecord,
+) (int, []Alert, error) {
+	if len(messages) == 0 {
+		return 0, nil, nil
+	}
+	first := messages[0]
+	result, err := s.IngestBatch(ctx, IngestBatchInput{
+		Source:    "manual",
+		AccountID: first.AccountID,
+		PeerType:  first.PeerType,
+		PeerID:    first.PeerID,
+		PeerTitle: first.PeerTitle,
+		Messages:  messages,
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	return result.Inserted, result.Alerts, nil
+}
+
+func (s *Service) IngestBatch(
+	ctx context.Context,
+	input IngestBatchInput,
+) (IngestBatchResult, error) {
+	normalized, err := normalizeBatchInput(input)
+	if err != nil {
+		return IngestBatchResult{}, err
+	}
+	rules, err := s.ListRules(ctx, true)
+	if err != nil {
+		return IngestBatchResult{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return IngestBatchResult{}, fmt.Errorf("begin evidence ingestion: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := s.now().UTC()
+	result, err := s.ingestBatchTx(ctx, tx, normalized, rules, now)
+	if err != nil {
+		return IngestBatchResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return IngestBatchResult{}, fmt.Errorf("commit evidence ingestion: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Service) ingestBatchTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	input IngestBatchInput,
+	rules []Rule,
+	now time.Time,
+) (IngestBatchResult, error) {
+	result := IngestBatchResult{BatchID: input.BatchID}
+	for _, message := range input.Messages {
+		event, inserted, err := s.ingestMessageTx(ctx, tx, input, message, now)
+		if err != nil {
+			return IngestBatchResult{}, err
+		}
+		if event != nil {
+			result.Events++
+		}
+		result.Inserted += inserted
+		for _, rule := range rules {
+			if !rule.AppliesTo(message) {
+				continue
+			}
+			if input.CheckpointBefore > 0 && message.MessageID <= input.CheckpointBefore {
+				continue
+			}
+			keyword := matchedKeyword(rule.Keywords, message.Text)
+			if len(rule.Keywords) > 0 && keyword == "" {
+				continue
+			}
+			alert, err := s.insertAlert(ctx, tx, rule, message, keyword, now)
+			if err != nil {
+				return IngestBatchResult{}, err
+			}
+			if alert.ID > 0 {
+				result.Alerts = append(result.Alerts, alert)
+			}
+		}
+	}
+	status := "partial"
+	checkpointAfter := input.CheckpointBefore
+	if input.Complete {
+		status = "completed"
+		checkpointAfter = max(checkpointAfter, input.CheckpointAfter)
+	}
+	if err := s.insertBatchTx(ctx, tx, input, status, result, checkpointAfter, now); err != nil {
+		return IngestBatchResult{}, err
+	}
+	if input.Complete {
+		if err := s.advanceCheckpointTx(ctx, tx, input, checkpointAfter, now); err != nil {
+			return IngestBatchResult{}, err
+		}
+	}
+	return result, nil
+}
+
+func (s *Service) ingestMessageTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	input IngestBatchInput,
+	message MessageRecord,
+	now time.Time,
+) (*EvidenceEvent, int, error) {
+	contentHash := messageContentHash(message)
+	latest, exists, err := latestEvidence(ctx, tx, message)
+	if err != nil {
+		return nil, 0, err
+	}
+	if exists && latest.contentHash == contentHash {
+		return nil, 0, nil
+	}
+	eventType := "message"
+	version := 1
+	if exists {
+		eventType = "edit"
+		version = latest.version + 1
+	}
+	event, err := s.appendMessageEventTx(
+		ctx,
+		tx,
+		input,
+		message,
+		eventType,
+		version,
+		contentHash,
+		now,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	inserted, err := upsertMessageProjectionTx(ctx, tx, input, message, event, now)
+	if err != nil {
+		return nil, 0, err
+	}
+	return event, inserted, nil
+}
+
+type latestEvidenceRecord struct {
+	version     int
+	contentHash string
+}
+
+func latestEvidence(
+	ctx context.Context,
+	tx *sql.Tx,
+	message MessageRecord,
+) (latestEvidenceRecord, bool, error) {
+	var latest latestEvidenceRecord
+	err := tx.QueryRowContext(ctx, `
+SELECT version, content_sha256
+FROM evidence_events
+WHERE account_id = ? AND peer_type = ? AND peer_id = ? AND message_id = ?
+ORDER BY version DESC
+LIMIT 1`,
+		message.AccountID,
+		message.PeerType,
+		message.PeerID,
+		message.MessageID,
+	).Scan(&latest.version, &latest.contentHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return latestEvidenceRecord{}, false, nil
+	}
+	if err != nil {
+		return latestEvidenceRecord{}, false, fmt.Errorf("read latest evidence event: %w", err)
+	}
+	return latest, true, nil
+}
+
+func (s *Service) appendMessageEventTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	input IngestBatchInput,
+	message MessageRecord,
+	eventType string,
+	version int,
+	contentHash string,
+	now time.Time,
+) (*EvidenceEvent, error) {
+	media, err := json.Marshal(map[string]string{"type": message.MediaType})
+	if err != nil {
+		return nil, fmt.Errorf("encode evidence media: %w", err)
+	}
+	raw, err := json.Marshal(message)
+	if err != nil {
+		return nil, fmt.Errorf("encode raw evidence message: %w", err)
+	}
+	eventID := evidenceEventID(
+		input.BatchID,
+		message,
+		eventType,
+		version,
+	)
+	sentAt := message.SentAt.UTC().Format(time.RFC3339Nano)
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO evidence_events (
+	event_id, batch_id, account_id, peer_type, peer_id, peer_title,
+	message_id, event_type, version, actor, sender, text, media_json,
+	raw_json, sent_at, observed_at, content_sha256, schema_version
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)`,
+		eventID,
+		input.BatchID,
+		message.AccountID,
+		message.PeerType,
+		message.PeerID,
+		truncate(message.PeerTitle, 120),
+		message.MessageID,
+		eventType,
+		version,
+		truncate(message.Sender, 120),
+		truncate(message.Text, 16<<10),
+		string(media),
+		string(raw),
+		sentAt,
+		now.Format(time.RFC3339Nano),
+		contentHash,
+		EvidenceSchemaVersion,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("append evidence event: %w", err)
+	}
+	return &EvidenceEvent{
+		EventID:       eventID,
+		BatchID:       input.BatchID,
+		AccountID:     message.AccountID,
+		PeerType:      message.PeerType,
+		PeerID:        message.PeerID,
+		PeerTitle:     truncate(message.PeerTitle, 120),
+		MessageID:     message.MessageID,
+		EventType:     eventType,
+		Version:       version,
+		Sender:        truncate(message.Sender, 120),
+		Text:          truncate(message.Text, 16<<10),
+		Media:         media,
+		Raw:           raw,
+		ObservedAt:    now,
+		ContentSHA256: contentHash,
+		SchemaVersion: EvidenceSchemaVersion,
+	}, nil
+}
+
+func upsertMessageProjectionTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	input IngestBatchInput,
+	message MessageRecord,
+	event *EvidenceEvent,
+	now time.Time,
+) (int, error) {
+	inserted := 0
+	result, err := tx.ExecContext(ctx, `
+INSERT OR IGNORE INTO indexed_messages (
+	account_id, peer_type, peer_id, peer_title, message_id, sender, text,
+	sent_at, indexed_at, latest_event_id, content_hash, schema_version,
+	deleted_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)`,
+		message.AccountID,
+		message.PeerType,
+		message.PeerID,
+		truncate(message.PeerTitle, 120),
+		message.MessageID,
+		truncate(message.Sender, 120),
+		truncate(message.Text, 16<<10),
+		message.SentAt.UTC().Format(time.RFC3339Nano),
+		now.Format(time.RFC3339Nano),
+		event.EventID,
+		event.ContentSHA256,
+		EvidenceSchemaVersion,
+		now.Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("insert message projection: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("check inserted message projection: %w", err)
+	}
+	inserted = int(affected)
+	if inserted == 0 {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE indexed_messages
+SET peer_title = ?, sender = ?, text = ?, sent_at = ?, indexed_at = ?,
+	latest_event_id = ?, content_hash = ?, schema_version = ?,
+	deleted_at = '', updated_at = ?
+WHERE account_id = ? AND peer_type = ? AND peer_id = ? AND message_id = ?`,
+			inputPeerTitle(input, message),
+			truncate(message.Sender, 120),
+			truncate(message.Text, 16<<10),
+			message.SentAt.UTC().Format(time.RFC3339Nano),
+			now.Format(time.RFC3339Nano),
+			event.EventID,
+			event.ContentSHA256,
+			EvidenceSchemaVersion,
+			now.Format(time.RFC3339Nano),
+			message.AccountID,
+			message.PeerType,
+			message.PeerID,
+			message.MessageID,
+		); err != nil {
+			return 0, fmt.Errorf("update message projection: %w", err)
+		}
+	}
+	return inserted, nil
+}
+
+func (s *Service) insertBatchTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	input IngestBatchInput,
+	status string,
+	result IngestBatchResult,
+	checkpointAfter int,
+	now time.Time,
+) error {
+	_, err := tx.ExecContext(ctx, `
+INSERT INTO ingestion_batches (
+	batch_id, source, account_id, peer_type, peer_id, status, started_at,
+	finished_at, fetched_count, event_count, inserted_count,
+	checkpoint_before, checkpoint_after, backlog_detected, error_text
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
+		input.BatchID,
+		input.Source,
+		input.AccountID,
+		input.PeerType,
+		input.PeerID,
+		status,
+		now.Format(time.RFC3339Nano),
+		now.Format(time.RFC3339Nano),
+		len(input.Messages),
+		result.Events,
+		result.Inserted,
+		input.CheckpointBefore,
+		checkpointAfter,
+		boolInt(input.BacklogDetected),
+	)
+	if err != nil {
+		return fmt.Errorf("record ingestion batch: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) advanceCheckpointTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	input IngestBatchInput,
+	checkpointAfter int,
+	now time.Time,
+) error {
+	timestamp := now.Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO monitor_checkpoints (
+	account_id, peer_type, peer_id, last_message_id, last_success_at,
+	consecutive_failures, last_error, backlog_detected, updated_at
+) VALUES (?, ?, ?, ?, ?, 0, '', 0, ?)
+ON CONFLICT(account_id, peer_type, peer_id) DO UPDATE SET
+	last_message_id = MAX(monitor_checkpoints.last_message_id, excluded.last_message_id),
+	last_success_at = excluded.last_success_at,
+	consecutive_failures = 0,
+	last_error = '',
+	backlog_detected = 0,
+	updated_at = excluded.updated_at`,
+		input.AccountID,
+		input.PeerType,
+		input.PeerID,
+		checkpointAfter,
+		timestamp,
+		timestamp,
+	); err != nil {
+		return fmt.Errorf("advance monitor checkpoint: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE monitor_rules
+SET last_message_id = MAX(last_message_id, ?), last_run_at = ?,
+	last_error = '', updated_at = ?
+WHERE account_id = ? AND peer_type = ? AND peer_id = ?`,
+		checkpointAfter,
+		timestamp,
+		timestamp,
+		input.AccountID,
+		input.PeerType,
+		input.PeerID,
+	); err != nil {
+		return fmt.Errorf("update monitor rule checkpoints: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) RecordBatchFailure(
+	ctx context.Context,
+	input IngestBatchInput,
+	runErr error,
+) error {
+	normalized, err := normalizeBatchInput(input)
+	if err != nil {
+		return err
+	}
+	if runErr == nil {
+		runErr = errors.New("collection failed")
+	}
+	now := s.now().UTC()
+	timestamp := now.Format(time.RFC3339Nano)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin failed ingestion batch: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO ingestion_batches (
+	batch_id, source, account_id, peer_type, peer_id, status, started_at,
+	finished_at, fetched_count, event_count, inserted_count,
+	checkpoint_before, checkpoint_after, backlog_detected, error_text
+) VALUES (?, ?, ?, ?, ?, 'failed', ?, ?, 0, 0, 0, ?, ?, ?, ?)`,
+		normalized.BatchID,
+		normalized.Source,
+		normalized.AccountID,
+		normalized.PeerType,
+		normalized.PeerID,
+		timestamp,
+		timestamp,
+		normalized.CheckpointBefore,
+		normalized.CheckpointBefore,
+		boolInt(normalized.BacklogDetected),
+		truncate(runErr.Error(), 500),
+	); err != nil {
+		return fmt.Errorf("record failed ingestion batch: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO monitor_checkpoints (
+	account_id, peer_type, peer_id, last_message_id, consecutive_failures,
+	last_error, backlog_detected, updated_at
+) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+ON CONFLICT(account_id, peer_type, peer_id) DO UPDATE SET
+	consecutive_failures = monitor_checkpoints.consecutive_failures + 1,
+	last_error = excluded.last_error,
+	backlog_detected = excluded.backlog_detected,
+	updated_at = excluded.updated_at`,
+		normalized.AccountID,
+		normalized.PeerType,
+		normalized.PeerID,
+		normalized.CheckpointBefore,
+		truncate(runErr.Error(), 500),
+		boolInt(normalized.BacklogDetected),
+		timestamp,
+	); err != nil {
+		return fmt.Errorf("record collection failure: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE monitor_rules
+SET last_run_at = ?, last_error = ?, updated_at = ?
+WHERE account_id = ? AND peer_type = ? AND peer_id = ?`,
+		timestamp,
+		truncate(runErr.Error(), 500),
+		timestamp,
+		normalized.AccountID,
+		normalized.PeerType,
+		normalized.PeerID,
+	); err != nil {
+		return fmt.Errorf("record monitor rule failure: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit failed ingestion batch: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) RecordDeletion(
+	ctx context.Context,
+	accountID int64,
+	peerType string,
+	peerID int64,
+	messageIDs []int,
+	actor string,
+) (string, error) {
+	if accountID <= 0 || peerID <= 0 || len(messageIDs) == 0 {
+		return "", errors.New("deletion evidence requires account, peer, and message IDs")
+	}
+	batchID, err := newBatchID()
+	if err != nil {
+		return "", err
+	}
+	now := s.now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("begin deletion evidence: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	eventCount := 0
+	seen := make(map[int]struct{}, len(messageIDs))
+	for _, messageID := range messageIDs {
+		if messageID <= 0 {
+			continue
+		}
+		if _, duplicate := seen[messageID]; duplicate {
+			continue
+		}
+		seen[messageID] = struct{}{}
+		added, err := s.recordDeletionEventTx(
+			ctx,
+			tx,
+			batchID,
+			accountID,
+			peerType,
+			peerID,
+			messageID,
+			actor,
+			now,
+		)
+		if err != nil {
+			return "", err
+		}
+		if added {
+			eventCount++
+		}
+	}
+	if err := s.insertBatchTx(ctx, tx, IngestBatchInput{
+		BatchID:   batchID,
+		Source:    "message_delete",
+		AccountID: accountID,
+		PeerType:  peerType,
+		PeerID:    peerID,
+	}, "completed", IngestBatchResult{Events: eventCount}, 0, now); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit deletion evidence: %w", err)
+	}
+	return batchID, nil
+}
+
+func (s *Service) recordDeletionEventTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	batchID string,
+	accountID int64,
+	peerType string,
+	peerID int64,
+	messageID int,
+	actor string,
+	now time.Time,
+) (bool, error) {
+	latest, exists, err := latestEvidence(ctx, tx, MessageRecord{
+		AccountID: accountID,
+		PeerType:  peerType,
+		PeerID:    peerID,
+		MessageID: messageID,
+	})
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		var latestType string
+		if err := tx.QueryRowContext(ctx, `
+SELECT event_type FROM evidence_events
+WHERE account_id = ? AND peer_type = ? AND peer_id = ? AND message_id = ?
+ORDER BY version DESC LIMIT 1`,
+			accountID,
+			peerType,
+			peerID,
+			messageID,
+		).Scan(&latestType); err != nil {
+			return false, fmt.Errorf("read latest evidence type: %w", err)
+		}
+		if latestType == "delete" {
+			return false, nil
+		}
+	}
+	version := latest.version + 1
+	contentHash := sha256Hex(fmt.Sprintf(
+		"delete|%d|%s|%d|%d",
+		accountID,
+		peerType,
+		peerID,
+		messageID,
+	))
+	eventID := evidenceDeletionID(batchID, accountID, peerType, peerID, messageID, version)
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO evidence_events (
+	event_id, batch_id, account_id, peer_type, peer_id, peer_title,
+	message_id, event_type, version, actor, sender, text, media_json,
+	raw_json, sent_at, observed_at, content_sha256, schema_version
+) VALUES (?, ?, ?, ?, ?, '', ?, 'delete', ?, ?, '', '', '{}', '{}', '', ?, ?, ?)`,
+		eventID,
+		batchID,
+		accountID,
+		peerType,
+		peerID,
+		messageID,
+		version,
+		truncate(actor, 64),
+		now.Format(time.RFC3339Nano),
+		contentHash,
+		EvidenceSchemaVersion,
+	)
+	if err != nil {
+		return false, fmt.Errorf("append deletion evidence: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE indexed_messages
+SET latest_event_id = ?, content_hash = ?, schema_version = ?,
+	deleted_at = ?, updated_at = ?
+WHERE account_id = ? AND peer_type = ? AND peer_id = ? AND message_id = ?`,
+		eventID,
+		contentHash,
+		EvidenceSchemaVersion,
+		now.Format(time.RFC3339Nano),
+		now.Format(time.RFC3339Nano),
+		accountID,
+		peerType,
+		peerID,
+		messageID,
+	); err != nil {
+		return false, fmt.Errorf("tombstone message projection: %w", err)
+	}
+	return true, nil
+}
+
+func (s *Service) ListEvidenceEvents(
+	ctx context.Context,
+	accountID int64,
+	peerType string,
+	peerID int64,
+	messageID int,
+	limit int,
+) ([]EvidenceEvent, error) {
+	limit = normalizeLimit(limit, 50, 200)
+	query := `
+SELECT sequence, event_id, batch_id, account_id, peer_type, peer_id,
+	peer_title, message_id, event_type, version, actor, sender, text,
+	media_json, raw_json, sent_at, observed_at, content_sha256, schema_version
+FROM evidence_events
+WHERE account_id = ?`
+	args := []any{accountID}
+	if peerType != "" {
+		query += " AND peer_type = ? AND peer_id = ?"
+		args = append(args, peerType, peerID)
+	}
+	if messageID > 0 {
+		query += " AND message_id = ?"
+		args = append(args, messageID)
+	}
+	query += " ORDER BY sequence DESC LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list evidence events: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	items := make([]EvidenceEvent, 0, limit)
+	for rows.Next() {
+		item, err := scanEvidenceEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate evidence events: %w", err)
+	}
+	return items, nil
+}
+
+func (s *Service) MonitorSummary(ctx context.Context) (MonitorSummary, error) {
+	var summary MonitorSummary
+	var lastSuccessful string
+	if err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(1),
+	COALESCE(SUM(CASE WHEN backlog_detected = 1 THEN 1 ELSE 0 END), 0),
+	COALESCE(SUM(consecutive_failures), 0),
+	COALESCE(MAX(last_success_at), '')
+FROM monitor_checkpoints`).Scan(
+		&summary.TargetCount,
+		&summary.BacklogTargetCount,
+		&summary.ConsecutiveFailures,
+		&lastSuccessful,
+	); err != nil {
+		return MonitorSummary{}, fmt.Errorf("summarize monitor checkpoints: %w", err)
+	}
+	if lastSuccessful != "" {
+		value, err := time.Parse(time.RFC3339Nano, lastSuccessful)
+		if err != nil {
+			return MonitorSummary{}, fmt.Errorf("parse monitor success time: %w", err)
+		}
+		summary.LastSuccessfulAt = &value
+		summary.MaxCheckpointDelay = max(0, int64(s.now().UTC().Sub(value).Seconds()))
+	}
+	return summary, nil
+}
+
+func normalizeBatchInput(input IngestBatchInput) (IngestBatchInput, error) {
+	input.Source = strings.TrimSpace(input.Source)
+	input.PeerType = strings.TrimSpace(input.PeerType)
+	input.PeerTitle = strings.TrimSpace(input.PeerTitle)
+	if input.Source == "" {
+		input.Source = "unknown"
+	}
+	if input.AccountID <= 0 || input.PeerID <= 0 {
+		return IngestBatchInput{}, errors.New("batch account and peer IDs must be positive")
+	}
+	if input.PeerType != "user" && input.PeerType != "chat" && input.PeerType != "channel" {
+		return IngestBatchInput{}, errors.New("batch peer type must be user, chat, or channel")
+	}
+	if input.CheckpointBefore < 0 || input.CheckpointAfter < 0 {
+		return IngestBatchInput{}, errors.New("batch checkpoints must not be negative")
+	}
+	if input.BatchID == "" {
+		value, err := newBatchID()
+		if err != nil {
+			return IngestBatchInput{}, err
+		}
+		input.BatchID = value
+	}
+	return input, nil
+}
+
+func messageContentHash(message MessageRecord) string {
+	return sha256Hex(strings.Join([]string{
+		message.Sender,
+		message.Text,
+		message.MediaType,
+		message.SentAt.UTC().Format(time.RFC3339Nano),
+	}, "\x00"))
+}
+
+func evidenceEventID(
+	batchID string,
+	message MessageRecord,
+	eventType string,
+	version int,
+) string {
+	return sha256Hex(fmt.Sprintf(
+		"%s|%d|%s|%d|%d|%s|%d",
+		batchID,
+		message.AccountID,
+		message.PeerType,
+		message.PeerID,
+		message.MessageID,
+		eventType,
+		version,
+	))
+}
+
+func evidenceDeletionID(
+	batchID string,
+	accountID int64,
+	peerType string,
+	peerID int64,
+	messageID int,
+	version int,
+) string {
+	return sha256Hex(fmt.Sprintf(
+		"%s|%d|%s|%d|%d|delete|%d",
+		batchID,
+		accountID,
+		peerType,
+		peerID,
+		messageID,
+		version,
+	))
+}
+
+func inputPeerTitle(input IngestBatchInput, message MessageRecord) string {
+	if message.PeerTitle != "" {
+		return truncate(message.PeerTitle, 120)
+	}
+	return truncate(input.PeerTitle, 120)
+}
+
+func sha256Hex(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func newBatchID() (string, error) {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate ingestion batch ID: %w", err)
+	}
+	return hex.EncodeToString(value), nil
+}
+
+func scanEvidenceEvent(row scanner) (EvidenceEvent, error) {
+	var (
+		item               EvidenceEvent
+		mediaJSON, rawJSON string
+		sentAt, observedAt string
+	)
+	if err := row.Scan(
+		&item.Sequence,
+		&item.EventID,
+		&item.BatchID,
+		&item.AccountID,
+		&item.PeerType,
+		&item.PeerID,
+		&item.PeerTitle,
+		&item.MessageID,
+		&item.EventType,
+		&item.Version,
+		&item.Actor,
+		&item.Sender,
+		&item.Text,
+		&mediaJSON,
+		&rawJSON,
+		&sentAt,
+		&observedAt,
+		&item.ContentSHA256,
+		&item.SchemaVersion,
+	); err != nil {
+		return EvidenceEvent{}, fmt.Errorf("scan evidence event: %w", err)
+	}
+	item.Media = json.RawMessage(mediaJSON)
+	item.Raw = json.RawMessage(rawJSON)
+	if sentAt != "" {
+		value, err := time.Parse(time.RFC3339Nano, sentAt)
+		if err != nil {
+			return EvidenceEvent{}, fmt.Errorf("parse evidence sent_at: %w", err)
+		}
+		item.SentAt = &value
+	}
+	value, err := time.Parse(time.RFC3339Nano, observedAt)
+	if err != nil {
+		return EvidenceEvent{}, fmt.Errorf("parse evidence observed_at: %w", err)
+	}
+	item.ObservedAt = value
+	return item, nil
+}
