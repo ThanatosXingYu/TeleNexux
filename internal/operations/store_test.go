@@ -163,6 +163,57 @@ func TestNotificationChannelIsAppliedToRulesAndAlerts(t *testing.T) {
 		alerts[0].ChannelName != "站内通知" {
 		t.Fatalf("IngestMessages() alerts = %+v", alerts)
 	}
+	if alerts[0].DeliveryID <= 0 ||
+		alerts[0].DeliveryState != "delivered" ||
+		alerts[0].DeliveryCount != 1 ||
+		alerts[0].DeliveryAt == nil ||
+		!alerts[0].DeliveryAt.Equal(now) {
+		t.Fatalf("IngestMessages() delivery = %+v", alerts[0])
+	}
+	listed, err := service.ListAlerts(ctx, "pending", 20)
+	if err != nil {
+		t.Fatalf("ListAlerts() error = %v", err)
+	}
+	if len(listed) != 1 ||
+		listed[0].DeliveryState != "delivered" ||
+		listed[0].DeliveryAt == nil ||
+		!listed[0].DeliveryAt.Equal(now) {
+		t.Fatalf("ListAlerts() delivery = %+v", listed)
+	}
+	var deliveryCount int
+	if err := service.db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(1) FROM notification_deliveries`,
+	).Scan(&deliveryCount); err != nil {
+		t.Fatalf("count notification deliveries: %v", err)
+	}
+	if deliveryCount != 1 {
+		t.Fatalf("notification delivery count = %d, want 1", deliveryCount)
+	}
+	_, duplicateAlerts, err := service.IngestMessages(ctx, []MessageRecord{{
+		AccountID: 7,
+		PeerType:  "chat",
+		PeerID:    42,
+		PeerTitle: "Ops",
+		MessageID: 200,
+		Text:      "deploy now",
+		SentAt:    now,
+	}})
+	if err != nil {
+		t.Fatalf("duplicate IngestMessages() error = %v", err)
+	}
+	if len(duplicateAlerts) != 0 {
+		t.Fatalf("duplicate IngestMessages() alerts = %+v", duplicateAlerts)
+	}
+	if err := service.db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(1) FROM notification_deliveries`,
+	).Scan(&deliveryCount); err != nil {
+		t.Fatalf("count duplicate notification deliveries: %v", err)
+	}
+	if deliveryCount != 1 {
+		t.Fatalf("duplicate notification delivery count = %d, want 1", deliveryCount)
+	}
 }
 
 func TestCreateRuleValidatesNotificationChannel(t *testing.T) {

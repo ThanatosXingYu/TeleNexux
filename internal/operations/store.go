@@ -41,6 +41,7 @@ type Rule struct {
 	Keywords                []string   `json:"keywords"`
 	NotificationChannelID   int64      `json:"notification_channel_id"`
 	NotificationChannelName string     `json:"notification_channel_name"`
+	NotificationChannelKind string     `json:"notification_channel_kind"`
 	Enabled                 bool       `json:"enabled"`
 	LastMessageID           int        `json:"last_message_id"`
 	LastRunAt               *time.Time `json:"last_run_at,omitempty"`
@@ -59,20 +60,26 @@ type NotificationChannel struct {
 }
 
 type Alert struct {
-	ID             int64     `json:"id"`
-	RuleID         int64     `json:"rule_id"`
-	RuleName       string    `json:"rule_name"`
-	AccountID      int64     `json:"account_id"`
-	PeerType       string    `json:"peer_type"`
-	PeerID         int64     `json:"peer_id"`
-	PeerTitle      string    `json:"peer_title"`
-	MessageID      int       `json:"message_id"`
-	MatchedKeyword string    `json:"matched_keyword,omitempty"`
-	MessagePreview string    `json:"message_preview"`
-	State          string    `json:"state"`
-	ChannelID      int64     `json:"notification_channel_id"`
-	ChannelName    string    `json:"notification_channel_name"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID             int64      `json:"id"`
+	RuleID         int64      `json:"rule_id"`
+	RuleName       string     `json:"rule_name"`
+	AccountID      int64      `json:"account_id"`
+	PeerType       string     `json:"peer_type"`
+	PeerID         int64      `json:"peer_id"`
+	PeerTitle      string     `json:"peer_title"`
+	MessageID      int        `json:"message_id"`
+	MatchedKeyword string     `json:"matched_keyword,omitempty"`
+	MessagePreview string     `json:"message_preview"`
+	State          string     `json:"state"`
+	ChannelID      int64      `json:"notification_channel_id"`
+	ChannelName    string     `json:"notification_channel_name"`
+	DeliveryID     int64      `json:"delivery_id,omitempty"`
+	DeliveryState  string     `json:"delivery_state,omitempty"`
+	DeliveryCount  int        `json:"delivery_attempts"`
+	DeliveryLastAt *time.Time `json:"delivery_last_attempt_at,omitempty"`
+	DeliveryAt     *time.Time `json:"delivery_at,omitempty"`
+	DeliveryError  string     `json:"delivery_error,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
 }
 
 type IndexedMessage struct {
@@ -240,6 +247,22 @@ CREATE TABLE IF NOT EXISTS monitor_alerts (
 );
 CREATE INDEX IF NOT EXISTS monitor_alerts_state_created_idx
 	ON monitor_alerts(state, created_at DESC, id DESC);
+CREATE TABLE IF NOT EXISTS notification_deliveries (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	alert_id INTEGER NOT NULL,
+	channel_id INTEGER NOT NULL,
+	channel_kind TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (state IN ('queued', 'delivered', 'failed')),
+	attempt_count INTEGER NOT NULL DEFAULT 0,
+	last_attempt_at TEXT NOT NULL DEFAULT '',
+	delivered_at TEXT NOT NULL DEFAULT '',
+	error_text TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE(alert_id, channel_id)
+);
+CREATE INDEX IF NOT EXISTS notification_deliveries_state_created_idx
+	ON notification_deliveries(state, created_at DESC, id DESC);
 CREATE TABLE IF NOT EXISTS indexed_messages (
 	account_id INTEGER NOT NULL,
 	peer_type TEXT NOT NULL,
@@ -711,18 +734,24 @@ func (s *Service) CreateRuleWithChannel(
 	if notificationChannelID <= 0 {
 		notificationChannelID = 1
 	}
-	var channelEnabled int
+	var (
+		channelEnabled int
+		channelKind    string
+	)
 	if err := s.db.QueryRowContext(
 		ctx,
-		`SELECT enabled FROM notification_channels WHERE id = ?`,
+		`SELECT enabled, kind FROM notification_channels WHERE id = ?`,
 		notificationChannelID,
-	).Scan(&channelEnabled); errors.Is(err, sql.ErrNoRows) {
+	).Scan(&channelEnabled, &channelKind); errors.Is(err, sql.ErrNoRows) {
 		return Rule{}, errors.New("notification channel was not found")
 	} else if err != nil {
 		return Rule{}, fmt.Errorf("read notification channel: %w", err)
 	}
 	if channelEnabled == 0 {
 		return Rule{}, errors.New("notification channel is disabled")
+	}
+	if channelKind != "in_app" {
+		return Rule{}, errors.New("notification channel kind is not supported")
 	}
 	encoded, err := json.Marshal(keywords)
 	if err != nil {
@@ -801,7 +830,7 @@ ORDER BY id`)
 func (s *Service) GetRule(ctx context.Context, id int64) (Rule, error) {
 	rule, err := scanRule(s.db.QueryRowContext(ctx, `
 SELECT r.id, r.name, r.account_id, r.peer_type, r.peer_id, r.peer_title,
-	r.keywords_json, r.notification_channel_id, COALESCE(nc.name, ''),
+	r.keywords_json, r.notification_channel_id, COALESCE(nc.name, ''), COALESCE(nc.kind, ''),
 	r.enabled, r.last_message_id, r.last_run_at, r.last_error,
 	r.created_at, r.updated_at
 FROM monitor_rules r
@@ -816,7 +845,7 @@ WHERE r.id = ?`, id))
 func (s *Service) ListRules(ctx context.Context, enabledOnly bool) ([]Rule, error) {
 	query := `
 SELECT r.id, r.name, r.account_id, r.peer_type, r.peer_id, r.peer_title,
-	r.keywords_json, r.notification_channel_id, COALESCE(nc.name, ''),
+	r.keywords_json, r.notification_channel_id, COALESCE(nc.name, ''), COALESCE(nc.kind, ''),
 	r.enabled, r.last_message_id, r.last_run_at, r.last_error,
 	r.created_at, r.updated_at
 FROM monitor_rules r
@@ -969,7 +998,10 @@ INSERT OR IGNORE INTO monitor_alerts (
 	if affected == 0 {
 		return Alert{}, nil
 	}
-	return Alert{
+	if rule.NotificationChannelKind != "in_app" {
+		return Alert{}, errors.New("notification channel kind is not supported")
+	}
+	alert := Alert{
 		ID:             id,
 		RuleID:         rule.ID,
 		RuleName:       rule.Name,
@@ -984,7 +1016,33 @@ INSERT OR IGNORE INTO monitor_alerts (
 		ChannelID:      rule.NotificationChannelID,
 		ChannelName:    rule.NotificationChannelName,
 		CreatedAt:      now,
-	}, nil
+	}
+	delivery, err := tx.ExecContext(ctx, `
+INSERT INTO notification_deliveries (
+	alert_id, channel_id, channel_kind, state, attempt_count,
+	last_attempt_at, delivered_at, error_text, created_at, updated_at
+) VALUES (?, ?, ?, 'delivered', 1, ?, ?, '', ?, ?)`,
+		alert.ID,
+		rule.NotificationChannelID,
+		rule.NotificationChannelKind,
+		now.Format(time.RFC3339Nano),
+		now.Format(time.RFC3339Nano),
+		now.Format(time.RFC3339Nano),
+		now.Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return Alert{}, fmt.Errorf("record notification delivery: %w", err)
+	}
+	deliveryID, err := delivery.LastInsertId()
+	if err != nil {
+		return Alert{}, fmt.Errorf("read notification delivery ID: %w", err)
+	}
+	alert.DeliveryID = deliveryID
+	alert.DeliveryState = "delivered"
+	alert.DeliveryCount = 1
+	alert.DeliveryLastAt = &now
+	alert.DeliveryAt = &now
+	return alert, nil
 }
 
 func (s *Service) ListAlerts(ctx context.Context, state string, limit int) ([]Alert, error) {
@@ -995,10 +1053,14 @@ func (s *Service) ListAlerts(ctx context.Context, state string, limit int) ([]Al
 	query := `
 SELECT a.id, a.rule_id, COALESCE(r.name, ''), a.account_id, a.peer_type, a.peer_id,
 	a.peer_title, a.message_id, a.matched_keyword, a.message_preview, a.state,
-	COALESCE(r.notification_channel_id, 0), COALESCE(nc.name, ''), a.created_at
+	COALESCE(r.notification_channel_id, 0), COALESCE(nc.name, ''), a.created_at,
+	COALESCE(d.id, 0), COALESCE(d.state, ''), COALESCE(d.attempt_count, 0),
+	COALESCE(d.last_attempt_at, ''), COALESCE(d.delivered_at, ''),
+	COALESCE(d.error_text, '')
 FROM monitor_alerts a
 LEFT JOIN monitor_rules r ON r.id = a.rule_id
-LEFT JOIN notification_channels nc ON nc.id = r.notification_channel_id`
+LEFT JOIN notification_channels nc ON nc.id = r.notification_channel_id
+LEFT JOIN notification_deliveries d ON d.alert_id = a.id`
 	args := make([]any, 0, 2)
 	if state != "" {
 		query += " WHERE a.state = ?"
@@ -1240,6 +1302,8 @@ LIMIT 1`, accountID).Scan(&heldAccountID); err == nil {
 	}
 	for _, query := range []string{
 		`DELETE FROM account_group_members WHERE account_id = ?`,
+		`DELETE FROM notification_deliveries
+			WHERE alert_id IN (SELECT id FROM monitor_alerts WHERE account_id = ?)`,
 		`DELETE FROM monitor_alerts WHERE account_id = ?`,
 		`DELETE FROM monitor_rules WHERE account_id = ?`,
 		`DELETE FROM indexed_messages WHERE account_id = ?`,
@@ -1348,6 +1412,7 @@ func scanRule(row scanner) (Rule, error) {
 		&keywordsJSON,
 		&item.NotificationChannelID,
 		&item.NotificationChannelName,
+		&item.NotificationChannelKind,
 		&enabled,
 		&item.LastMessageID,
 		&lastRunAt,
@@ -1382,7 +1447,7 @@ func scanRule(row scanner) (Rule, error) {
 
 func scanAlert(row scanner) (Alert, error) {
 	var item Alert
-	var createdAt string
+	var createdAt, deliveryLastAt, deliveryAt string
 	if err := row.Scan(
 		&item.ID,
 		&item.RuleID,
@@ -1398,6 +1463,12 @@ func scanAlert(row scanner) (Alert, error) {
 		&item.ChannelID,
 		&item.ChannelName,
 		&createdAt,
+		&item.DeliveryID,
+		&item.DeliveryState,
+		&item.DeliveryCount,
+		&deliveryLastAt,
+		&deliveryAt,
+		&item.DeliveryError,
 	); err != nil {
 		return Alert{}, fmt.Errorf("scan monitor alert: %w", err)
 	}
@@ -1406,6 +1477,20 @@ func scanAlert(row scanner) (Alert, error) {
 		return Alert{}, fmt.Errorf("parse monitor alert created_at: %w", err)
 	}
 	item.CreatedAt = value
+	if deliveryLastAt != "" {
+		value, err := time.Parse(time.RFC3339Nano, deliveryLastAt)
+		if err != nil {
+			return Alert{}, fmt.Errorf("parse notification delivery attempt time: %w", err)
+		}
+		item.DeliveryLastAt = &value
+	}
+	if deliveryAt != "" {
+		value, err := time.Parse(time.RFC3339Nano, deliveryAt)
+		if err != nil {
+			return Alert{}, fmt.Errorf("parse notification delivery time: %w", err)
+		}
+		item.DeliveryAt = &value
+	}
 	return item, nil
 }
 

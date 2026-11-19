@@ -904,6 +904,11 @@
             heading,
             element("p", "", alert.message_preview || "监控命中"),
             element("small", "", `${alert.peer_title || "会话"} · ${alert.notification_channel_name || "站内通知"} · ${formatDate(alert.created_at)}${alert.matched_keyword ? ` · 命中 ${alert.matched_keyword}` : ""}`),
+            element("small", "", alert.delivery_state === "delivered"
+              ? `投递成功 · ${formatDate(alert.delivery_at)}`
+              : alert.delivery_state === "failed"
+                ? `投递失败${alert.delivery_error ? ` · ${alert.delivery_error}` : ""}`
+                : "无投递记录"),
           );
           card.append(icon, copy);
           if (alert.state === "pending") {
