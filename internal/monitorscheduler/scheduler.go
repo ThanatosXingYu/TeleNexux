@@ -43,11 +43,20 @@ const (
 )
 
 type Status struct {
-	Running      bool       `json:"running"`
-	LastStarted  *time.Time `json:"last_started_at,omitempty"`
-	LastFinished *time.Time `json:"last_finished_at,omitempty"`
-	NextRunAt    *time.Time `json:"next_run_at,omitempty"`
-	LastError    string     `json:"last_error,omitempty"`
+	Running             bool                          `json:"running"`
+	Mode                string                        `json:"mode"`
+	LastTrigger         string                        `json:"last_trigger,omitempty"`
+	PollIntervalSeconds int64                         `json:"poll_interval_seconds"`
+	PollRuns            int64                         `json:"poll_runs"`
+	UpdateDrivenRuns    int64                         `json:"update_driven_runs"`
+	ListenerCount       int                           `json:"listener_count"`
+	ConnectedListeners  int                           `json:"connected_listeners"`
+	QueuedUpdateEvents  int                           `json:"queued_update_events"`
+	LastStarted         *time.Time                    `json:"last_started_at,omitempty"`
+	LastFinished        *time.Time                    `json:"last_finished_at,omitempty"`
+	NextRunAt           *time.Time                    `json:"next_run_at,omitempty"`
+	LastError           string                        `json:"last_error,omitempty"`
+	Listeners           []telegramchat.ListenerStatus `json:"listeners,omitempty"`
 }
 
 type accountTargetGroup struct {
@@ -61,15 +70,16 @@ type accountTargetGroup struct {
 }
 
 type Scheduler struct {
-	operations *operations.Service
-	accounts   AccountLookup
-	chats      ChatReader
-	interval   time.Duration
-	logger     *slog.Logger
-	now        func() time.Time
-	mu         sync.Mutex
-	runMu      sync.Mutex
-	status     Status
+	operations   *operations.Service
+	accounts     AccountLookup
+	chats        ChatReader
+	interval     time.Duration
+	initialDelay time.Duration
+	logger       *slog.Logger
+	now          func() time.Time
+	mu           sync.Mutex
+	runMu        sync.Mutex
+	status       Status
 }
 
 func New(
@@ -83,12 +93,17 @@ func New(
 		interval = time.Minute
 	}
 	return &Scheduler{
-		operations: service,
-		accounts:   accounts,
-		chats:      chats,
-		interval:   interval,
-		logger:     logger,
-		now:        time.Now,
+		operations:   service,
+		accounts:     accounts,
+		chats:        chats,
+		interval:     interval,
+		initialDelay: 15 * time.Second,
+		logger:       logger,
+		now:          time.Now,
+		status: Status{
+			Mode:                "polling",
+			PollIntervalSeconds: int64(interval / time.Second),
+		},
 	}
 }
 
@@ -96,25 +111,65 @@ func (s *Scheduler) Start(ctx context.Context) {
 	if s == nil || s.operations == nil || s.accounts == nil || s.chats == nil {
 		return
 	}
+	updateSource, _ := s.chats.(interface {
+		Updates() <-chan int64
+	})
+	var updates <-chan int64
+	if updateSource != nil {
+		updates = updateSource.Updates()
+		s.mu.Lock()
+		s.status.Mode = "event_driven_with_poll_fallback"
+		s.mu.Unlock()
+	}
 	go func() {
-		nextRun := time.Now().UTC().Add(15 * time.Second)
+		nextRun := time.Now().UTC().Add(s.initialDelay)
 		s.setNextRun(nextRun)
 		timer := time.NewTimer(time.Until(nextRun))
 		defer timer.Stop()
 		for {
+			trigger := ""
 			select {
 			case <-ctx.Done():
 				return
 			case <-timer.C:
-				if err := s.RunOnce(ctx); err != nil {
-					s.logger.Warn("monitor scheduler run failed", "error", err)
+				trigger = "poll"
+			case <-updates:
+				trigger = "update"
+				for {
+					select {
+					case <-updates:
+					default:
+						goto run
+					}
 				}
-				nextRun = time.Now().UTC().Add(s.interval)
-				s.setNextRun(nextRun)
-				timer.Reset(time.Until(nextRun))
 			}
+		run:
+			s.recordTrigger(trigger)
+			if trigger == "update" {
+				if err := ctx.Err(); err != nil {
+					return
+				}
+			}
+			if err := s.RunOnce(ctx); err != nil {
+				s.logger.Warn("monitor scheduler run failed", "trigger", trigger, "error", err)
+			}
+			nextRun = time.Now().UTC().Add(s.interval)
+			s.setNextRun(nextRun)
+			timer.Reset(time.Until(nextRun))
 		}
 	}()
+}
+
+func (s *Scheduler) recordTrigger(trigger string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status.LastTrigger = trigger
+	switch trigger {
+	case "update":
+		s.status.UpdateDrivenRuns++
+	case "poll":
+		s.status.PollRuns++
+	}
 }
 
 func (s *Scheduler) RunOnce(ctx context.Context) error {
@@ -360,8 +415,23 @@ func (s *Scheduler) Status() Status {
 		return Status{}
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.status
+	status := s.status
+	s.mu.Unlock()
+	if reporter, ok := s.chats.(interface {
+		ListenerStatuses() []telegramchat.ListenerStatus
+	}); ok {
+		status.Listeners = reporter.ListenerStatuses()
+		status.ListenerCount = len(status.Listeners)
+		for _, listener := range status.Listeners {
+			if listener.Connected {
+				status.ConnectedListeners++
+			}
+			if listener.QueuedEvents > status.QueuedUpdateEvents {
+				status.QueuedUpdateEvents = listener.QueuedEvents
+			}
+		}
+	}
+	return status
 }
 
 func (s *Scheduler) setRunning(running bool, started time.Time) {

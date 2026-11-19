@@ -135,6 +135,7 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("initialize Telegram chat service: %w", err)
 		}
+		defer telegramChats.Close()
 	}
 	accountService := account.NewService(repository)
 	var monitorRunner httpapi.MonitorRunner

@@ -302,6 +302,8 @@ func (s *fakeTelegramChatService) DeleteSession(accountID int64) error {
 	return nil
 }
 
+func (s *fakeTelegramChatService) ResetAccount(_ int64) {}
+
 func (s *fakeTelegramChatService) Chats(
 	_ context.Context,
 	_ int64,

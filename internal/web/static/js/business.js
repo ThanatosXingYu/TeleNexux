@@ -574,6 +574,19 @@
     setText("[data-monitor-started]", formatDate(status?.last_started_at));
     setText("[data-monitor-finished]", formatDate(status?.last_finished_at));
     setText("[data-monitor-next]", formatDate(status?.next_run_at));
+    const mode = status?.mode === "event_driven_with_poll_fallback"
+      ? "实时监听 + 轮询补漏"
+      : "周期轮询";
+    setText("[data-monitor-mode]", mode);
+    setText(
+      "[data-monitor-trigger-counts]",
+      `${Number(status?.update_driven_runs) || 0} / ${Number(status?.poll_runs) || 0}`,
+    );
+    setText(
+      "[data-monitor-listeners]",
+      `${Number(status?.connected_listeners) || 0} / ${Number(status?.listener_count) || 0}`,
+    );
+    setText("[data-monitor-update-queue]", status?.queued_update_events ?? "0");
     setText("[data-monitor-targets]", collection.target_count ?? "0");
     setText("[data-monitor-backlog]", collection.backlog_target_count ?? "0");
     setText("[data-monitor-delay]", formatDuration(collection.max_checkpoint_delay_seconds));
@@ -606,9 +619,14 @@
     const healthWrap = document.querySelector("[data-monitor-health-wrap]");
     const healthEmpty = document.querySelector("[data-monitor-health-empty]");
     const healthState = document.querySelector("[data-monitor-health-state]");
+    const listenerBody = document.querySelector("[data-monitor-listener-body]");
+    const listenerWrap = document.querySelector("[data-monitor-listener-wrap]");
+    const listenerEmpty = document.querySelector("[data-monitor-listener-empty]");
+    const listenerState = document.querySelector("[data-monitor-listener-state]");
     const alertList = document.querySelector("[data-monitor-alerts]");
     const notice = document.querySelector("[data-monitor-notice]");
     let accounts = [];
+    let loading = false;
 
     const renderRules = (rules) => {
       const accountMap = accountMapFrom(accounts);
@@ -681,7 +699,46 @@
       }
     };
 
+    const renderListeners = (listeners) => {
+      if (!listenerBody) {
+        return;
+      }
+      const accountMap = accountMapFrom(accounts);
+      listenerBody.replaceChildren();
+      listeners.forEach((listener) => {
+        const account = accountMap.get(Number(listener.account_id));
+        const row = document.createElement("tr");
+        appendCell(row, account ? accountLabel(account) : `账号 ${listener.account_id}`);
+        appendCell(row, listener.connected
+          ? element("span", "badge badge-blue", "已连接")
+          : element("span", "badge badge-red", "未连接"));
+        appendCell(row, `${Number(listener.events_observed) || 0} 次`);
+        appendCell(
+          row,
+          `${Number(listener.disconnections) || 0} 次断开 · ${Number(listener.gap_recovery_count) || 0} 次补漏`,
+        );
+        appendCell(row, listener.last_event_at ? formatDate(listener.last_event_at) : "—");
+        appendCell(row, listener.last_error || "—");
+        listenerBody.append(row);
+      });
+      listenerWrap?.toggleAttribute("hidden", listeners.length === 0);
+      listenerEmpty?.toggleAttribute("hidden", listeners.length > 0);
+      if (listenerState) {
+        const disconnected = listeners.some((listener) => !listener.connected);
+        listenerState.className = disconnected ? "badge badge-red" : "badge badge-blue";
+        listenerState.textContent = disconnected
+          ? "需关注"
+          : listeners.length
+            ? "正常"
+            : "等待连接";
+      }
+    };
+
     const load = async () => {
+      if (loading) {
+        return;
+      }
+      loading = true;
       showNotice(notice);
       try {
         const [rulesResult, alertsResult, statusResult, targetsResult, accountsResult] = await Promise.allSettled([
@@ -704,8 +761,12 @@
         setText("[data-monitor-pending-count]", alerts.length);
         if (statusResult.status === "fulfilled") {
           createMonitorStatus(statusResult.value, notice);
+          renderListeners(Array.isArray(statusResult.value?.listeners)
+            ? statusResult.value.listeners
+            : []);
         } else {
           createMonitorStatus(null, notice);
+          renderListeners([]);
           showNotice(notice, statusResult.reason.message, true);
         }
         if (alertList) {
@@ -727,6 +788,8 @@
         }
       } catch (requestError) {
         showNotice(notice, requestError.message, true);
+      } finally {
+        loading = false;
       }
     };
 
@@ -746,6 +809,11 @@
       }
     });
     load();
+    window.setInterval(() => {
+      if (!document.hidden) {
+        load();
+      }
+    }, 15000);
   };
 
   const initMonitorTasks = () => {

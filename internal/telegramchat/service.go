@@ -7,15 +7,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/ThanatosXingYu/TeleNexux/internal/telegramauth"
-	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
-	"github.com/gotd/td/tgerr"
 )
 
 var (
@@ -101,11 +99,24 @@ type Service struct {
 	appHash          string
 	sessionDirectory string
 	operationTimeout time.Duration
-	peerMu           sync.RWMutex
-	peers            map[string]cachedPeer
-	avatarMu         sync.RWMutex
-	avatars          map[string]cachedAvatar
-	accountSlots     sync.Map
+
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	workersMu sync.Mutex
+	workers   map[int64]*accountWorker
+	workersWG sync.WaitGroup
+	closing   bool
+	closeOnce sync.Once
+
+	listenerMu sync.RWMutex
+	listeners  map[int64]ListenerStatus
+	updates    chan int64
+
+	peerMu   sync.RWMutex
+	peers    map[string]cachedPeer
+	avatarMu sync.RWMutex
+	avatars  map[string]cachedAvatar
 }
 
 func (s *Service) ValidateSession(ctx context.Context, accountID int64) error {
@@ -129,6 +140,7 @@ func (s *Service) DeleteSession(accountID int64) error {
 	if accountID <= 0 {
 		return ErrSessionMissing
 	}
+	s.ResetAccount(accountID)
 	path := filepath.Join(s.sessionDirectory, "accounts", fmt.Sprintf("%d.session", accountID))
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -156,11 +168,17 @@ func NewService(appID int, appHash, sessionDirectory string) (*Service, error) {
 	if sessionDirectory == "" {
 		return nil, errors.New("Telegram session directory must not be empty")
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
 		appID:            appID,
 		appHash:          strings.TrimSpace(appHash),
 		sessionDirectory: sessionDirectory,
 		operationTimeout: 30 * time.Second,
+		ctx:              ctx,
+		cancel:           cancel,
+		workers:          make(map[int64]*accountWorker),
+		listeners:        make(map[int64]ListenerStatus),
+		updates:          make(chan int64, 64),
 		peers:            make(map[string]cachedPeer),
 		avatars:          make(map[string]cachedAvatar),
 	}, nil
@@ -234,49 +252,19 @@ func (s *Service) withClient(
 	accountID int64,
 	run func(context.Context, *telegram.Client) error,
 ) error {
-	slot, _ := s.accountSlots.LoadOrStore(accountID, make(chan struct{}, 1))
-	operationSlot := slot.(chan struct{})
-	select {
-	case operationSlot <- struct{}{}:
-		defer func() { <-operationSlot }()
-	case <-ctx.Done():
-		return fmt.Errorf("%w: request was canceled before starting", ErrTimeout)
+	if s == nil {
+		return ErrNotConfigured
 	}
-	sessionPath, err := s.sessionPath(accountID)
+	if _, err := s.sessionPath(accountID); err != nil {
+		return err
+	}
+	worker, err := s.accountWorker(accountID)
 	if err != nil {
 		return err
 	}
-	if err := telegramauth.PrepareDeviceSession(sessionPath); err != nil {
-		return fmt.Errorf("prepare Telegram device: %w", err)
-	}
 	operationCtx, cancel := context.WithTimeout(ctx, s.operationTimeout)
 	defer cancel()
-
-	client := telegram.NewClient(s.appID, s.appHash, telegram.Options{
-		SessionStorage:  &session.FileStorage{Path: sessionPath},
-		Device:          telegramauth.DeviceForSession(sessionPath),
-		DialTimeout:     15 * time.Second,
-		ExchangeTimeout: 15 * time.Second,
-		NoUpdates:       true,
-	})
-	if err := client.Run(operationCtx, func(ctx context.Context) error {
-		return run(ctx, client)
-	}); err != nil {
-		if wait, ok := tgerr.AsFloodWait(err); ok {
-			return &FloodWaitError{Wait: wait}
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("%w: request timed out", ErrTimeout)
-		}
-		if tgerr.Is(err, tg.ErrTimeout) {
-			return fmt.Errorf("%w: Telegram timeout", ErrTimeout)
-		}
-		if isInvalidSessionError(err) {
-			return fmt.Errorf("%w: %v", ErrSessionInvalid, err)
-		}
-		return fmt.Errorf("%w: %v", ErrTelegram, err)
-	}
-	return nil
+	return worker.submit(operationCtx, run)
 }
 
 func isInvalidSessionError(err error) bool {
@@ -328,4 +316,62 @@ func normalizeLimit(limit int) int {
 		return 100
 	}
 	return limit
+}
+
+// ResetAccount closes the account's active Telegram connection so a newly
+// authorized session can be opened safely by the next request.
+func (s *Service) ResetAccount(accountID int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	s.workersMu.Lock()
+	worker := s.workers[accountID]
+	delete(s.workers, accountID)
+	s.workersMu.Unlock()
+	if worker == nil {
+		return
+	}
+	worker.cancel()
+	<-worker.exited
+}
+
+// Close stops all account workers and waits for their connections to exit.
+func (s *Service) Close() {
+	if s == nil {
+		return
+	}
+	s.closeOnce.Do(func() {
+		s.workersMu.Lock()
+		s.closing = true
+		s.cancel()
+		s.workersMu.Unlock()
+		s.workersWG.Wait()
+	})
+}
+
+// Updates emits an account ID when a message-related Telegram update is
+// observed. Events are coalesced by consumers and never contain message data.
+func (s *Service) Updates() <-chan int64 {
+	if s == nil {
+		return nil
+	}
+	return s.updates
+}
+
+// ListenerStatuses returns connection and real-time update health by account.
+func (s *Service) ListenerStatuses() []ListenerStatus {
+	if s == nil {
+		return nil
+	}
+	s.listenerMu.RLock()
+	items := make([]ListenerStatus, 0, len(s.listeners))
+	for _, item := range s.listeners {
+		item.QueuedEvents = len(s.updates)
+		items = append(items, item)
+	}
+	s.listenerMu.RUnlock()
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].AccountID < items[j].AccountID
+	})
+	return items
 }

@@ -26,6 +26,10 @@
       <div><dt>上次开始</dt><dd data-monitor-started>—</dd></div>
       <div><dt>上次完成</dt><dd data-monitor-finished>—</dd></div>
       <div><dt>下次运行</dt><dd data-monitor-next>—</dd></div>
+      <div><dt>采集模式</dt><dd data-monitor-mode>—</dd></div>
+      <div><dt>更新 / 轮询触发</dt><dd data-monitor-trigger-counts>—</dd></div>
+      <div><dt>实时连接</dt><dd data-monitor-listeners>—</dd></div>
+      <div><dt>事件队列</dt><dd data-monitor-update-queue>—</dd></div>
       <div><dt>采集目标</dt><dd data-monitor-targets>—</dd></div>
       <div><dt>积压目标</dt><dd data-monitor-backlog>—</dd></div>
       <div><dt>最长成功延迟</dt><dd data-monitor-delay>—</dd></div>
@@ -64,6 +68,24 @@
     <span class="empty-icon"><span class="icon icon-radio-tower" aria-hidden="true"></span></span>
     <h2>没有启用的采集目标</h2>
     <p>启用监控规则后，这里会显示每个账号与会话的真实采集健康状态。</p>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2>实时监听健康</h2>
+    <span class="badge badge-neutral" data-monitor-listener-state>读取中</span>
+  </div>
+  <div class="business-table-wrap" data-monitor-listener-wrap hidden>
+    <table class="business-table">
+      <thead><tr><th>账号</th><th>连接</th><th>事件</th><th>断开与补漏</th><th>最后事件</th><th>最近错误</th></tr></thead>
+      <tbody data-monitor-listener-body></tbody>
+    </table>
+  </div>
+  <div class="empty-state compact" data-monitor-listener-empty hidden>
+    <span class="empty-icon"><span class="icon icon-radio-tower" aria-hidden="true"></span></span>
+    <h2>尚未建立实时连接</h2>
+    <p>账号完成首次采集后会保持独立长连接；周期性轮询始终作为补漏兜底。</p>
   </div>
 </section>
 

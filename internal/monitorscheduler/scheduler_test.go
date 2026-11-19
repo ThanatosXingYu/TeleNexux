@@ -94,6 +94,51 @@ type collectionSequence struct {
 	index       int
 }
 
+type updateSourceChatReader struct {
+	updates chan int64
+	calls   chan int64
+}
+
+func (r *updateSourceChatReader) CollectMessages(
+	_ context.Context,
+	accountID int64,
+	_ string,
+	_ int64,
+	_ int,
+	_ int,
+	_ int,
+) (telegramchat.MessageCollection, error) {
+	select {
+	case r.calls <- accountID:
+	default:
+	}
+	return telegramchat.MessageCollection{Complete: true}, nil
+}
+
+func (r *updateSourceChatReader) Updates() <-chan int64 {
+	return r.updates
+}
+
+type pollOnlyChatReader struct {
+	calls chan int64
+}
+
+func (r *pollOnlyChatReader) CollectMessages(
+	_ context.Context,
+	accountID int64,
+	_ string,
+	_ int64,
+	_ int,
+	_ int,
+	_ int,
+) (telegramchat.MessageCollection, error) {
+	select {
+	case r.calls <- accountID:
+	default:
+	}
+	return telegramchat.MessageCollection{Complete: true}, nil
+}
+
 func (s *collectionSequence) CollectMessages(
 	_ context.Context,
 	_ int64,
@@ -418,6 +463,64 @@ func TestRunOnceKeepsOnlineStatusForTransientFailure(t *testing.T) {
 	}
 	if len(accounts.verifications) != 0 {
 		t.Fatalf("RecordVerification() calls = %d, want 0", len(accounts.verifications))
+	}
+}
+
+func TestStartWakesCollectionFromTelegramUpdate(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := testOperationsService(t)
+	if _, err := service.CreateRule(ctx, "Realtime", 7, "chat", 42, "Ops", nil); err != nil {
+		t.Fatalf("CreateRule() error = %v", err)
+	}
+	reader := &updateSourceChatReader{
+		updates: make(chan int64, 1),
+		calls:   make(chan int64, 1),
+	}
+	scheduler := New(service, &fakeAccountLookup{}, reader, time.Hour, testLogger())
+	scheduler.initialDelay = time.Hour
+	scheduler.Start(ctx)
+	reader.updates <- 7
+
+	select {
+	case accountID := <-reader.calls:
+		if accountID != 7 {
+			t.Fatalf("collection account ID = %d, want 7", accountID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Telegram update did not wake monitor collection")
+	}
+	status := scheduler.Status()
+	if status.Mode != "event_driven_with_poll_fallback" ||
+		status.UpdateDrivenRuns != 1 ||
+		status.LastTrigger != "update" {
+		t.Fatalf("Status() = %+v", status)
+	}
+}
+
+func TestStartKeepsPeriodicPollingWithoutUpdateSource(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := testOperationsService(t)
+	if _, err := service.CreateRule(ctx, "Fallback", 7, "chat", 42, "Ops", nil); err != nil {
+		t.Fatalf("CreateRule() error = %v", err)
+	}
+	reader := &pollOnlyChatReader{calls: make(chan int64, 1)}
+	scheduler := New(service, &fakeAccountLookup{}, reader, time.Hour, testLogger())
+	scheduler.initialDelay = time.Millisecond
+	scheduler.Start(ctx)
+
+	select {
+	case accountID := <-reader.calls:
+		if accountID != 7 {
+			t.Fatalf("collection account ID = %d, want 7", accountID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("periodic polling did not run")
+	}
+	status := scheduler.Status()
+	if status.Mode != "polling" || status.PollRuns != 1 {
+		t.Fatalf("Status() = %+v", status)
 	}
 }
 

@@ -73,6 +73,7 @@ type TelegramAuthService interface {
 type TelegramChatService interface {
 	ValidateSession(ctx context.Context, accountID int64) error
 	DeleteSession(accountID int64) error
+	ResetAccount(accountID int64)
 	Chats(ctx context.Context, accountID int64, limit int) (telegramchat.ChatPage, error)
 	SearchChats(ctx context.Context, accountID int64, query string, limit int) (telegramchat.ChatPage, error)
 	Messages(
@@ -2326,6 +2327,9 @@ func (a *API) writeTelegramResult(w http.ResponseWriter, r *http.Request, result
 			writeError(w, http.StatusUnprocessableEntity, "invalid_telegram_account", "Telegram account metadata is invalid")
 			return
 		}
+		if a.chats != nil {
+			a.chats.ResetAccount(item.ID)
+		}
 		response.Account = &item
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -2357,6 +2361,9 @@ func (a *API) writeQRResult(w http.ResponseWriter, r *http.Request, result teleg
 			a.logger.Error("save QR Telegram account", "telegram_user_id", result.Profile.ID, "error", err)
 			writeError(w, http.StatusUnprocessableEntity, "invalid_telegram_account", "Telegram 账号资料无效")
 			return
+		}
+		if a.chats != nil {
+			a.chats.ResetAccount(item.ID)
 		}
 		response.Account = &item
 	}
