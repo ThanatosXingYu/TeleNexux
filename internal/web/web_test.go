@@ -81,7 +81,12 @@ func TestBusinessPagesExposeRealDataControls(t *testing.T) {
 			`name="cooldown_seconds"`,
 		},
 		"/monitor/alerts": {"data-alerts-list", "data-alert-state", "data-alert-action-form"},
-		"/messages":       {"data-message-filter", "data-messages-body"},
+		"/messages": {
+			"data-message-filter",
+			"data-messages-body",
+			"data-search-index-state",
+			"data-search-index-rebuild",
+		},
 		"/reports": {
 			"data-report-chart",
 			"data-report-table-body",

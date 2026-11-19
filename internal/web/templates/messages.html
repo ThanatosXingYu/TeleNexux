@@ -35,6 +35,34 @@
   </form>
 </section>
 
+<section class="card" aria-label="搜索索引状态">
+  <div class="card-header">
+    <h2>搜索索引</h2>
+    <span class="badge badge-neutral" data-search-index-state>检查中</span>
+  </div>
+  <dl class="info-list">
+    <div><dt>可搜索消息</dt><dd data-search-index-searchable>—</dd></div>
+    <div><dt>索引文档</dt><dd data-search-index-documents>—</dd></div>
+    <div><dt>缺失文档</dt><dd data-search-index-missing>—</dd></div>
+    <div><dt>孤立文档</dt><dd data-search-index-orphans>—</dd></div>
+    <div><dt>已删除投影</dt><dd data-search-index-deleted>—</dd></div>
+    <div><dt>最近检查</dt><dd data-search-index-checked>—</dd></div>
+    <div><dt>最近重建</dt><dd data-search-index-rebuilt>—</dd></div>
+  </dl>
+  <div class="heading-actions">
+    <button class="button button-secondary" type="button" data-search-index-refresh>
+      <span class="icon icon-refresh-cw" aria-hidden="true"></span>
+      检查索引
+    </button>
+    <button class="button button-secondary" type="button" data-search-index-rebuild>
+      <span class="icon icon-refresh-cw" aria-hidden="true"></span>
+      重建索引
+    </button>
+  </div>
+  <p class="muted">重建仅刷新消息全文索引，不修改追加式证据事件或内容哈希。</p>
+  <p class="form-notice form-notice-error" data-search-index-error hidden></p>
+</section>
+
 <section class="card">
   <div class="card-header">
     <h2>索引结果</h2>

@@ -182,6 +182,8 @@ type OperationsService interface {
 	MonitorSummary(ctx context.Context) (operations.MonitorSummary, error)
 	ListCollectionTargets(ctx context.Context) ([]operations.CollectionTarget, error)
 	SearchMessages(ctx context.Context, filter operations.MessageQuery) (operations.MessagePage, error)
+	SearchIndexHealth(ctx context.Context) (operations.SearchIndexHealth, error)
+	RebuildSearchIndex(ctx context.Context) (operations.SearchIndexHealth, error)
 	BuildReport(ctx context.Context, days int) (operations.Report, error)
 	BuildEvidenceManifest(
 		ctx context.Context,
@@ -312,6 +314,10 @@ func (a *API) Handler() http.Handler {
 		a.requireAPIPermission(auth.PermissionMessageRead, a.searchMessages))
 	mux.HandleFunc("POST /api/v1/messages/cleanup",
 		a.requireAPIPermission(auth.PermissionMessageWrite, a.cleanupMessages))
+	mux.HandleFunc("GET /api/v1/search/health",
+		a.requireAPIPermission(auth.PermissionMessageRead, a.searchIndexHealth))
+	mux.HandleFunc("POST /api/v1/search/rebuild",
+		a.requireAPIPermission(auth.PermissionMessageWrite, a.rebuildSearchIndex))
 	mux.HandleFunc("GET /api/v1/retention",
 		a.requireAPIPermission(auth.PermissionRetentionRead, a.getRetentionPolicy))
 	mux.HandleFunc("PUT /api/v1/retention",
@@ -915,6 +921,37 @@ func (a *API) searchMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, page)
+}
+
+func (a *API) searchIndexHealth(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	health, err := a.operations.SearchIndexHealth(r.Context())
+	if err != nil {
+		a.logger.Error("inspect message search index", "error", err)
+		writeError(w, http.StatusInternalServerError, "search_index_unavailable",
+			"搜索索引状态暂时不可用")
+		return
+	}
+	writeJSON(w, http.StatusOK, health)
+}
+
+func (a *API) rebuildSearchIndex(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	if !prepareJSONMutation(w, r) {
+		return
+	}
+	health, err := a.operations.RebuildSearchIndex(r.Context())
+	if err != nil {
+		a.logger.Error("rebuild message search index", "error", err)
+		writeError(w, http.StatusInternalServerError, "search_index_rebuild_failed",
+			"搜索索引重建失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, health)
 }
 
 func (a *API) cleanupMessages(w http.ResponseWriter, r *http.Request) {
@@ -2797,6 +2834,7 @@ func shouldAuditRequest(method, pattern string) bool {
 	}
 	switch route {
 	case "/api/v1/health",
+		"/api/v1/search/health",
 		"/api/v1/telegram/auth/qr/{loginID}",
 		"/api/v1/accounts/{id}/chats/{peerType}/{peerID}/avatar":
 		return method != http.MethodGet

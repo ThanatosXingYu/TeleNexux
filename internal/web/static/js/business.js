@@ -1554,10 +1554,51 @@
     const pagination = document.querySelector("[data-messages-pagination]");
     const error = document.querySelector("[data-messages-index-error]");
     const accountSelect = document.querySelector("[data-message-account]");
+    const indexState = document.querySelector("[data-search-index-state]");
+    const indexError = document.querySelector("[data-search-index-error]");
+    const rebuildButton = document.querySelector("[data-search-index-rebuild]");
     let offset = 0;
     let total = 0;
     let accounts = [];
     const limit = 50;
+
+    const renderIndexHealth = (health) => {
+      const healthy = health?.status === "healthy" && health?.integrity_ok;
+      if (indexState) {
+        indexState.className = healthy ? "badge badge-blue" : "badge badge-red";
+        indexState.textContent = healthy ? "索引一致" : "需要重建";
+      }
+      setText("[data-search-index-searchable]", Number(health?.searchable_count) || 0);
+      setText("[data-search-index-documents]", Number(health?.document_count) || 0);
+      setText("[data-search-index-missing]", Number(health?.missing_count) || 0);
+      setText("[data-search-index-orphans]", Number(health?.orphan_count) || 0);
+      setText("[data-search-index-deleted]", Number(health?.deleted_indexed_count) || 0);
+      setText("[data-search-index-checked]", formatDate(health?.checked_at));
+      setText(
+        "[data-search-index-rebuilt]",
+        health?.last_rebuilt_at
+          ? `${formatDate(health.last_rebuilt_at)} · 第 ${Number(health.rebuild_count) || 0} 次`
+          : "尚未重建",
+      );
+      const detail = health?.integrity_error || health?.last_rebuild_error || "";
+      showNotice(
+        indexError,
+        detail || (healthy ? "" : "全文索引与消息投影不一致，请执行重建。"),
+        !healthy,
+      );
+    };
+
+    const loadIndexHealth = async () => {
+      try {
+        renderIndexHealth(await api("/api/v1/search/health"));
+      } catch (requestError) {
+        if (indexState) {
+          indexState.className = "badge badge-red";
+          indexState.textContent = "状态不可用";
+        }
+        showNotice(indexError, requestError.message, true);
+      }
+    };
 
     const queryFromForm = () => {
       const data = new FormData(form);
@@ -1637,6 +1678,24 @@
         load();
       }
     });
+    document.querySelector("[data-search-index-refresh]")
+      ?.addEventListener("click", loadIndexHealth);
+    rebuildButton?.addEventListener("click", async () => {
+      rebuildButton.disabled = true;
+      showNotice(indexError);
+      try {
+        renderIndexHealth(await api("/api/v1/search/rebuild", {
+          method: "POST",
+          body: "{}",
+        }));
+        showToast("搜索索引已重建");
+      } catch (requestError) {
+        showNotice(indexError, requestError.message, true);
+      } finally {
+        rebuildButton.disabled = false;
+      }
+    });
+    loadIndexHealth();
     loadAccounts()
       .then((items) => {
         accounts = items;

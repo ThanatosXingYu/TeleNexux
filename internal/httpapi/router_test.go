@@ -2125,6 +2125,150 @@ func TestEvidenceManifestAPIIncludesIntegritySummary(t *testing.T) {
 	}
 }
 
+func TestSearchIndexHealthAndRebuildAPI(t *testing.T) {
+	ctx := context.Background()
+	operationsService, err := operations.Open(
+		ctx,
+		filepath.Join(t.TempDir(), "search-index-api.db"),
+	)
+	if err != nil {
+		t.Fatalf("open operations service: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := operationsService.Close(); err != nil {
+			t.Errorf("close operations service: %v", err)
+		}
+	})
+	if _, err := operationsService.IngestBatch(ctx, operations.IngestBatchInput{
+		BatchID:         "search-index-api",
+		Source:          "test",
+		AccountID:       7,
+		PeerType:        "chat",
+		PeerID:          42,
+		PeerTitle:       "Operations",
+		CheckpointAfter: 101,
+		Complete:        true,
+		Messages: []operations.MessageRecord{{
+			AccountID: 7,
+			PeerType:  "chat",
+			PeerID:    42,
+			PeerTitle: "Operations",
+			MessageID: 101,
+			Sender:    "Alice",
+			Text:      "search index API",
+			SentAt:    time.Now().UTC(),
+		}},
+	}); err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+	manager, adminToken, adminCSRF := testAuthentication()
+	viewerToken, viewerSession, err := manager.CreateRoleSession(auth.RoleViewer)
+	if err != nil {
+		t.Fatalf("create viewer session: %v", err)
+	}
+	webHandler, err := web.New()
+	if err != nil {
+		t.Fatalf("create web handler: %v", err)
+	}
+	handler := New(
+		nil,
+		nil,
+		nil,
+		nil,
+		manager,
+		webHandler.Handler(),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		nil,
+		operationsService,
+		nil,
+	).Handler()
+	admin := authenticatedTestHandler{next: handler, token: adminToken, csrf: adminCSRF}
+	viewer := authenticatedTestHandler{next: handler, token: viewerToken, csrf: viewerSession.CSRF}
+
+	healthRecorder := httptest.NewRecorder()
+	admin.ServeHTTP(healthRecorder, httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/search/health",
+		nil,
+	))
+	if healthRecorder.Code != http.StatusOK {
+		t.Fatalf("health status = %d; body: %s",
+			healthRecorder.Code, healthRecorder.Body.String())
+	}
+	var health operations.SearchIndexHealth
+	if err := json.NewDecoder(healthRecorder.Body).Decode(&health); err != nil {
+		t.Fatalf("decode search index health: %v", err)
+	}
+	if health.Status != operations.SearchIndexHealthy ||
+		health.SearchableCount != 1 ||
+		!health.IntegrityOK {
+		t.Fatalf("search index health = %+v", health)
+	}
+
+	viewerHealthRecorder := httptest.NewRecorder()
+	viewer.ServeHTTP(viewerHealthRecorder, httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/search/health",
+		nil,
+	))
+	if viewerHealthRecorder.Code != http.StatusOK {
+		t.Fatalf("viewer health status = %d; body: %s",
+			viewerHealthRecorder.Code, viewerHealthRecorder.Body.String())
+	}
+
+	viewerRebuildRecorder := httptest.NewRecorder()
+	viewer.ServeHTTP(viewerRebuildRecorder, httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/search/rebuild",
+		strings.NewReader(`{}`),
+	))
+	if viewerRebuildRecorder.Code != http.StatusForbidden {
+		t.Fatalf("viewer rebuild status = %d; body: %s",
+			viewerRebuildRecorder.Code, viewerRebuildRecorder.Body.String())
+	}
+
+	rebuildRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/search/rebuild",
+		strings.NewReader(`{}`),
+	)
+	rebuildRequest.Header.Set("Content-Type", "application/json")
+	rebuildRecorder := httptest.NewRecorder()
+	admin.ServeHTTP(rebuildRecorder, rebuildRequest)
+	if rebuildRecorder.Code != http.StatusOK {
+		t.Fatalf("rebuild status = %d; body: %s",
+			rebuildRecorder.Code, rebuildRecorder.Body.String())
+	}
+	if err := json.NewDecoder(rebuildRecorder.Body).Decode(&health); err != nil {
+		t.Fatalf("decode rebuilt search index health: %v", err)
+	}
+	if health.Status != operations.SearchIndexHealthy ||
+		health.RebuildCount != 1 ||
+		!health.RebuildDoesNotChangeEvidence {
+		t.Fatalf("rebuilt search index health = %+v", health)
+	}
+
+	auditPage, err := operationsService.ListAuditEvents(ctx, operations.AuditFilter{
+		Actor: "admin",
+		Limit: 20,
+	})
+	if err != nil {
+		t.Fatalf("ListAuditEvents() error = %v", err)
+	}
+	foundRebuildAudit := false
+	for _, event := range auditPage.Items {
+		if event.Route == "/api/v1/search/rebuild" &&
+			event.StatusCode == http.StatusOK &&
+			event.Outcome == "success" {
+			foundRebuildAudit = true
+			break
+		}
+	}
+	if !foundRebuildAudit {
+		t.Fatalf("rebuild audit not recorded: %+v", auditPage.Items)
+	}
+}
+
 func TestRetentionAndLegalHoldAPI(t *testing.T) {
 	ctx := context.Background()
 	operationsService, err := operations.Open(

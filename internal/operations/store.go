@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -242,8 +243,12 @@ type Dashboard struct {
 }
 
 type Service struct {
-	db  *sql.DB
-	now func() time.Time
+	db                        *sql.DB
+	now                       func() time.Time
+	searchIndexMu             sync.Mutex
+	searchIndexLastRebuild    time.Time
+	searchIndexRebuildCount   int
+	searchIndexLastRebuildErr string
 }
 
 func Open(ctx context.Context, path string) (*Service, error) {
