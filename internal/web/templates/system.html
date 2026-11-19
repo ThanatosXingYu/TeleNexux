@@ -4,6 +4,7 @@
     <button class="{{if eq .SettingsTab "basic"}}active{{end}}" type="button" role="tab" aria-selected="{{if eq .SettingsTab "basic"}}true{{else}}false{{end}}" data-settings-tab="basic">基础配置</button>
     <button class="{{if eq .SettingsTab "telegram"}}active{{end}}" type="button" role="tab" aria-selected="{{if eq .SettingsTab "telegram"}}true{{else}}false{{end}}" data-settings-tab="telegram">Telegram 应用</button>
     <button class="{{if eq .SettingsTab "page"}}active{{end}}" type="button" role="tab" aria-selected="{{if eq .SettingsTab "page"}}true{{else}}false{{end}}" data-settings-tab="page">页面配置</button>
+    <button class="{{if eq .SettingsTab "display"}}active{{end}}" type="button" role="tab" aria-selected="{{if eq .SettingsTab "display"}}true{{else}}false{{end}}" data-settings-tab="display">内容显示</button>
     <button class="{{if eq .SettingsTab "runtime"}}active{{end}}" type="button" role="tab" aria-selected="{{if eq .SettingsTab "runtime"}}true{{else}}false{{end}}" data-settings-tab="runtime">运行参数</button>
     <button class="{{if eq .SettingsTab "device"}}active{{end}}" type="button" role="tab" aria-selected="{{if eq .SettingsTab "device"}}true{{else}}false{{end}}" data-settings-tab="device">设备身份</button>
     <button class="{{if eq .SettingsTab "security"}}active{{end}}" type="button" role="tab" aria-selected="{{if eq .SettingsTab "security"}}true{{else}}false{{end}}" data-settings-tab="security">登录与安全</button>
@@ -66,8 +67,8 @@
     <section class="card settings-card" data-settings-panel="page" {{if ne .SettingsTab "page"}}hidden{{end}}>
       <div class="card-header">
         <div>
-          <h2>页面布局</h2>
-          <span class="muted">按类别管理控制台显示项，设置仅保存在当前浏览器。</span>
+          <h2>页面框架</h2>
+          <span class="muted">控制面包屑、页面页签和左侧导航，修改后立即保存在当前浏览器。</span>
         </div>
         <span class="stat-icon stat-green"><span class="icon icon-layout-dashboard" aria-hidden="true"></span></span>
       </div>
@@ -75,7 +76,20 @@
         <label class="setting-row"><span>breadcrumb-bar 面包屑</span><input type="checkbox" checked data-page-setting="breadcrumbs"></label>
         <label class="setting-row"><span>page-tabs 页面页签</span><input type="checkbox" checked data-page-setting="tabs"></label>
         <label class="setting-row"><span>sidebar 左侧导航</span><input type="checkbox" checked data-page-setting="sidebar"></label>
-        <label class="setting-row"><span>紧凑功能页头</span><input type="checkbox" checked data-page-setting="compact"></label>
+      </div>
+    </section>
+
+    <section class="card settings-card" data-settings-panel="display" {{if ne .SettingsTab "display"}}hidden{{end}}>
+      <div class="card-header">
+        <div>
+          <h2>内容显示</h2>
+          <span class="muted">调整功能页信息密度和页面底部信息，设置仅保存在当前浏览器。</span>
+        </div>
+        <span class="stat-icon stat-orange"><span class="icon icon-layout-dashboard" aria-hidden="true"></span></span>
+      </div>
+      <div class="settings-toggle-grid">
+        <label class="setting-row"><span>紧凑功能页工具栏</span><input type="checkbox" checked data-page-setting="compact"></label>
+        <label class="setting-row"><span>显示页面页脚</span><input type="checkbox" checked data-page-setting="footer"></label>
       </div>
     </section>
 

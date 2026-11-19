@@ -31,6 +31,9 @@ func TestBusinessScriptUsesAuthenticatedAPIs(t *testing.T) {
 		`window.location.replace("/login")`,
 		`renderChart`,
 		`formatPhone`,
+		`accountDisplayStatus`,
+		`verificationTTL`,
+		`状态待确认`,
 	} {
 		if !strings.Contains(script, behavior) {
 			t.Errorf("business.js missing behavior %q", behavior)

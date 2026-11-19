@@ -252,6 +252,9 @@ func TestSystemPageRendersEditableSettings(t *testing.T) {
 		`name="http_addr"`,
 		`data-settings-tab="page"`,
 		`data-settings-panel="page"`,
+		`data-settings-tab="display">内容显示</button>`,
+		`data-settings-panel="display"`,
+		`data-page-setting="footer"`,
 		`data-settings-actions`,
 	} {
 		if !strings.Contains(body, expected) {

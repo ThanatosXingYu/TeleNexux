@@ -18,6 +18,7 @@
     tabs: true,
     sidebar: true,
     compact: true,
+    footer: true,
   };
 
   const readPageSettings = () => {
@@ -28,6 +29,7 @@
         tabs: stored?.tabs !== false,
         sidebar: stored?.sidebar !== false,
         compact: stored?.compact !== false,
+        footer: stored?.footer !== false,
       };
     } catch {
       return {...defaultPageSettings};
@@ -56,6 +58,7 @@
     shell.dataset.tabs = pageSettings.tabs ? "visible" : "hidden";
     shell.dataset.pageSidebar = pageSettings.sidebar ? "visible" : "hidden";
     shell.dataset.compact = pageSettings.compact ? "true" : "false";
+    shell.dataset.footer = pageSettings.footer ? "visible" : "hidden";
     syncPageSettingControls();
   };
 
@@ -480,6 +483,7 @@
   let accountToastTimer = 0;
   let allAccounts = [];
   let accountGroups = [];
+  let accountRefreshWarnings = [];
   let showDeletedAccounts = false;
   const selectedAccountIDs = new Set();
 
@@ -840,6 +844,7 @@
   const createAccountActions = (account) => {
     const actionGroup = document.createElement("div");
     actionGroup.className = "account-actions";
+    const status = accountStatus(account);
     if (isDeletedAccount(account)) {
       if (account.purge_state === "scheduled") {
         const restore = document.createElement("button");
@@ -853,7 +858,7 @@
       }
       return actionGroup;
     }
-    if (accountStatus(account).key === "online") {
+    if (status.key === "online") {
       const webAction = document.createElement("a");
       webAction.className = "button button-primary button-compact";
       webAction.href = `/accounts/${encodeURIComponent(account.id)}/web`;
@@ -874,7 +879,9 @@
     refreshAction.addEventListener("click", () => refreshSingleAccount(account, refreshAction));
 
     const relogin = document.createElement("button");
-    relogin.className = "button button-secondary button-compact";
+    relogin.className = status.key === "error"
+      ? "button button-primary button-compact"
+      : "button button-secondary button-compact";
     relogin.type = "button";
     relogin.textContent = "重新登录";
     relogin.addEventListener("click", () => openLoginDialog(account));
@@ -889,7 +896,11 @@
     deleteAction.type = "button";
     deleteAction.textContent = "删除";
     deleteAction.addEventListener("click", () => openDeleteDialog(account));
-    actionGroup.append(refreshAction, relogin, profileAction, deleteAction);
+    if (status.key === "error") {
+      actionGroup.append(relogin, refreshAction, profileAction, deleteAction);
+    } else {
+      actionGroup.append(refreshAction, relogin, profileAction, deleteAction);
+    }
     return actionGroup;
   };
 
@@ -1143,6 +1154,9 @@
       if (verifySessions) {
         showDeletedAccounts = false;
         accountShowDeleted?.setAttribute("aria-pressed", "false");
+        accountRefreshWarnings = Array.isArray(payload?.warnings) ? payload.warnings : [];
+      } else {
+        accountRefreshWarnings = [];
       }
       allAccounts = Array.isArray(payload?.items) ? payload.items : [];
       const validAccountIDs = new Set(allAccounts.map((account) => Number(account.id)));
@@ -1402,11 +1416,18 @@
         const offline = allAccounts.filter(
           (account) => accountStatus(account).key === "error",
         ).length;
-        showAccountToast(
-          offline > 0
-            ? `状态校验完成，${offline} 个账号需要重新登录`
-            : `状态校验完成，${allAccounts.length} 个账号授权有效`,
-        );
+        const deferred = accountRefreshWarnings.length;
+        if (deferred > 0) {
+          showAccountToast(
+            `状态校验完成，${deferred} 个账号暂时无法连接，原状态已保留`,
+          );
+        } else {
+          showAccountToast(
+            offline > 0
+              ? `状态校验完成，${offline} 个账号需要重新登录`
+              : `状态校验完成，${allAccounts.length} 个账号授权有效`,
+          );
+        }
       }
     } finally {
       button.disabled = false;
@@ -2173,7 +2194,7 @@
     const healthChecked = document.querySelector("[data-health-checked]");
     const healthChecks = document.querySelector("[data-health-checks]");
     const healthRefresh = document.querySelector("[data-health-refresh]");
-    const readOnlySettingsTabs = new Set(["page", "device", "security", "status"]);
+    const readOnlySettingsTabs = new Set(["page", "display", "device", "security", "status"]);
 
     const activateSettingsTab = (name) => {
       settingsTabs.forEach((button) => {

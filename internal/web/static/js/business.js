@@ -10,6 +10,7 @@
     paused: "已暂停",
     error: "已掉线",
   };
+  const verificationTTL = 10 * 60 * 1000;
   const peerLabels = {
     user: "私聊",
     chat: "群组",
@@ -162,6 +163,20 @@
     (Array.isArray(items) ? items : []).map((account) => [Number(account.id), account]),
   );
 
+  const accountDisplayStatus = (account) => {
+    const status = String(account?.status || "pending");
+    const verifiedAt = account?.last_verified_at
+      ? new Date(account.last_verified_at).getTime()
+      : Number.NaN;
+    if (
+      status === "online" &&
+      (!Number.isFinite(verifiedAt) || Date.now() - verifiedAt > verificationTTL)
+    ) {
+      return {key: "stale", label: "状态待确认"};
+    }
+    return {key: status, label: statusLabels[status] || status || "未知"};
+  };
+
   const loadAccounts = async () => {
     const payload = await api("/api/v1/accounts?limit=100");
     return Array.isArray(payload?.items) ? payload.items : [];
@@ -212,7 +227,8 @@
   const renderCompactAccount = (account) => {
     const row = document.createElement("a");
     row.className = "business-compact-row";
-    row.href = account.status === "online"
+    const status = accountDisplayStatus(account);
+    row.href = status.key === "online"
       ? `/accounts/${encodeURIComponent(account.id)}/web`
       : "/accounts";
     const icon = element("span", "business-row-icon");
@@ -225,8 +241,8 @@
     row.append(
       icon,
       copy,
-      element("span", `badge ${account.status === "online" ? "badge-blue" : "badge-neutral"}`,
-        statusLabels[account.status] || account.status || "未知"),
+      element("span", `badge ${status.key === "online" ? "badge-blue" : "badge-neutral"}`,
+        status.label),
     );
     return row;
   };
@@ -432,7 +448,7 @@
               const text = element("span", "business-check-copy");
               text.append(
                 element("strong", "", accountLabel(account)),
-                element("small", "", `${formatPhone(account.phone_number)} · ${statusLabels[account.status] || account.status}`),
+                element("small", "", `${formatPhone(account.phone_number)} · ${accountDisplayStatus(account).label}`),
               );
               label.append(input, text);
               return label;
@@ -796,7 +812,7 @@
       button.addEventListener("click", () => {
         form?.reset();
         showNotice(formNotice);
-        const online = accounts.filter((account) => account.status === "online");
+        const online = accounts.filter((account) => accountDisplayStatus(account).key === "online");
         fillSelect(accountSelect, online.map((account) => ({
           value: String(account.id),
           label: `${accountLabel(account)} · ${formatPhone(account.phone_number)}`,

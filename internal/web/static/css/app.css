@@ -1496,6 +1496,10 @@ a {
   margin-left: 0;
 }
 
+.app-shell[data-footer="hidden"] .footer {
+  display: none;
+}
+
 .account-toolbar {
   display: flex;
   align-items: center;
