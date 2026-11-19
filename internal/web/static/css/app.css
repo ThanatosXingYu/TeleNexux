@@ -1715,6 +1715,64 @@ a {
   border-bottom: 0;
 }
 
+.business-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.rule-preview-block {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-muted);
+}
+
+.rule-preview-results,
+.rule-version-list {
+  display: grid;
+  gap: 10px;
+}
+
+.rule-preview-results > strong {
+  font-size: 13px;
+}
+
+.rule-preview-section {
+  display: grid;
+  gap: 8px;
+}
+
+.rule-preview-section h4,
+.rule-preview-sample p,
+.rule-version-item p {
+  margin: 0;
+}
+
+.rule-preview-sample,
+.rule-version-item {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.rule-preview-sample small,
+.rule-version-item small {
+  color: var(--muted);
+}
+
+.rule-version-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .business-message-preview {
   display: block;
   min-width: 220px;

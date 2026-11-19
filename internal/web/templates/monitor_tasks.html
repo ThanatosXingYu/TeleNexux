@@ -54,7 +54,7 @@
     <div class="dialog-header">
       <div>
         <p class="eyebrow">监控规则</p>
-        <h2 id="monitor-rule-title">新建规则</h2>
+        <h2 id="monitor-rule-title" data-rule-dialog-title>新建规则</h2>
       </div>
       <button class="tool-button" type="button" data-monitor-rule-close aria-label="关闭监控规则">
         <span class="icon icon-x" aria-hidden="true"></span>
@@ -80,6 +80,16 @@
       <small class="field-hint">监控命中后生成告警；留空时告警匹配关键词为空。</small>
     </label>
     <label class="field">
+      <span>排除词</span>
+      <textarea name="exclude_keywords" rows="2" maxlength="1000" placeholder="每行一个排除词；命中后不会生成告警"></textarea>
+      <small class="field-hint">排除词不区分大小写，不能与关键词重复。</small>
+    </label>
+    <label class="field">
+      <span>责任人</span>
+      <input name="owner" type="text" maxlength="64" required
+        placeholder="规则维护人员或团队">
+    </label>
+    <label class="field">
       <span>告警冷却</span>
       <input name="cooldown_seconds" type="number" min="0" max="86400" step="30" value="0">
       <small class="field-hint">单位秒；设置为 0 表示不限制。冷却只抑制重复告警，不会跳过采集。</small>
@@ -91,12 +101,40 @@
       </select>
       <small class="field-hint">站内通知即时可见；Webhook 由后台排队发送并记录重试结果。</small>
     </label>
+    <div class="rule-preview-block">
+      <button class="button button-secondary button-compact" type="button" data-rule-preview>
+        <span class="icon icon-search" aria-hidden="true"></span>
+        预览最近消息命中
+      </button>
+      <div class="rule-preview-results" data-rule-preview-results hidden>
+        <strong data-rule-preview-summary>尚未预览</strong>
+        <div data-rule-preview-samples></div>
+      </div>
+    </div>
     <p class="form-notice" data-monitor-rule-notice hidden></p>
     <div class="dialog-actions">
       <button class="button button-secondary" type="button" data-monitor-rule-close>取消</button>
       <button class="button button-primary" type="submit">创建规则</button>
     </div>
   </form>
+</dialog>
+
+<dialog class="account-dialog business-dialog" id="monitor-rule-history-dialog"
+  aria-labelledby="monitor-rule-history-title">
+  <div class="dialog-card">
+    <div class="dialog-header">
+      <div>
+        <p class="eyebrow">规则版本</p>
+        <h2 id="monitor-rule-history-title">版本历史</h2>
+      </div>
+      <button class="tool-button" type="button" data-rule-history-close
+        aria-label="关闭规则版本历史">
+        <span class="icon icon-x" aria-hidden="true"></span>
+      </button>
+    </div>
+    <div class="rule-version-list" data-rule-version-list></div>
+    <p class="form-notice form-notice-error" data-rule-history-error hidden></p>
+  </div>
 </dialog>
 
 <dialog class="account-dialog business-dialog" id="notification-channel-dialog"

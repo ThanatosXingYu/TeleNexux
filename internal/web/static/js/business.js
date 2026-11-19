@@ -256,6 +256,7 @@
     const copy = element("span", "business-row-copy");
     copy.append(
       element("strong", "", alert.rule_name || "监控规则"),
+      element("small", "", alert.rule_version ? `规则 v${alert.rule_version}` : "规则版本未知"),
       element("small", "", alert.message_preview || alert.peer_title || "监控命中"),
     );
     row.append(icon, copy, element("time", "business-row-time", formatDate(alert.created_at)));
@@ -829,15 +830,24 @@
     const dialog = document.getElementById("monitor-rule-dialog");
     const form = document.querySelector("[data-monitor-rule-form]");
     const formNotice = document.querySelector("[data-monitor-rule-notice]");
+    const dialogTitle = document.querySelector("[data-rule-dialog-title]");
     const accountSelect = document.querySelector("[data-monitor-account]");
     const chatSelect = document.querySelector("[data-monitor-chat]");
     const channelSelect = document.querySelector("[data-monitor-channel]");
+    const previewButton = document.querySelector("[data-rule-preview]");
+    const previewResults = document.querySelector("[data-rule-preview-results]");
+    const previewSummary = document.querySelector("[data-rule-preview-summary]");
+    const previewSamples = document.querySelector("[data-rule-preview-samples]");
+    const historyDialog = document.getElementById("monitor-rule-history-dialog");
+    const versionList = document.querySelector("[data-rule-version-list]");
+    const historyError = document.querySelector("[data-rule-history-error]");
     const channelDialog = document.getElementById("notification-channel-dialog");
     const channelForm = document.querySelector("[data-notification-channel-form]");
     const channelNotice = document.querySelector("[data-notification-channel-notice]");
     let accounts = [];
     let channels = [];
     let chatRequest = 0;
+    let editingRule = null;
 
     const loadChats = async () => {
       if (!chatSelect) {
@@ -875,14 +885,30 @@
       rules.forEach((rule) => {
         const account = accountMap.get(Number(rule.account_id));
         const row = document.createElement("tr");
-        appendCell(row, rule.name);
+        const ruleIdentity = element("span", "business-cell-stack");
+        ruleIdentity.append(
+          element("strong", "", rule.name),
+          element("small", "", `v${rule.version || 1} · 责任人 ${rule.owner || "未设置"}`),
+        );
+        appendCell(row, ruleIdentity);
         const peer = element("span", "business-cell-stack");
         peer.append(
           element("strong", "", rule.peer_title || peerLabels[rule.peer_type] || "会话"),
           element("small", "", `${account ? accountLabel(account) : `账号 ${rule.account_id}`} · ${peerLabels[rule.peer_type] || rule.peer_type}`),
         );
         appendCell(row, peer);
-        appendCell(row, Array.isArray(rule.keywords) && rule.keywords.length ? rule.keywords.join("、") : "全部消息");
+        const terms = element("span", "business-cell-stack");
+        terms.append(element(
+          "strong",
+          "",
+          Array.isArray(rule.keywords) && rule.keywords.length
+            ? rule.keywords.join("、")
+            : "全部消息",
+        ));
+        if (Array.isArray(rule.exclude_keywords) && rule.exclude_keywords.length) {
+          terms.append(element("small", "", `排除：${rule.exclude_keywords.join("、")}`));
+        }
+        appendCell(row, terms);
         appendCell(row, rule.notification_channel_name || "站内通知");
         appendCell(row, formatDate(rule.updated_at));
         const toggle = document.createElement("input");
@@ -906,6 +932,13 @@
           }
         });
         appendCell(row, toggle);
+        const actions = element("span", "business-actions");
+        const edit = element("button", "button button-secondary button-compact", "编辑");
+        edit.type = "button";
+        edit.addEventListener("click", () => openRuleDialog(rule));
+        const history = element("button", "button button-secondary button-compact", "版本");
+        history.type = "button";
+        history.addEventListener("click", () => openRuleHistory(rule));
         const remove = element("button", "button button-danger-ghost button-compact", "删除");
         remove.type = "button";
         remove.addEventListener("click", async () => {
@@ -923,7 +956,8 @@
             remove.disabled = false;
           }
         });
-        appendCell(row, remove);
+        actions.append(edit, history, remove);
+        appendCell(row, actions);
         body.append(row);
       });
       wrap?.toggleAttribute("hidden", rules.length === 0);
@@ -1015,27 +1049,179 @@
       }
     };
 
+    const parseRuleTerms = (value) => String(value || "")
+      .split(/[\n,，]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    const resetRulePreview = () => {
+      previewResults?.setAttribute("hidden", "");
+      previewSamples?.replaceChildren();
+      if (previewSummary) {
+        previewSummary.textContent = "尚未预览";
+      }
+    };
+
+    const renderRulePreview = (preview) => {
+      if (!previewResults || !previewSamples) {
+        return;
+      }
+      previewResults.removeAttribute("hidden");
+      if (previewSummary) {
+        previewSummary.textContent =
+          `扫描 ${preview.scanned || 0} 条，命中 ${preview.matched || 0} 条，` +
+          `排除 ${preview.excluded || 0} 条；仅展示最近样本。`;
+      }
+      const sections = [];
+      const createSection = (title, items) => {
+        if (!Array.isArray(items) || items.length === 0) {
+          return;
+        }
+        const section = element("section", "rule-preview-section");
+        section.append(element("h4", "", title));
+        items.forEach((item) => {
+          const sample = element("article", "rule-preview-sample");
+          const meta = element(
+            "small",
+            "",
+            [
+              `#${item.message_id}`,
+              item.sender || "未知发送者",
+              item.matched_keyword ? `命中“${item.matched_keyword}”` : "",
+              item.excluded_by ? `排除词“${item.excluded_by}”` : "",
+            ].filter(Boolean).join(" · "),
+          );
+          sample.append(meta, element("p", "", item.text || "无文本内容"));
+          section.append(sample);
+        });
+        sections.push(section);
+      };
+      createSection("命中样本", preview.samples);
+      createSection("被排除样本", preview.excluded_items);
+      if (sections.length === 0) {
+        sections.push(element("p", "muted", "最近消息中没有符合当前规则的样本。"));
+      }
+      previewSamples.replaceChildren(...sections);
+    };
+
+    const openRuleDialog = (rule = null) => {
+      if (!form || !dialog) {
+        return;
+      }
+      editingRule = rule;
+      form.reset();
+      resetRulePreview();
+      showNotice(formNotice);
+      if (dialogTitle) {
+        dialogTitle.textContent = rule ? "编辑规则" : "新建规则";
+      }
+      const onlineAccounts = accounts.filter(
+        (account) => accountDisplayStatus(account).key === "online",
+      );
+      const accountChoices = rule ? accounts : onlineAccounts;
+      fillSelect(accountSelect, accountChoices.map((account) => ({
+        value: String(account.id),
+        label: `${accountLabel(account)} · ${formatPhone(account.phone_number)}`,
+      })), accountChoices.length ? "请选择账号" : "没有可用账号");
+      fillSelect(channelSelect, channels
+        .filter((channel) => channel.enabled)
+        .map((channel) => ({
+          value: String(channel.id),
+          label: channel.name,
+        })), "请选择通知渠道");
+      if (rule) {
+        form.elements.namedItem("name").value = rule.name || "";
+        form.elements.namedItem("keywords").value =
+          Array.isArray(rule.keywords) ? rule.keywords.join("\n") : "";
+        form.elements.namedItem("exclude_keywords").value =
+          Array.isArray(rule.exclude_keywords) ? rule.exclude_keywords.join("\n") : "";
+        form.elements.namedItem("owner").value = rule.owner || "";
+        form.elements.namedItem("cooldown_seconds").value = String(rule.cooldown_seconds || 0);
+        form.elements.namedItem("notification_channel_id").value =
+          String(rule.notification_channel_id || 1);
+        form.elements.namedItem("account_id").value = String(rule.account_id || "");
+        const peerValue = [
+          rule.peer_type,
+          String(rule.peer_id),
+          rule.peer_title || "",
+        ].join(":");
+        fillSelect(chatSelect, [{
+          value: peerValue,
+          label: `${rule.peer_title || peerLabels[rule.peer_type] || "会话"} · ${
+            peerLabels[rule.peer_type] || rule.peer_type
+          }`,
+        }], "当前监听取话");
+        chatSelect.value = peerValue;
+      } else {
+        fillSelect(chatSelect, [], "请选择账号");
+        if (accountSelect?.options.length > 1) {
+          accountSelect.selectedIndex = 1;
+          loadChats();
+        }
+      }
+      dialog.showModal();
+    };
+
+    const openRuleHistory = async (rule) => {
+      if (!historyDialog || !versionList) {
+        return;
+      }
+      versionList.replaceChildren(element("p", "muted", "正在读取版本历史..."));
+      showNotice(historyError);
+      historyDialog.showModal();
+      try {
+        const payload = await api(
+          `/api/v1/monitor/rules/${encodeURIComponent(rule.id)}/versions`,
+        );
+        const versions = Array.isArray(payload?.items) ? payload.items : [];
+        if (versions.length === 0) {
+          versionList.replaceChildren(element("p", "muted", "暂无版本记录。"));
+          return;
+        }
+        versionList.replaceChildren(...versions.map((version) => {
+          const item = element("article", "rule-version-item");
+          const header = element("div", "rule-version-header");
+          header.append(
+            element("strong", "", `版本 ${version.version}`),
+            element(
+              "span",
+              `badge ${version.enabled ? "badge-green" : "badge-neutral"}`,
+              version.enabled ? "启用" : "停用",
+            ),
+          );
+          const terms = Array.isArray(version.keywords) && version.keywords.length
+            ? `关键词：${version.keywords.join("、")}`
+            : "关键词：全部消息";
+          const excludes = Array.isArray(version.exclude_keywords) &&
+            version.exclude_keywords.length
+            ? `排除：${version.exclude_keywords.join("、")}`
+            : "排除：无";
+          item.append(
+            header,
+            element("small", "", `操作者 ${version.actor || "system"} · ${formatDate(version.created_at)}`),
+            element("p", "", terms),
+            element("p", "", excludes),
+            element("p", "", `责任人：${version.owner || "未设置"}`),
+          );
+          return item;
+        }));
+      } catch (requestError) {
+        versionList.replaceChildren();
+        showNotice(historyError, requestError.message, true);
+      }
+    };
+
     document.querySelectorAll("[data-task-create]").forEach((button) => {
-      button.addEventListener("click", () => {
-        form?.reset();
-        showNotice(formNotice);
-        const online = accounts.filter((account) => accountDisplayStatus(account).key === "online");
-        fillSelect(accountSelect, online.map((account) => ({
-          value: String(account.id),
-          label: `${accountLabel(account)} · ${formatPhone(account.phone_number)}`,
-        })), online.length ? "请选择在线账号" : "没有在线账号");
-        fillSelect(chatSelect, [], "请选择在线账号");
-        fillSelect(channelSelect, channels
-          .filter((channel) => channel.enabled)
-          .map((channel) => ({
-            value: String(channel.id),
-            label: channel.name,
-          })), "请选择通知渠道");
-        dialog?.showModal();
-      });
+      button.addEventListener("click", () => openRuleDialog());
     });
     document.querySelectorAll("[data-monitor-rule-close]").forEach((button) => {
-      button.addEventListener("click", () => dialog?.close());
+      button.addEventListener("click", () => {
+        dialog?.close();
+        editingRule = null;
+      });
+    });
+    document.querySelectorAll("[data-rule-history-close]").forEach((button) => {
+      button.addEventListener("click", () => historyDialog?.close());
     });
     document.querySelectorAll("[data-channel-create]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -1073,6 +1259,37 @@
       }
     });
     accountSelect?.addEventListener("change", loadChats);
+    previewButton?.addEventListener("click", async () => {
+      if (!form) {
+        return;
+      }
+      const data = new FormData(form);
+      const [peerType, peerID] = String(data.get("chat") || "").split(":");
+      if (!peerType || !Number(peerID)) {
+        showNotice(formNotice, "请先选择监听取话。", true);
+        return;
+      }
+      previewButton.disabled = true;
+      showNotice(formNotice);
+      try {
+        const preview = await api("/api/v1/monitor/rules/preview", {
+          method: "POST",
+          body: JSON.stringify({
+            account_id: Number(data.get("account_id")),
+            peer_type: peerType,
+            peer_id: Number(peerID),
+            keywords: parseRuleTerms(data.get("keywords")),
+            exclude_keywords: parseRuleTerms(data.get("exclude_keywords")),
+            limit: 10,
+          }),
+        });
+        renderRulePreview(preview);
+      } catch (requestError) {
+        showNotice(formNotice, requestError.message, true);
+      } finally {
+        previewButton.disabled = false;
+      }
+    });
     form?.addEventListener("submit", async (event) => {
       event.preventDefault();
       const submit = form.querySelector("button[type='submit']");
@@ -1082,28 +1299,37 @@
         showNotice(formNotice, "请选择监听取话。", true);
         return;
       }
-      const keywords = String(data.get("keywords") || "")
-        .split(/[\n,，]+/)
-        .map((item) => item.trim())
-        .filter(Boolean);
+      const keywords = parseRuleTerms(data.get("keywords"));
+      const excludeKeywords = parseRuleTerms(data.get("exclude_keywords"));
       submit?.setAttribute("disabled", "");
       showNotice(formNotice);
+      const payload = {
+        name: String(data.get("name") || "").trim(),
+        account_id: Number(data.get("account_id")),
+        peer_type: peerType,
+        peer_id: Number(peerID),
+        peer_title: titleParts.join(":"),
+        keywords,
+        exclude_keywords: excludeKeywords,
+        owner: String(data.get("owner") || "").trim(),
+        cooldown_seconds: Number(data.get("cooldown_seconds")) || 0,
+        notification_channel_id: Number(data.get("notification_channel_id")),
+      };
       try {
-        await api("/api/v1/monitor/rules", {
-          method: "POST",
-          body: JSON.stringify({
-            name: String(data.get("name") || "").trim(),
-            account_id: Number(data.get("account_id")),
-            peer_type: peerType,
-            peer_id: Number(peerID),
-            peer_title: titleParts.join(":"),
-            keywords,
-            cooldown_seconds: Number(data.get("cooldown_seconds")) || 0,
-            notification_channel_id: Number(data.get("notification_channel_id")),
-          }),
-        });
+        if (editingRule) {
+          await api(`/api/v1/monitor/rules/${encodeURIComponent(editingRule.id)}`, {
+            method: "PUT",
+            body: JSON.stringify(payload),
+          });
+        } else {
+          await api("/api/v1/monitor/rules", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+        }
         dialog?.close();
-        showToast("监控规则已创建");
+        showToast(editingRule ? "监控规则已更新" : "监控规则已创建");
+        editingRule = null;
         await load();
       } catch (requestError) {
         showNotice(formNotice, requestError.message, true);
@@ -1165,7 +1391,11 @@
           const currentState = stateMeta(alert.state);
           const severity = severityMeta(alert.severity);
           heading.append(
-            element("strong", "", alert.rule_name || "监控规则"),
+            element(
+              "strong",
+              "",
+              `${alert.rule_name || "监控规则"}${alert.rule_version ? ` · v${alert.rule_version}` : ""}`,
+            ),
             element("span", `badge ${severity.className}`, severity.label),
             element("span", `badge ${currentState.className}`, currentState.label),
           );
