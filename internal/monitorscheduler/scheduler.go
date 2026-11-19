@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -16,6 +17,12 @@ import (
 
 type AccountLookup interface {
 	Get(ctx context.Context, id int64) (account.Account, error)
+	RecordVerification(
+		ctx context.Context,
+		id int64,
+		status string,
+		reason string,
+	) (account.Account, error)
 }
 
 type ChatReader interface {
@@ -188,7 +195,17 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 						"error", recordErr)
 				}
 				runErr = errors.Join(runErr, err)
-				if errors.Is(err, telegramchat.ErrFloodWait) {
+				if errors.Is(err, telegramchat.ErrSessionMissing) ||
+					errors.Is(err, telegramchat.ErrSessionInvalid) {
+					reason := "授权会话不存在，请重新登录"
+					if errors.Is(err, telegramchat.ErrSessionInvalid) {
+						reason = "Telegram 授权已失效，请重新登录"
+					}
+					if updateErr := s.recordAccountOffline(ctx, group.accountID, reason); updateErr != nil {
+						runErr = errors.Join(runErr, updateErr)
+					}
+					group.blocked = true
+				} else if errors.Is(err, telegramchat.ErrFloodWait) {
 					wait := s.interval
 					var floodWait *telegramchat.FloodWaitError
 					if errors.As(err, &floodWait) && floodWait.Wait > 0 {
@@ -316,6 +333,24 @@ func (s *Scheduler) ingestCollection(
 		Messages:         messages,
 	}); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (s *Scheduler) recordAccountOffline(
+	ctx context.Context,
+	accountID int64,
+	reason string,
+) error {
+	updateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if _, err := s.accounts.RecordVerification(
+		updateCtx,
+		accountID,
+		account.StatusError,
+		reason,
+	); err != nil {
+		return fmt.Errorf("record Telegram account %d offline: %w", accountID, err)
 	}
 	return nil
 }

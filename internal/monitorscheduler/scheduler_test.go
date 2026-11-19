@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,11 +19,18 @@ import (
 )
 
 type fakeAccountLookup struct {
-	inactive map[int64]bool
-	statuses map[int64]string
+	inactive      map[int64]bool
+	statuses      map[int64]string
+	verifications []accountVerification
 }
 
-func (f fakeAccountLookup) Get(
+type accountVerification struct {
+	accountID int64
+	status    string
+	reason    string
+}
+
+func (f *fakeAccountLookup) Get(
 	_ context.Context,
 	id int64,
 ) (account.Account, error) {
@@ -38,6 +46,20 @@ func (f fakeAccountLookup) Get(
 		Status:     status,
 		PurgeState: account.PurgeStateActive,
 	}, nil
+}
+
+func (f *fakeAccountLookup) RecordVerification(
+	_ context.Context,
+	id int64,
+	status string,
+	reason string,
+) (account.Account, error) {
+	f.verifications = append(f.verifications, accountVerification{
+		accountID: id,
+		status:    status,
+		reason:    reason,
+	})
+	return account.Account{ID: id, Status: status, StatusReason: reason}, nil
 }
 
 type fakeChatReader struct {
@@ -149,7 +171,7 @@ func TestSchedulerEstablishesBaselineBeforeIndexingNewMessages(t *testing.T) {
 			Complete: true,
 		},
 	}}
-	scheduler := New(service, fakeAccountLookup{}, chats, time.Minute, testLogger())
+	scheduler := New(service, &fakeAccountLookup{}, chats, time.Minute, testLogger())
 	if err := scheduler.RunOnce(ctx); err != nil {
 		t.Fatalf("first RunOnce() error = %v", err)
 	}
@@ -240,7 +262,7 @@ func TestRunOncePersistsNewMessagesAndCheckpoint(t *testing.T) {
 		Complete:  true,
 		PagesRead: 1,
 	}}
-	scheduler := New(service, fakeAccountLookup{}, reader, time.Minute, testLogger())
+	scheduler := New(service, &fakeAccountLookup{}, reader, time.Minute, testLogger())
 	if err := scheduler.RunOnce(ctx); err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
@@ -288,7 +310,7 @@ func TestRunOnceRecordsCollectionFailure(t *testing.T) {
 	readerErr := errors.New("Telegram unavailable")
 	scheduler := New(
 		service,
-		fakeAccountLookup{},
+		&fakeAccountLookup{},
 		fakeChatReader{err: readerErr},
 		time.Minute,
 		testLogger(),
@@ -309,6 +331,96 @@ func TestRunOnceRecordsCollectionFailure(t *testing.T) {
 	}
 }
 
+func TestRunOncePersistsExpiredSessionAndStopsAccountWork(t *testing.T) {
+	ctx := context.Background()
+	service := testOperationsService(t)
+	for _, peerID := range []int64{101, 102} {
+		if _, err := service.CreateRule(
+			ctx,
+			fmt.Sprintf("Expired %d", peerID),
+			8,
+			"channel",
+			peerID,
+			"Alerts",
+			nil,
+		); err != nil {
+			t.Fatalf("CreateRule() error = %v", err)
+		}
+	}
+	accounts := &fakeAccountLookup{}
+	reader := &recordingChatReader{
+		errByAccount: map[int64]error{
+			8: fmt.Errorf("%w: AUTH_KEY_UNREGISTERED", telegramchat.ErrSessionInvalid),
+		},
+	}
+	scheduler := New(service, accounts, reader, time.Minute, testLogger())
+	if err := scheduler.RunOnce(ctx); !errors.Is(err, telegramchat.ErrSessionInvalid) {
+		t.Fatalf("RunOnce() error = %v, want invalid session", err)
+	}
+	if len(reader.calls) != 1 {
+		t.Fatalf("CollectMessages() calls = %v, want one call for the blocked account", reader.calls)
+	}
+	if len(accounts.verifications) != 1 {
+		t.Fatalf("RecordVerification() calls = %d, want 1", len(accounts.verifications))
+	}
+	verification := accounts.verifications[0]
+	if verification.accountID != 8 ||
+		verification.status != account.StatusError ||
+		!strings.Contains(verification.reason, "重新登录") {
+		t.Fatalf("verification = %+v, want persisted offline state", verification)
+	}
+}
+
+func TestRunOncePersistsMissingSession(t *testing.T) {
+	ctx := context.Background()
+	service := testOperationsService(t)
+	if _, err := service.CreateRule(ctx, "Missing", 9, "chat", 99, "Archive", nil); err != nil {
+		t.Fatalf("CreateRule() error = %v", err)
+	}
+	accounts := &fakeAccountLookup{}
+	scheduler := New(
+		service,
+		accounts,
+		&recordingChatReader{
+			errByAccount: map[int64]error{
+				9: telegramchat.ErrSessionMissing,
+			},
+		},
+		time.Minute,
+		testLogger(),
+	)
+	if err := scheduler.RunOnce(ctx); !errors.Is(err, telegramchat.ErrSessionMissing) {
+		t.Fatalf("RunOnce() error = %v, want missing session", err)
+	}
+	if len(accounts.verifications) != 1 ||
+		accounts.verifications[0].status != account.StatusError ||
+		!strings.Contains(accounts.verifications[0].reason, "不存在") {
+		t.Fatalf("verifications = %+v, want missing-session offline state", accounts.verifications)
+	}
+}
+
+func TestRunOnceKeepsOnlineStatusForTransientFailure(t *testing.T) {
+	ctx := context.Background()
+	service := testOperationsService(t)
+	if _, err := service.CreateRule(ctx, "Transient", 10, "chat", 99, "Archive", nil); err != nil {
+		t.Fatalf("CreateRule() error = %v", err)
+	}
+	accounts := &fakeAccountLookup{}
+	scheduler := New(
+		service,
+		accounts,
+		fakeChatReader{err: fmt.Errorf("%w: connection reset", telegramchat.ErrTelegram)},
+		time.Minute,
+		testLogger(),
+	)
+	if err := scheduler.RunOnce(ctx); err == nil {
+		t.Fatal("RunOnce() error = nil, want transient failure")
+	}
+	if len(accounts.verifications) != 0 {
+		t.Fatalf("RecordVerification() calls = %d, want 0", len(accounts.verifications))
+	}
+}
+
 func TestRunOnceSkipsAccountsPendingDeletion(t *testing.T) {
 	ctx := context.Background()
 	service := testOperationsService(t)
@@ -318,7 +430,7 @@ func TestRunOnceSkipsAccountsPendingDeletion(t *testing.T) {
 	reader := &collectionSequence{}
 	scheduler := New(
 		service,
-		fakeAccountLookup{inactive: map[int64]bool{9: true}},
+		&fakeAccountLookup{inactive: map[int64]bool{9: true}},
 		reader,
 		time.Minute,
 		testLogger(),
@@ -361,7 +473,7 @@ func TestRunOnceSkipsInactiveAccounts(t *testing.T) {
 			reader := &collectionSequence{}
 			scheduler := New(
 				service,
-				fakeAccountLookup{statuses: map[int64]string{10: status}},
+				&fakeAccountLookup{statuses: map[int64]string{10: status}},
 				reader,
 				time.Minute,
 				testLogger(),
@@ -421,7 +533,7 @@ func TestRunOnceKeepsCheckpointWhenCatchupRemainsBacklogged(t *testing.T) {
 		Backlog:   true,
 		PagesRead: 20,
 	}}
-	scheduler := New(service, fakeAccountLookup{}, reader, time.Minute, testLogger())
+	scheduler := New(service, &fakeAccountLookup{}, reader, time.Minute, testLogger())
 	if err := scheduler.RunOnce(ctx); err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
@@ -460,7 +572,7 @@ func TestFloodWaitOnlyBlocksAffectedAccountForCurrentRun(t *testing.T) {
 	reader := &recordingChatReader{errByAccount: map[int64]error{
 		7: &telegramchat.FloodWaitError{Wait: 5 * time.Minute},
 	}}
-	scheduler := New(service, fakeAccountLookup{}, reader, time.Minute, testLogger())
+	scheduler := New(service, &fakeAccountLookup{}, reader, time.Minute, testLogger())
 	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.UTC)
 	scheduler.now = func() time.Time { return now }
 	if err := scheduler.RunOnce(ctx); !errors.Is(err, telegramchat.ErrFloodWait) {
@@ -490,7 +602,7 @@ func TestFloodWaitOnlyBlocksAffectedAccountForCurrentRun(t *testing.T) {
 		}
 	}
 	reader.calls = nil
-	scheduler = New(service, fakeAccountLookup{}, reader, time.Minute, testLogger())
+	scheduler = New(service, &fakeAccountLookup{}, reader, time.Minute, testLogger())
 	scheduler.now = func() time.Time { return now }
 	if err := scheduler.RunOnce(ctx); err != nil {
 		t.Fatalf("cooldown RunOnce() error = %v", err)
@@ -500,7 +612,7 @@ func TestFloodWaitOnlyBlocksAffectedAccountForCurrentRun(t *testing.T) {
 	}
 	now = now.Add(6 * time.Minute)
 	reader.calls = nil
-	scheduler = New(service, fakeAccountLookup{}, reader, time.Minute, testLogger())
+	scheduler = New(service, &fakeAccountLookup{}, reader, time.Minute, testLogger())
 	scheduler.now = func() time.Time { return now }
 	if err := scheduler.RunOnce(ctx); !errors.Is(err, telegramchat.ErrFloodWait) {
 		t.Fatalf("retry RunOnce() error = %v, want FloodWait", err)
@@ -534,7 +646,7 @@ func TestSchedulerRotatesTargetsAcrossAccountsForFairness(t *testing.T) {
 		}
 	}
 	reader := &recordingChatReader{}
-	scheduler := New(service, fakeAccountLookup{}, reader, time.Minute, testLogger())
+	scheduler := New(service, &fakeAccountLookup{}, reader, time.Minute, testLogger())
 	if err := scheduler.RunOnce(ctx); err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
