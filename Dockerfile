@@ -6,12 +6,14 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/telenexus ./cmd/telenexus \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/telenexus-backup ./cmd/telenexus-backup \
     && mkdir -p /out/data
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
 WORKDIR /app
 COPY --from=build /out/telenexus /app/telenexus
+COPY --from=build /out/telenexus-backup /app/telenexus-backup
 COPY --from=build --chown=nonroot:nonroot /out/data /data
 ENV HTTP_ADDR=0.0.0.0:9487
 ENV DATABASE_PATH=/data/telenexus.db

@@ -52,6 +52,11 @@ Compose 仅把宿主机端口发布到 `127.0.0.1:9487`，容器内部监听
 必须先经过提供 TLS、身份认证和访问控制的反向代理。生产数据保存在
 `telenexus-data` 卷中，停止容器不会删除该卷。`.dockerignore` 会排除
 `temp/`、本地数据、授权会话和真实环境文件，避免它们进入构建上下文。
+容器使用非 root 用户、只读根文件系统、`no-new-privileges` 并移除全部
+Linux capabilities，只允许写入 `/data` 与受限的 `/tmp`。镜像内同时包含
+`/app/telenexus-backup`，可通过
+`docker compose run --rm --entrypoint /app/telenexus-backup telenexus ...`
+在持久化卷上执行备份、校验和演练。
 
 ## 备份、校验与恢复
 
