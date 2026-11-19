@@ -28,6 +28,14 @@ import (
 	"github.com/ThanatosXingYu/TeleNexux/internal/web"
 )
 
+const (
+	httpReadHeaderTimeout = 5 * time.Second
+	httpReadTimeout       = 30 * time.Second
+	httpWriteTimeout      = 45 * time.Second
+	httpIdleTimeout       = 2 * time.Minute
+	httpMaxHeaderBytes    = 1 << 20
+)
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("service stopped", "error", err)
@@ -156,9 +164,9 @@ func run() error {
 	}
 	go runAccountPurgeLoop(ctx, purgeWorker, logger)
 
-	server := &http.Server{
-		Addr: cfg.HTTPAddr,
-		Handler: httpapi.New(
+	server := newHTTPServer(
+		cfg.HTTPAddr,
+		httpapi.New(
 			accountService,
 			telegramAuth,
 			telegramChats,
@@ -176,8 +184,7 @@ func run() error {
 			operationsStore,
 			monitorRunner,
 		).Handler(),
-		ReadHeaderTimeout: cfg.ShutdownTimeout,
-	}
+	)
 	serverErrors := make(chan error, 1)
 	go func() {
 		logger.Info("HTTP server started", "address", cfg.HTTPAddr, "environment", cfg.Environment)
@@ -200,6 +207,18 @@ func run() error {
 		return fmt.Errorf("shutdown HTTP server: %w", err)
 	}
 	return nil
+}
+
+func newHTTPServer(address string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              address,
+		Handler:           handler,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpWriteTimeout,
+		IdleTimeout:       httpIdleTimeout,
+		MaxHeaderBytes:    httpMaxHeaderBytes,
+	}
 }
 
 func runAccountPurgeLoop(
