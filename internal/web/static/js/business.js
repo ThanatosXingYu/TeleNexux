@@ -879,6 +879,30 @@
     const empty = document.querySelector("[data-alerts-empty]");
     const error = document.querySelector("[data-alerts-error]");
     const state = document.querySelector("[data-alert-state]");
+    const dialog = document.querySelector("#alert-action-dialog");
+    const actionForm = document.querySelector("[data-alert-action-form]");
+    const actionSelect = document.querySelector("[data-alert-action]");
+    const actionSummary = document.querySelector("[data-alert-action-summary]");
+    const actionNotice = document.querySelector("[data-alert-action-notice]");
+    const severityField = document.querySelector("[data-alert-severity-field]");
+    const assigneeField = document.querySelector("[data-alert-assignee-field]");
+
+    const stateMeta = (value) => ({
+      pending: { label: "待处理", className: "badge-red", action: "acknowledge" },
+      acknowledged: { label: "处理中", className: "badge-blue", action: "resolve" },
+      resolved: { label: "已解决", className: "badge-neutral", action: "reopen" },
+    }[value] || { label: value || "未知", className: "badge-neutral", action: "note" });
+    const severityMeta = (value) => ({
+      low: { label: "低", className: "badge-neutral" },
+      medium: { label: "中", className: "badge-blue" },
+      high: { label: "高", className: "badge-red" },
+      critical: { label: "严重", className: "badge-red" },
+    }[value] || { label: value || "未分级", className: "badge-neutral" });
+    const syncActionFields = () => {
+      const action = actionSelect?.value;
+      severityField?.toggleAttribute("hidden", action !== "set_severity");
+      assigneeField?.toggleAttribute("hidden", action !== "assign");
+    };
 
     const load = async () => {
       showNotice(error);
@@ -895,15 +919,18 @@
           icon.append(element("span", "icon icon-bell-ring"));
           const copy = element("span", "business-list-copy");
           const heading = element("span", "business-list-heading");
+          const currentState = stateMeta(alert.state);
+          const severity = severityMeta(alert.severity);
           heading.append(
             element("strong", "", alert.rule_name || "监控规则"),
-            element("span", `badge ${alert.state === "pending" ? "badge-red" : "badge-neutral"}`,
-              alert.state === "pending" ? "待处理" : "已解决"),
+            element("span", `badge ${severity.className}`, severity.label),
+            element("span", `badge ${currentState.className}`, currentState.label),
           );
           copy.append(
             heading,
             element("p", "", alert.message_preview || "监控命中"),
             element("small", "", `${alert.peer_title || "会话"} · ${alert.notification_channel_name || "站内通知"} · ${formatDate(alert.created_at)}${alert.matched_keyword ? ` · 命中 ${alert.matched_keyword}` : ""}`),
+            element("small", "", `负责人：${alert.assigned_to || "未分派"}${alert.resolved_by ? ` · 解决人：${alert.resolved_by} · ${formatDate(alert.resolved_at)}` : alert.acknowledged_by ? ` · 确认人：${alert.acknowledged_by}` : ""}`),
             element("small", "", alert.delivery_state === "delivered"
               ? `投递成功 · ${formatDate(alert.delivery_at)}`
               : alert.delivery_state === "failed"
@@ -911,26 +938,20 @@
                 : "无投递记录"),
           );
           card.append(icon, copy);
-          if (alert.state === "pending") {
-            const resolve = element("button", "button button-secondary button-compact", "标记已解决");
-            resolve.type = "button";
-            resolve.addEventListener("click", async () => {
-              resolve.disabled = true;
-              try {
-                await api(`/api/v1/monitor/alerts/${encodeURIComponent(alert.id)}/resolve`, {
-                  method: "POST",
-                  body: "{}",
-                });
-                showToast("告警已解决");
-                await load();
-              } catch (requestError) {
-                showNotice(error, requestError.message, true);
-              } finally {
-                resolve.disabled = false;
-              }
-            });
-            card.append(resolve);
-          }
+          const processButton = element("button", "button button-secondary button-compact", "处理告警");
+          processButton.type = "button";
+          processButton.addEventListener("click", () => {
+            actionForm.reset();
+            actionForm.elements.alert_id.value = String(alert.id);
+            actionSelect.value = currentState.action;
+            actionForm.elements.severity.value = alert.severity || "medium";
+            actionForm.elements.assignee.value = alert.assigned_to || "";
+            actionSummary.textContent = `${alert.rule_name || "监控规则"} · ${alert.message_preview || "监控命中"}`;
+            showNotice(actionNotice);
+            syncActionFields();
+            dialog.showModal();
+          });
+          card.append(processButton);
           return card;
         }));
         list.toggleAttribute("hidden", items.length === 0);
@@ -940,6 +961,37 @@
         showNotice(error, requestError.message, true);
       }
     };
+    actionSelect?.addEventListener("change", syncActionFields);
+    document.querySelectorAll("[data-alert-action-close]").forEach((button) => {
+      button.addEventListener("click", () => dialog.close());
+    });
+    actionForm?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const data = new FormData(actionForm);
+      const alertID = Number(data.get("alert_id"));
+      const payload = {
+        action: String(data.get("action") || ""),
+        severity: String(data.get("severity") || ""),
+        assignee: String(data.get("assignee") || "").trim(),
+        note: String(data.get("note") || "").trim(),
+      };
+      const submit = actionForm.querySelector('button[type="submit"]');
+      submit.disabled = true;
+      showNotice(actionNotice);
+      try {
+        await api(`/api/v1/monitor/alerts/${encodeURIComponent(alertID)}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        });
+        dialog.close();
+        showToast("告警处理状态已更新");
+        await load();
+      } catch (requestError) {
+        showNotice(actionNotice, requestError.message, true);
+      } finally {
+        submit.disabled = false;
+      }
+    });
     state?.addEventListener("change", load);
     document.querySelector("[data-alerts-refresh]")?.addEventListener("click", load);
     load();

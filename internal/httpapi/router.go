@@ -153,7 +153,7 @@ type OperationsService interface {
 	SetRuleEnabled(ctx context.Context, id int64, enabled bool) error
 	DeleteRule(ctx context.Context, id int64) error
 	ListAlerts(ctx context.Context, state string, limit int) ([]operations.Alert, error)
-	ResolveAlert(ctx context.Context, id int64) error
+	UpdateAlert(ctx context.Context, id int64, input operations.AlertUpdateInput) (operations.Alert, error)
 	IngestMessages(ctx context.Context, messages []operations.MessageRecord) (int, []operations.Alert, error)
 	MonitorSummary(ctx context.Context) (operations.MonitorSummary, error)
 	SearchMessages(ctx context.Context, filter operations.MessageQuery) (operations.MessagePage, error)
@@ -248,6 +248,10 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc(
 		"POST /api/v1/monitor/alerts/{id}/resolve",
 		a.requireAPI(a.resolveMonitorAlert),
+	)
+	mux.HandleFunc(
+		"PATCH /api/v1/monitor/alerts/{id}",
+		a.requireAPI(a.updateMonitorAlert),
 	)
 	mux.HandleFunc("GET /api/v1/messages", a.requireAPI(a.searchMessages))
 	mux.HandleFunc("POST /api/v1/messages/cleanup", a.requireAPI(a.cleanupMessages))
@@ -627,11 +631,49 @@ func (a *API) resolveMonitorAlert(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := a.operations.ResolveAlert(r.Context(), id); err != nil {
-		a.writeOperationsError(w, err, "monitor alert")
+	if _, err := a.operations.UpdateAlert(r.Context(), id, operations.AlertUpdateInput{
+		Action: "resolve",
+		Actor:  currentActor(r),
+	}); err != nil {
+		a.writeAlertError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) updateMonitorAlert(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var input operations.AlertUpdateInput
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	input.Actor = currentActor(r)
+	item, err := a.operations.UpdateAlert(r.Context(), id, input)
+	if err != nil {
+		a.writeAlertError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (a *API) writeAlertError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, operations.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "告警记录不存在")
+	case errors.Is(err, operations.ErrAlertConflict):
+		writeError(w, http.StatusConflict, "alert_conflict", err.Error())
+	case errors.Is(err, operations.ErrAlertInvalid):
+		writeError(w, http.StatusUnprocessableEntity, "invalid_alert_update", err.Error())
+	default:
+		a.logger.Error("monitor alert update failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "alert_update_failed", "告警更新失败")
+	}
 }
 
 func (a *API) searchMessages(w http.ResponseWriter, r *http.Request) {

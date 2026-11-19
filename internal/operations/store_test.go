@@ -99,8 +99,11 @@ func TestMessagesCreateDeduplicatedAlertsAndRemainSearchable(t *testing.T) {
 	if err != nil || len(pending) != 1 {
 		t.Fatalf("ListAlerts() = %+v, %v", pending, err)
 	}
-	if err := service.ResolveAlert(ctx, pending[0].ID); err != nil {
-		t.Fatalf("ResolveAlert() error = %v", err)
+	if _, err := service.UpdateAlert(ctx, pending[0].ID, AlertUpdateInput{
+		Action: "resolve",
+		Actor:  "tester",
+	}); err != nil {
+		t.Fatalf("UpdateAlert(resolve) error = %v", err)
 	}
 	resolved, err := service.ListAlerts(ctx, "resolved", 20)
 	if err != nil || len(resolved) != 1 {
@@ -112,6 +115,206 @@ func TestMessagesCreateDeduplicatedAlertsAndRemainSearchable(t *testing.T) {
 	}
 	if report.Total != 1 || len(report.ByDay) != 1 || len(report.ByAccount) != 1 {
 		t.Fatalf("BuildReport() = %+v", report)
+	}
+}
+
+func TestMonitorAlertLifecycleTracksOwnershipAndState(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	now := time.Date(2026, 11, 20, 11, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+
+	if _, err := service.CreateRule(
+		ctx,
+		"Lifecycle alerts",
+		7,
+		"chat",
+		42,
+		"Ops",
+		[]string{"urgent"},
+	); err != nil {
+		t.Fatalf("CreateRule() error = %v", err)
+	}
+	_, alerts, err := service.IngestMessages(ctx, []MessageRecord{{
+		AccountID: 7,
+		PeerType:  "chat",
+		PeerID:    42,
+		PeerTitle: "Ops",
+		MessageID: 301,
+		Text:      "urgent review",
+		SentAt:    now,
+	}})
+	if err != nil {
+		t.Fatalf("IngestMessages() error = %v", err)
+	}
+	if len(alerts) != 1 ||
+		alerts[0].State != "pending" ||
+		alerts[0].Severity != "medium" {
+		t.Fatalf("created alert = %+v", alerts)
+	}
+	alertID := alerts[0].ID
+
+	updated, err := service.UpdateAlert(ctx, alertID, AlertUpdateInput{
+		Action: "acknowledge",
+		Actor:  "operator-a",
+		Note:   "started review",
+	})
+	if err != nil {
+		t.Fatalf("UpdateAlert(acknowledge) error = %v", err)
+	}
+	if updated.State != "acknowledged" ||
+		updated.AcknowledgedBy != "operator-a" ||
+		updated.AcknowledgedAt == nil {
+		t.Fatalf("acknowledged alert = %+v", updated)
+	}
+
+	updated, err = service.UpdateAlert(ctx, alertID, AlertUpdateInput{
+		Action:   "assign",
+		Assignee: "operator-b",
+		Actor:    "operator-a",
+	})
+	if err != nil {
+		t.Fatalf("UpdateAlert(assign) error = %v", err)
+	}
+	if updated.AssignedTo != "operator-b" {
+		t.Fatalf("assigned alert = %+v", updated)
+	}
+
+	updated, err = service.UpdateAlert(ctx, alertID, AlertUpdateInput{
+		Action:   "set_severity",
+		Severity: "critical",
+		Actor:    "operator-a",
+	})
+	if err != nil {
+		t.Fatalf("UpdateAlert(set_severity) error = %v", err)
+	}
+	if updated.Severity != "critical" {
+		t.Fatalf("severity update = %+v", updated)
+	}
+
+	updated, err = service.UpdateAlert(ctx, alertID, AlertUpdateInput{
+		Action: "resolve",
+		Actor:  "operator-b",
+		Note:   "verified",
+	})
+	if err != nil {
+		t.Fatalf("UpdateAlert(resolve) error = %v", err)
+	}
+	if updated.State != "resolved" ||
+		updated.ResolvedBy != "operator-b" ||
+		updated.ResolvedAt == nil {
+		t.Fatalf("resolved alert = %+v", updated)
+	}
+	if _, err := service.UpdateAlert(ctx, alertID, AlertUpdateInput{
+		Action:   "assign",
+		Assignee: "operator-c",
+		Actor:    "operator-b",
+	}); !errors.Is(err, ErrAlertConflict) {
+		t.Fatalf("resolved assignment error = %v, want ErrAlertConflict", err)
+	}
+
+	updated, err = service.UpdateAlert(ctx, alertID, AlertUpdateInput{
+		Action: "reopen",
+		Actor:  "operator-a",
+	})
+	if err != nil {
+		t.Fatalf("UpdateAlert(reopen) error = %v", err)
+	}
+	if updated.State != "pending" ||
+		updated.AcknowledgedBy != "" ||
+		updated.ResolvedBy != "" ||
+		updated.AssignedTo != "operator-b" {
+		t.Fatalf("reopened alert = %+v", updated)
+	}
+
+	rows, err := service.db.QueryContext(ctx, `
+SELECT action, actor, note
+FROM monitor_alert_events
+WHERE alert_id = ?
+ORDER BY sequence`, alertID)
+	if err != nil {
+		t.Fatalf("query monitor alert events: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var events []string
+	for rows.Next() {
+		var action, actor, note string
+		if err := rows.Scan(&action, &actor, &note); err != nil {
+			t.Fatalf("scan monitor alert event: %v", err)
+		}
+		events = append(events, action+":"+actor+":"+note)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate monitor alert events: %v", err)
+	}
+	want := []string{
+		"created:system:",
+		"acknowledged:operator-a:started review",
+		"assigned:operator-a:assignee=operator-b",
+		"severity_changed:operator-a:severity=critical",
+		"resolved:operator-b:verified",
+		"reopened:operator-a:",
+	}
+	if strings.Join(events, ",") != strings.Join(want, ",") {
+		t.Fatalf("monitor alert events = %v, want %v", events, want)
+	}
+}
+
+func TestMonitorAlertMigrationBackfillsLifecycleDefaults(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-operations.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE monitor_alerts (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	rule_id INTEGER NOT NULL,
+	account_id INTEGER NOT NULL,
+	peer_type TEXT NOT NULL,
+	peer_id INTEGER NOT NULL,
+	peer_title TEXT NOT NULL DEFAULT '',
+	message_id INTEGER NOT NULL,
+	matched_keyword TEXT NOT NULL DEFAULT '',
+	message_preview TEXT NOT NULL DEFAULT '',
+	state TEXT NOT NULL DEFAULT 'pending',
+	created_at TEXT NOT NULL,
+	UNIQUE(rule_id, message_id)
+)`); err != nil {
+		t.Fatalf("create legacy monitor alerts: %v", err)
+	}
+	const createdAt = "2026-11-20T10:00:00Z"
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO monitor_alerts (
+	rule_id, account_id, peer_type, peer_id, peer_title, message_id,
+	matched_keyword, message_preview, state, created_at
+) VALUES (1, 7, 'chat', 42, 'Ops', 501, 'urgent', 'legacy alert', 'pending', ?)`,
+		createdAt,
+	); err != nil {
+		t.Fatalf("insert legacy monitor alert: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	service, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open() migrated database error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	alert, err := service.GetAlert(ctx, 1)
+	if err != nil {
+		t.Fatalf("GetAlert() error = %v", err)
+	}
+	if alert.Severity != "medium" ||
+		alert.UpdatedAt.Format(time.RFC3339) != createdAt ||
+		alert.DeliveryState != "" {
+		t.Fatalf("migrated alert = %+v", alert)
 	}
 }
 

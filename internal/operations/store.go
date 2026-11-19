@@ -19,6 +19,8 @@ import (
 var (
 	ErrNotFound        = errors.New("operations record not found")
 	ErrActiveLegalHold = errors.New("account has an active legal hold")
+	ErrAlertInvalid    = errors.New("invalid monitor alert update")
+	ErrAlertConflict   = errors.New("monitor alert state conflict")
 )
 
 type Group struct {
@@ -79,7 +81,22 @@ type Alert struct {
 	DeliveryLastAt *time.Time `json:"delivery_last_attempt_at,omitempty"`
 	DeliveryAt     *time.Time `json:"delivery_at,omitempty"`
 	DeliveryError  string     `json:"delivery_error,omitempty"`
+	Severity       string     `json:"severity"`
+	AssignedTo     string     `json:"assigned_to,omitempty"`
+	AcknowledgedBy string     `json:"acknowledged_by,omitempty"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at,omitempty"`
+	ResolvedBy     string     `json:"resolved_by,omitempty"`
+	ResolvedAt     *time.Time `json:"resolved_at,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
+type AlertUpdateInput struct {
+	Action   string `json:"action"`
+	Severity string `json:"severity"`
+	Assignee string `json:"assignee"`
+	Note     string `json:"note"`
+	Actor    string `json:"-"`
 }
 
 type IndexedMessage struct {
@@ -242,7 +259,14 @@ CREATE TABLE IF NOT EXISTS monitor_alerts (
 	matched_keyword TEXT NOT NULL DEFAULT '',
 	message_preview TEXT NOT NULL DEFAULT '',
 	state TEXT NOT NULL DEFAULT 'pending',
+	severity TEXT NOT NULL DEFAULT 'medium',
+	assigned_to TEXT NOT NULL DEFAULT '',
+	acknowledged_by TEXT NOT NULL DEFAULT '',
+	acknowledged_at TEXT NOT NULL DEFAULT '',
+	resolved_by TEXT NOT NULL DEFAULT '',
+	resolved_at TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
 	UNIQUE(rule_id, message_id)
 );
 CREATE INDEX IF NOT EXISTS monitor_alerts_state_created_idx
@@ -263,6 +287,23 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
 );
 CREATE INDEX IF NOT EXISTS notification_deliveries_state_created_idx
 	ON notification_deliveries(state, created_at DESC, id DESC);
+CREATE TABLE IF NOT EXISTS monitor_alert_events (
+	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+	alert_id INTEGER NOT NULL,
+	action TEXT NOT NULL CHECK (
+		action IN (
+			'created', 'acknowledged', 'assigned', 'severity_changed',
+			'noted', 'resolved', 'reopened'
+		)
+	),
+	actor TEXT NOT NULL,
+	note TEXT NOT NULL DEFAULT '',
+	previous_state TEXT NOT NULL,
+	next_state TEXT NOT NULL,
+	created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS monitor_alert_events_alert_idx
+	ON monitor_alert_events(alert_id, sequence DESC);
 CREATE TABLE IF NOT EXISTS indexed_messages (
 	account_id INTEGER NOT NULL,
 	peer_type TEXT NOT NULL,
@@ -458,6 +499,26 @@ INSERT OR IGNORE INTO notification_channels (
 		"notification_channel_id INTEGER NOT NULL DEFAULT 1",
 	); err != nil {
 		return err
+	}
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{name: "severity", definition: "severity TEXT NOT NULL DEFAULT 'medium'"},
+		{name: "assigned_to", definition: "assigned_to TEXT NOT NULL DEFAULT ''"},
+		{name: "acknowledged_by", definition: "acknowledged_by TEXT NOT NULL DEFAULT ''"},
+		{name: "acknowledged_at", definition: "acknowledged_at TEXT NOT NULL DEFAULT ''"},
+		{name: "resolved_by", definition: "resolved_by TEXT NOT NULL DEFAULT ''"},
+		{name: "resolved_at", definition: "resolved_at TEXT NOT NULL DEFAULT ''"},
+		{name: "updated_at", definition: "updated_at TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := s.ensureColumn(ctx, "monitor_alerts", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `
+UPDATE monitor_alerts SET updated_at = created_at WHERE updated_at = ''`); err != nil {
+		return fmt.Errorf("backfill monitor alert update time: %w", err)
 	}
 	for _, column := range []struct {
 		name       string
@@ -972,8 +1033,8 @@ func (s *Service) insertAlert(
 	result, err := tx.ExecContext(ctx, `
 INSERT OR IGNORE INTO monitor_alerts (
 	rule_id, account_id, peer_type, peer_id, peer_title, message_id,
-	matched_keyword, message_preview, state, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+	matched_keyword, message_preview, state, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
 		rule.ID,
 		rule.AccountID,
 		rule.PeerType,
@@ -982,6 +1043,7 @@ INSERT OR IGNORE INTO monitor_alerts (
 		message.MessageID,
 		truncate(keyword, 80),
 		preview,
+		now.Format(time.RFC3339Nano),
 		now.Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -1015,7 +1077,9 @@ INSERT OR IGNORE INTO monitor_alerts (
 		State:          "pending",
 		ChannelID:      rule.NotificationChannelID,
 		ChannelName:    rule.NotificationChannelName,
+		Severity:       "medium",
 		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	delivery, err := tx.ExecContext(ctx, `
 INSERT INTO notification_deliveries (
@@ -1042,25 +1106,40 @@ INSERT INTO notification_deliveries (
 	alert.DeliveryCount = 1
 	alert.DeliveryLastAt = &now
 	alert.DeliveryAt = &now
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO monitor_alert_events (
+	alert_id, action, actor, note, previous_state, next_state, created_at
+) VALUES (?, 'created', 'system', '', '', 'pending', ?)`,
+		alert.ID,
+		now.Format(time.RFC3339Nano),
+	); err != nil {
+		return Alert{}, fmt.Errorf("record monitor alert creation: %w", err)
+	}
 	return alert, nil
 }
 
-func (s *Service) ListAlerts(ctx context.Context, state string, limit int) ([]Alert, error) {
-	if state != "" && state != "pending" && state != "resolved" {
-		return nil, errors.New("alert state must be pending or resolved")
-	}
-	limit = normalizeLimit(limit, 50, 200)
-	query := `
+const selectAlertQuery = `
 SELECT a.id, a.rule_id, COALESCE(r.name, ''), a.account_id, a.peer_type, a.peer_id,
 	a.peer_title, a.message_id, a.matched_keyword, a.message_preview, a.state,
 	COALESCE(r.notification_channel_id, 0), COALESCE(nc.name, ''), a.created_at,
 	COALESCE(d.id, 0), COALESCE(d.state, ''), COALESCE(d.attempt_count, 0),
 	COALESCE(d.last_attempt_at, ''), COALESCE(d.delivered_at, ''),
-	COALESCE(d.error_text, '')
+	COALESCE(d.error_text, ''), a.severity, a.assigned_to,
+	a.acknowledged_by, a.acknowledged_at, a.resolved_by, a.resolved_at,
+	a.updated_at
 FROM monitor_alerts a
 LEFT JOIN monitor_rules r ON r.id = a.rule_id
 LEFT JOIN notification_channels nc ON nc.id = r.notification_channel_id
 LEFT JOIN notification_deliveries d ON d.alert_id = a.id`
+
+func (s *Service) ListAlerts(ctx context.Context, state string, limit int) ([]Alert, error) {
+	if state != "" && state != "pending" && state != "resolved" {
+		if state != "acknowledged" {
+			return nil, errors.New("alert state must be pending, acknowledged, or resolved")
+		}
+	}
+	limit = normalizeLimit(limit, 50, 200)
+	query := selectAlertQuery
 	args := make([]any, 0, 2)
 	if state != "" {
 		query += " WHERE a.state = ?"
@@ -1087,22 +1166,229 @@ LEFT JOIN notification_deliveries d ON d.alert_id = a.id`
 	return items, nil
 }
 
-func (s *Service) ResolveAlert(ctx context.Context, id int64) error {
-	result, err := s.db.ExecContext(ctx,
-		`UPDATE monitor_alerts SET state = 'resolved' WHERE id = ? AND state = 'pending'`,
+func (s *Service) GetAlert(ctx context.Context, id int64) (Alert, error) {
+	if id <= 0 {
+		return Alert{}, ErrNotFound
+	}
+	item, err := scanAlert(s.db.QueryRowContext(
+		ctx,
+		selectAlertQuery+" WHERE a.id = ?",
 		id,
-	)
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Alert{}, ErrNotFound
+	}
+	return item, err
+}
+
+func (s *Service) UpdateAlert(
+	ctx context.Context,
+	id int64,
+	input AlertUpdateInput,
+) (Alert, error) {
+	if id <= 0 {
+		return Alert{}, ErrNotFound
+	}
+	normalized, err := normalizeAlertUpdateInput(input)
 	if err != nil {
-		return fmt.Errorf("resolve monitor alert: %w", err)
+		return Alert{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Alert{}, fmt.Errorf("begin monitor alert update: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var currentState string
+	err = tx.QueryRowContext(ctx,
+		`SELECT state FROM monitor_alerts WHERE id = ?`,
+		id,
+	).Scan(&currentState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Alert{}, ErrNotFound
+	}
+	if err != nil {
+		return Alert{}, fmt.Errorf("read monitor alert state: %w", err)
+	}
+	nextState, err := validateAlertTransition(currentState, normalized)
+	if err != nil {
+		return Alert{}, err
+	}
+	now := s.now().UTC()
+	if err := applyAlertUpdate(ctx, tx, id, normalized, now); err != nil {
+		return Alert{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO monitor_alert_events (
+	alert_id, action, actor, note, previous_state, next_state, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id,
+		alertEventAction(normalized.Action),
+		normalized.Actor,
+		alertEventNote(normalized),
+		currentState,
+		nextState,
+		now.Format(time.RFC3339Nano),
+	); err != nil {
+		return Alert{}, fmt.Errorf("record monitor alert event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Alert{}, fmt.Errorf("commit monitor alert update: %w", err)
+	}
+	return s.GetAlert(ctx, id)
+}
+
+func normalizeAlertUpdateInput(input AlertUpdateInput) (AlertUpdateInput, error) {
+	input.Action = strings.ToLower(strings.TrimSpace(input.Action))
+	input.Severity = strings.ToLower(strings.TrimSpace(input.Severity))
+	input.Assignee = strings.TrimSpace(input.Assignee)
+	input.Note = strings.TrimSpace(input.Note)
+	input.Actor = strings.TrimSpace(input.Actor)
+	if input.Actor == "" || utf8.RuneCountInString(input.Actor) > 64 {
+		return AlertUpdateInput{}, fmt.Errorf("%w: actor is required", ErrAlertInvalid)
+	}
+	if utf8.RuneCountInString(input.Note) > 500 {
+		return AlertUpdateInput{}, fmt.Errorf("%w: note must contain at most 500 characters", ErrAlertInvalid)
+	}
+	if utf8.RuneCountInString(input.Assignee) > 64 {
+		return AlertUpdateInput{}, fmt.Errorf("%w: assignee must contain at most 64 characters", ErrAlertInvalid)
+	}
+	switch input.Action {
+	case "acknowledge", "resolve", "reopen":
+	case "assign":
+		if input.Assignee == "" {
+			return AlertUpdateInput{}, fmt.Errorf("%w: assignee is required", ErrAlertInvalid)
+		}
+	case "set_severity":
+		switch input.Severity {
+		case "low", "medium", "high", "critical":
+		default:
+			return AlertUpdateInput{}, fmt.Errorf("%w: severity must be low, medium, high, or critical", ErrAlertInvalid)
+		}
+	case "note":
+		if input.Note == "" {
+			return AlertUpdateInput{}, fmt.Errorf("%w: note is required", ErrAlertInvalid)
+		}
+	default:
+		return AlertUpdateInput{}, fmt.Errorf("%w: unsupported action", ErrAlertInvalid)
+	}
+	return input, nil
+}
+
+func validateAlertTransition(state string, input AlertUpdateInput) (string, error) {
+	switch input.Action {
+	case "acknowledge":
+		if state != "pending" {
+			return "", fmt.Errorf("%w: only pending alerts can be acknowledged", ErrAlertConflict)
+		}
+		return "acknowledged", nil
+	case "resolve":
+		if state != "pending" && state != "acknowledged" {
+			return "", fmt.Errorf("%w: only open alerts can be resolved", ErrAlertConflict)
+		}
+		return "resolved", nil
+	case "reopen":
+		if state != "resolved" {
+			return "", fmt.Errorf("%w: only resolved alerts can be reopened", ErrAlertConflict)
+		}
+		return "pending", nil
+	case "assign", "set_severity":
+		if state == "resolved" {
+			return "", fmt.Errorf("%w: resolved alerts must be reopened before this action", ErrAlertConflict)
+		}
+	}
+	return state, nil
+}
+
+func applyAlertUpdate(
+	ctx context.Context,
+	tx *sql.Tx,
+	id int64,
+	input AlertUpdateInput,
+	now time.Time,
+) error {
+	timestamp := now.Format(time.RFC3339Nano)
+	var (
+		query string
+		args  []any
+	)
+	switch input.Action {
+	case "acknowledge":
+		query = `UPDATE monitor_alerts
+SET state = 'acknowledged', acknowledged_by = ?, acknowledged_at = ?, updated_at = ?
+WHERE id = ?`
+		args = []any{input.Actor, timestamp, timestamp, id}
+	case "resolve":
+		query = `UPDATE monitor_alerts
+SET state = 'resolved', resolved_by = ?, resolved_at = ?, updated_at = ?
+WHERE id = ?`
+		args = []any{input.Actor, timestamp, timestamp, id}
+	case "reopen":
+		query = `UPDATE monitor_alerts
+SET state = 'pending', acknowledged_by = '', acknowledged_at = '',
+	resolved_by = '', resolved_at = '', updated_at = ?
+WHERE id = ?`
+		args = []any{timestamp, id}
+	case "assign":
+		query = `UPDATE monitor_alerts SET assigned_to = ?, updated_at = ? WHERE id = ?`
+		args = []any{input.Assignee, timestamp, id}
+	case "set_severity":
+		query = `UPDATE monitor_alerts SET severity = ?, updated_at = ? WHERE id = ?`
+		args = []any{input.Severity, timestamp, id}
+	case "note":
+		query = `UPDATE monitor_alerts SET updated_at = ? WHERE id = ?`
+		args = []any{timestamp, id}
+	default:
+		return fmt.Errorf("%w: unsupported action", ErrAlertInvalid)
+	}
+	result, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("apply monitor alert update: %w", err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("check resolved monitor alert: %w", err)
+		return fmt.Errorf("check monitor alert update: %w", err)
 	}
-	if affected == 0 {
+	if affected != 1 {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func alertEventAction(action string) string {
+	switch action {
+	case "acknowledge":
+		return "acknowledged"
+	case "assign":
+		return "assigned"
+	case "set_severity":
+		return "severity_changed"
+	case "note":
+		return "noted"
+	case "resolve":
+		return "resolved"
+	case "reopen":
+		return "reopened"
+	}
+	return action
+}
+
+func alertEventNote(input AlertUpdateInput) string {
+	detail := input.Note
+	var change string
+	switch input.Action {
+	case "assign":
+		change = "assignee=" + input.Assignee
+	case "set_severity":
+		change = "severity=" + input.Severity
+	}
+	if change == "" {
+		return detail
+	}
+	if detail == "" {
+		return change
+	}
+	return change + "; " + detail
 }
 
 func (s *Service) SearchMessages(ctx context.Context, filter MessageQuery) (MessagePage, error) {
@@ -1269,8 +1555,9 @@ WHERE status = 'online' AND purge_state = 'active' AND last_verified_at >= ?`,
 			args:  []any{now.Truncate(24 * time.Hour).Format(time.RFC3339Nano)},
 		},
 		{
-			dest:  &result.PendingAlerts,
-			query: `SELECT COUNT(1) FROM monitor_alerts WHERE state = 'pending'`,
+			dest: &result.PendingAlerts,
+			query: `SELECT COUNT(1) FROM monitor_alerts
+WHERE state IN ('pending', 'acknowledged')`,
 		},
 	}
 	for _, item := range queries {
@@ -1302,6 +1589,8 @@ LIMIT 1`, accountID).Scan(&heldAccountID); err == nil {
 	}
 	for _, query := range []string{
 		`DELETE FROM account_group_members WHERE account_id = ?`,
+		`DELETE FROM monitor_alert_events
+			WHERE alert_id IN (SELECT id FROM monitor_alerts WHERE account_id = ?)`,
 		`DELETE FROM notification_deliveries
 			WHERE alert_id IN (SELECT id FROM monitor_alerts WHERE account_id = ?)`,
 		`DELETE FROM monitor_alerts WHERE account_id = ?`,
@@ -1447,7 +1736,10 @@ func scanRule(row scanner) (Rule, error) {
 
 func scanAlert(row scanner) (Alert, error) {
 	var item Alert
-	var createdAt, deliveryLastAt, deliveryAt string
+	var (
+		createdAt, deliveryLastAt, deliveryAt string
+		acknowledgedAt, resolvedAt, updatedAt string
+	)
 	if err := row.Scan(
 		&item.ID,
 		&item.RuleID,
@@ -1469,6 +1761,13 @@ func scanAlert(row scanner) (Alert, error) {
 		&deliveryLastAt,
 		&deliveryAt,
 		&item.DeliveryError,
+		&item.Severity,
+		&item.AssignedTo,
+		&item.AcknowledgedBy,
+		&acknowledgedAt,
+		&item.ResolvedBy,
+		&resolvedAt,
+		&updatedAt,
 	); err != nil {
 		return Alert{}, fmt.Errorf("scan monitor alert: %w", err)
 	}
@@ -1491,6 +1790,25 @@ func scanAlert(row scanner) (Alert, error) {
 		}
 		item.DeliveryAt = &value
 	}
+	if acknowledgedAt != "" {
+		value, err := time.Parse(time.RFC3339Nano, acknowledgedAt)
+		if err != nil {
+			return Alert{}, fmt.Errorf("parse monitor alert acknowledgement time: %w", err)
+		}
+		item.AcknowledgedAt = &value
+	}
+	if resolvedAt != "" {
+		value, err := time.Parse(time.RFC3339Nano, resolvedAt)
+		if err != nil {
+			return Alert{}, fmt.Errorf("parse monitor alert resolution time: %w", err)
+		}
+		item.ResolvedAt = &value
+	}
+	updated, err := time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil {
+		return Alert{}, fmt.Errorf("parse monitor alert updated_at: %w", err)
+	}
+	item.UpdatedAt = updated
 	return item, nil
 }
 

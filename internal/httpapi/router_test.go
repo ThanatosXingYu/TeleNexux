@@ -1301,6 +1301,91 @@ func TestMonitorNotificationChannelAPI(t *testing.T) {
 	}
 }
 
+func TestMonitorAlertUpdateUsesAuthenticatedActor(t *testing.T) {
+	ctx := context.Background()
+	operationsService, err := operations.Open(
+		ctx,
+		filepath.Join(t.TempDir(), "alert-lifecycle.db"),
+	)
+	if err != nil {
+		t.Fatalf("open operations service: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := operationsService.Close(); err != nil {
+			t.Errorf("close operations service: %v", err)
+		}
+	})
+	if _, err := operationsService.CreateRule(
+		ctx,
+		"Lifecycle API",
+		7,
+		"chat",
+		42,
+		"Ops",
+		[]string{"urgent"},
+	); err != nil {
+		t.Fatalf("CreateRule() error = %v", err)
+	}
+	_, alerts, err := operationsService.IngestMessages(ctx, []operations.MessageRecord{{
+		AccountID: 7,
+		PeerType:  "chat",
+		PeerID:    42,
+		PeerTitle: "Ops",
+		MessageID: 401,
+		Text:      "urgent review",
+		SentAt:    time.Now().UTC(),
+	}})
+	if err != nil || len(alerts) != 1 {
+		t.Fatalf("IngestMessages() = %+v, %v", alerts, err)
+	}
+
+	webHandler, err := web.New()
+	if err != nil {
+		t.Fatalf("create web handler: %v", err)
+	}
+	manager, token, csrf := testAuthentication()
+	handler := authenticatedTestHandler{
+		next: New(
+			nil,
+			nil,
+			nil,
+			nil,
+			manager,
+			webHandler.Handler(),
+			slog.New(slog.NewTextHandler(io.Discard, nil)),
+			nil,
+			operationsService,
+			nil,
+		).Handler(),
+		token: token,
+		csrf:  csrf,
+	}
+	request := httptest.NewRequest(
+		http.MethodPatch,
+		fmt.Sprintf("/api/v1/monitor/alerts/%d", alerts[0].ID),
+		strings.NewReader(`{
+			"action":"acknowledge",
+			"note":"under review"
+		}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s",
+			recorder.Code, recorder.Body.String())
+	}
+	updated, err := operationsService.GetAlert(ctx, alerts[0].ID)
+	if err != nil {
+		t.Fatalf("GetAlert() error = %v", err)
+	}
+	if updated.State != "acknowledged" ||
+		updated.AcknowledgedBy != "admin" ||
+		updated.AcknowledgedAt == nil {
+		t.Fatalf("updated alert = %+v", updated)
+	}
+}
+
 func TestAuthenticatedAPIAccessIsAudited(t *testing.T) {
 	ctx := context.Background()
 	operationsService, err := operations.Open(

@@ -6,6 +6,7 @@
       <span>状态</span>
       <select data-alert-state>
         <option value="pending">待处理</option>
+        <option value="acknowledged">处理中</option>
         <option value="resolved">已解决</option>
         <option value="">全部</option>
       </select>
@@ -26,6 +27,55 @@
   </div>
   <p class="form-notice form-notice-error" data-alerts-error hidden></p>
 </section>
+
+<dialog class="account-dialog business-dialog" id="alert-action-dialog" aria-labelledby="alert-action-title">
+  <form class="dialog-card" data-alert-action-form>
+    <div class="dialog-header">
+      <div>
+        <p class="eyebrow">告警处理</p>
+        <h2 id="alert-action-title">处理告警</h2>
+      </div>
+      <button class="tool-button" type="button" data-alert-action-close aria-label="关闭告警处理">
+        <span class="icon icon-x" aria-hidden="true"></span>
+      </button>
+    </div>
+    <p class="business-empty-copy" data-alert-action-summary></p>
+    <input name="alert_id" type="hidden">
+    <label class="field">
+      <span>处理动作</span>
+      <select name="action" data-alert-action required>
+        <option value="acknowledge">确认处理</option>
+        <option value="assign">分派负责人</option>
+        <option value="set_severity">调整严重度</option>
+        <option value="note">添加处理备注</option>
+        <option value="resolve">标记已解决</option>
+        <option value="reopen">重新打开</option>
+      </select>
+    </label>
+    <label class="field" data-alert-severity-field hidden>
+      <span>严重度</span>
+      <select name="severity">
+        <option value="low">低</option>
+        <option value="medium">中</option>
+        <option value="high">高</option>
+        <option value="critical">严重</option>
+      </select>
+    </label>
+    <label class="field" data-alert-assignee-field hidden>
+      <span>负责人</span>
+      <input name="assignee" type="text" maxlength="64" autocomplete="off">
+    </label>
+    <label class="field">
+      <span>处理备注</span>
+      <textarea name="note" rows="3" maxlength="500" placeholder="记录核查结论或后续动作，最多 500 字"></textarea>
+    </label>
+    <p class="form-notice" data-alert-action-notice hidden></p>
+    <div class="dialog-actions">
+      <button class="button button-secondary" type="button" data-alert-action-close>取消</button>
+      <button class="button button-primary" type="submit">提交处理</button>
+    </div>
+  </form>
+</dialog>
 
 <div class="account-toast" data-business-toast role="status" aria-live="polite" hidden></div>
 {{end}}
