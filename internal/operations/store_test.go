@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -199,6 +200,79 @@ func TestCreateRuleValidatesNotificationChannel(t *testing.T) {
 	}
 }
 
+func TestPurgeAccountHonorsLegalHoldAndRetainsDestructionRecord(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+
+	hold, err := service.CreateLegalHold(ctx, LegalHoldInput{
+		Scope:     "account",
+		AccountID: 7,
+		Reason:    "Matter 2026-11",
+		CreatedBy: "operator",
+	})
+	if err != nil {
+		t.Fatalf("CreateLegalHold() error = %v", err)
+	}
+	for _, query := range []string{
+		`INSERT INTO monitor_checkpoints
+			(account_id, peer_type, peer_id, last_message_id, updated_at)
+			VALUES (7, 'chat', 42, 101, '2026-11-20T10:00:00Z')`,
+		`INSERT INTO ingestion_batches
+			(batch_id, source, account_id, peer_type, peer_id, status, started_at, finished_at)
+			VALUES ('batch-7', 'test', 7, 'chat', 42, 'completed',
+				'2026-11-20T10:00:00Z', '2026-11-20T10:00:00Z')`,
+		`INSERT INTO evidence_events
+			(event_id, batch_id, account_id, peer_type, peer_id, message_id, event_type,
+				version, observed_at, content_sha256, schema_version)
+			VALUES ('event-7', 'batch-7', 7, 'chat', 42, 101, 'message', 1,
+				'2026-11-20T10:00:00Z', 'hash', 1)`,
+	} {
+		if _, err := service.db.ExecContext(ctx, query); err != nil {
+			t.Fatalf("seed account data: %v", err)
+		}
+	}
+
+	if err := service.PurgeAccount(ctx, 7); !errors.Is(err, ErrActiveLegalHold) {
+		t.Fatalf("PurgeAccount() error = %v, want ErrActiveLegalHold", err)
+	}
+	if _, err := service.ReleaseLegalHold(ctx, hold.ID, "operator"); err != nil {
+		t.Fatalf("ReleaseLegalHold() error = %v", err)
+	}
+	if err := service.PurgeAccount(ctx, 7); err != nil {
+		t.Fatalf("PurgeAccount() error = %v", err)
+	}
+
+	for _, table := range []string{
+		"monitor_checkpoints",
+		"ingestion_batches",
+		"evidence_events",
+	} {
+		var count int
+		if err := service.db.QueryRowContext(
+			ctx,
+			"SELECT COUNT(1) FROM "+table+" WHERE account_id = 7",
+		).Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s kept %d account rows", table, count)
+		}
+	}
+	var destructionCount int
+	if err := service.db.QueryRowContext(ctx, `
+SELECT COUNT(1) FROM account_destructions WHERE account_id = 7`).Scan(
+		&destructionCount,
+	); err != nil || destructionCount != 1 {
+		t.Fatalf("account destruction count = %d, %v", destructionCount, err)
+	}
+	if _, err := service.db.ExecContext(ctx, `
+DELETE FROM account_destructions WHERE account_id = 7`); err == nil {
+		t.Fatal("account destruction record must be append-only")
+	}
+}
+
 func TestOpenMigratesLegacyMonitorRulesToDefaultChannel(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "legacy.db")
@@ -271,17 +345,23 @@ func TestDashboardCountsVerifiedOnlineAccountsOnly(t *testing.T) {
 CREATE TABLE accounts (
 	id INTEGER PRIMARY KEY,
 	status TEXT NOT NULL,
-	last_verified_at TEXT NOT NULL
+	last_verified_at TEXT NOT NULL,
+	purge_state TEXT NOT NULL DEFAULT 'active'
 )`); err != nil {
 		t.Fatalf("create accounts table: %v", err)
 	}
 	for _, query := range []string{
-		`INSERT INTO accounts (id, status, last_verified_at) VALUES (1, 'online', ?)`,
-		`INSERT INTO accounts (id, status, last_verified_at) VALUES (2, 'online', ?)`,
-		`INSERT INTO accounts (id, status, last_verified_at) VALUES (3, 'error', ?)`,
+		`INSERT INTO accounts (id, status, last_verified_at, purge_state)
+			VALUES (1, 'online', ?, 'active')`,
+		`INSERT INTO accounts (id, status, last_verified_at, purge_state)
+			VALUES (2, 'online', ?, 'active')`,
+		`INSERT INTO accounts (id, status, last_verified_at, purge_state)
+			VALUES (3, 'error', ?, 'active')`,
+		`INSERT INTO accounts (id, status, last_verified_at, purge_state)
+			VALUES (4, 'online', ?, 'scheduled')`,
 	} {
 		verifiedAt := now.Add(-time.Minute).Format(time.RFC3339Nano)
-		if query == `INSERT INTO accounts (id, status, last_verified_at) VALUES (2, 'online', ?)` {
+		if strings.Contains(query, "VALUES (2,") {
 			verifiedAt = now.Add(-20 * time.Minute).Format(time.RFC3339Nano)
 		}
 		if _, err := service.db.ExecContext(ctx, query, verifiedAt); err != nil {

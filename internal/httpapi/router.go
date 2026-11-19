@@ -50,7 +50,8 @@ type AccountService interface {
 		reason string,
 	) (account.Account, error)
 	Update(ctx context.Context, id int64, input account.UpdateInput) (account.Account, error)
-	Delete(ctx context.Context, id int64) error
+	ScheduleDeletion(ctx context.Context, id int64) (account.Account, error)
+	Restore(ctx context.Context, id int64) (account.Account, error)
 }
 
 type TelegramAuthService interface {
@@ -159,7 +160,6 @@ type OperationsService interface {
 	ListLegalHolds(ctx context.Context) ([]operations.LegalHold, error)
 	CreateLegalHold(ctx context.Context, input operations.LegalHoldInput) (operations.LegalHold, error)
 	ReleaseLegalHold(ctx context.Context, id int64, actor string) (operations.LegalHold, error)
-	PurgeAccount(ctx context.Context, accountID int64) error
 	RecordAudit(ctx context.Context, input operations.AuditEventInput) error
 	ListAuditEvents(ctx context.Context, filter operations.AuditFilter) (operations.AuditPage, error)
 }
@@ -263,6 +263,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/accounts/{id}", a.requireAPI(a.getAccount))
 	mux.HandleFunc("PUT /api/v1/accounts/{id}", a.requireAPI(a.updateAccount))
 	mux.HandleFunc("DELETE /api/v1/accounts/{id}", a.requireAPI(a.deleteAccount))
+	mux.HandleFunc("POST /api/v1/accounts/{id}/restore", a.requireAPI(a.restoreAccount))
 	mux.HandleFunc("POST /api/v1/accounts/{id}/refresh", a.requireAPI(a.refreshAccount))
 	mux.HandleFunc("GET /api/v1/accounts/{id}/chats", a.requireAPI(a.listAccountChats))
 	mux.HandleFunc("GET /api/v1/accounts/{id}/search", a.requireAPI(a.searchAccountChats))
@@ -1252,32 +1253,51 @@ func (a *API) deleteAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_id", "account ID must be a positive integer")
 		return
 	}
-	if a.chats != nil {
-		if err := a.chats.DeleteSession(id); err != nil {
-			a.logger.Error("delete Telegram account session", "account_id", id, "error", err)
-			writeError(w, http.StatusInternalServerError, "session_delete_failed",
-				"无法清理该账号的授权会话，账号未删除")
-			return
-		}
-	}
-	if a.operations != nil {
-		if err := a.operations.PurgeAccount(r.Context(), id); err != nil {
-			a.logger.Error("purge account operations", "account_id", id, "error", err)
-			writeError(w, http.StatusInternalServerError, "account_data_delete_failed",
-				"无法清理该账号的分组、监控和消息索引，账号未删除")
-			return
-		}
-	}
-	if err := a.accounts.Delete(r.Context(), id); err != nil {
-		if errors.Is(err, account.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "account_not_found", "account was not found")
-			return
-		}
-		a.logger.Error("delete account", "account_id", id, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "could not delete account")
+	item, err := a.accounts.ScheduleDeletion(r.Context(), id)
+	if errors.Is(err, account.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "account_not_found", "account was not found")
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	if errors.Is(err, account.ErrDeletionInProgress) {
+		writeError(w, http.StatusConflict, "account_delete_in_progress",
+			"账号已进入不可恢复的清理阶段")
+		return
+	}
+	if err != nil {
+		a.logger.Error("schedule account deletion", "account_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error",
+			"could not schedule account deletion")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, item)
+}
+
+func (a *API) restoreAccount(w http.ResponseWriter, r *http.Request) {
+	if !prepareJSONMutation(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid_id", "account ID must be a positive integer")
+		return
+	}
+	item, err := a.accounts.Restore(r.Context(), id)
+	if errors.Is(err, account.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "account_not_found", "account was not found")
+		return
+	}
+	if errors.Is(err, account.ErrDeletionInProgress) {
+		writeError(w, http.StatusConflict, "account_delete_in_progress",
+			"账号已进入清理阶段，不能恢复；请稍后确认销毁结果")
+		return
+	}
+	if err != nil {
+		a.logger.Error("restore account", "account_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error",
+			"could not restore account")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (a *API) refreshAccounts(w http.ResponseWriter, r *http.Request) {
@@ -2144,7 +2164,12 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, target any) bool {
 }
 
 func parseFilter(r *http.Request) (account.Filter, error) {
-	filter := account.Filter{Status: r.URL.Query().Get("status"), Limit: 20}
+	query := r.URL.Query()
+	filter := account.Filter{
+		Status:         query.Get("status"),
+		Limit:          20,
+		IncludeDeleted: query.Get("include_deleted") == "true",
+	}
 	if filter.Status != "" && !account.IsValidStatus(filter.Status) {
 		return account.Filter{}, errors.New("status must be one of pending, online, paused, error")
 	}

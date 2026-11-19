@@ -460,6 +460,8 @@
   const accountBatchAssign = document.querySelector("[data-account-batch-assign]");
   const accountBatchRefresh = document.querySelector("[data-account-batch-refresh]");
   const accountBatchDelete = document.querySelector("[data-account-batch-delete]");
+  const accountShowDeleted = document.querySelector("[data-account-show-deleted]");
+  const accountDeletedCount = document.querySelector("[data-account-deleted-count]");
   const accountCounts = [...document.querySelectorAll("[data-account-count]")];
   const onlineCounts = [...document.querySelectorAll("[data-online-count]")];
   const accountToast = document.querySelector("[data-account-toast]");
@@ -478,6 +480,7 @@
   let accountToastTimer = 0;
   let allAccounts = [];
   let accountGroups = [];
+  let showDeletedAccounts = false;
   const selectedAccountIDs = new Set();
 
   const showNotice = (element, message, isError = false) => {
@@ -625,8 +628,32 @@
     error: "已掉线",
   };
   const verificationTTL = 10 * 60 * 1000;
+  const isDeletedAccount = (account) => (
+    Boolean(account?.purge_state) && account.purge_state !== "active"
+  );
 
   const accountStatus = (account) => {
+    if (isDeletedAccount(account)) {
+      if (account.purge_state === "scheduled") {
+        return {
+          key: "deleted",
+          label: "待删除",
+          reason: `可恢复至 ${formatAccountDate(account.deletion_effective_at)}`,
+        };
+      }
+      if (account.purge_state === "failed") {
+        return {
+          key: "error",
+          label: "清理失败",
+          reason: account.purge_error || "后台将自动重试清理",
+        };
+      }
+      return {
+        key: "deleted",
+        label: "正在清理",
+        reason: "账号数据正在后台销毁",
+      };
+    }
     const verifiedAt = account?.last_verified_at ? new Date(account.last_verified_at) : null;
     if (
       account?.status === "online" &&
@@ -680,6 +707,9 @@
   };
 
   const accountMatchesFilters = (account) => {
+    if (isDeletedAccount(account) !== showDeletedAccounts) {
+      return false;
+    }
     const query = String(accountSearch?.value || "").trim().toLocaleLowerCase();
     if (query) {
       const phone = String(account.phone_number || "");
@@ -715,7 +745,7 @@
 
   const filteredAccounts = () => allAccounts.filter(accountMatchesFilters);
 
-  const selectedAccounts = () => allAccounts.filter(
+  const selectedAccounts = () => filteredAccounts().filter(
     (account) => selectedAccountIDs.has(Number(account.id)),
   );
 
@@ -724,6 +754,7 @@
     label.className = className;
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
+    checkbox.disabled = isDeletedAccount(account);
     checkbox.checked = selectedAccountIDs.has(Number(account.id));
     checkbox.setAttribute(
       "aria-label",
@@ -744,20 +775,19 @@
 
   const updateSelectionControls = () => {
     const visible = filteredAccounts();
-    const selectedVisible = visible.filter(
-      (account) => selectedAccountIDs.has(Number(account.id)),
-    ).length;
+    const selectable = visible.filter((account) => !isDeletedAccount(account));
+    const selectedVisible = selectedAccounts().length;
     if (accountSelectedCount) {
-      accountSelectedCount.textContent = String(selectedAccountIDs.size);
+      accountSelectedCount.textContent = String(selectedVisible);
     }
-    accountBatchBar?.toggleAttribute("hidden", selectedAccountIDs.size === 0);
+    accountBatchBar?.toggleAttribute("hidden", selectedVisible === 0);
     if (accountSelectAll) {
-      accountSelectAll.checked = visible.length > 0 && selectedVisible === visible.length;
-      accountSelectAll.indeterminate = selectedVisible > 0 && selectedVisible < visible.length;
-      accountSelectAll.disabled = visible.length === 0;
+      accountSelectAll.checked = selectable.length > 0 && selectedVisible === selectable.length;
+      accountSelectAll.indeterminate = selectedVisible > 0 && selectedVisible < selectable.length;
+      accountSelectAll.disabled = selectable.length === 0;
     }
     if (accountBatchAssign) {
-      accountBatchAssign.disabled = !accountBatchGroup?.value || selectedAccountIDs.size === 0;
+      accountBatchAssign.disabled = !accountBatchGroup?.value || selectedVisible === 0;
     }
   };
 
@@ -810,6 +840,19 @@
   const createAccountActions = (account) => {
     const actionGroup = document.createElement("div");
     actionGroup.className = "account-actions";
+    if (isDeletedAccount(account)) {
+      if (account.purge_state === "scheduled") {
+        const restore = document.createElement("button");
+        restore.className = "button button-primary button-compact";
+        restore.type = "button";
+        restore.textContent = "恢复账号";
+        restore.addEventListener("click", () => restoreAccount(account, restore));
+        actionGroup.append(restore);
+      } else {
+        actionGroup.append(element("span", "button button-secondary button-compact", "后台清理中"));
+      }
+      return actionGroup;
+    }
     if (accountStatus(account).key === "online") {
       const webAction = document.createElement("a");
       webAction.className = "button button-primary button-compact";
@@ -949,9 +992,11 @@
     }
     accountBody.replaceChildren();
     accountsMobile.replaceChildren();
-    const online = allAccounts.filter((item) => accountStatus(item).key === "online").length;
+    const activeAccounts = allAccounts.filter((item) => !isDeletedAccount(item));
+    const deletedAccounts = allAccounts.filter(isDeletedAccount);
+    const online = activeAccounts.filter((item) => accountStatus(item).key === "online").length;
     accountCounts.forEach((element) => {
-      element.textContent = String(allAccounts.length);
+      element.textContent = String(activeAccounts.length);
     });
     onlineCounts.forEach((element) => {
       element.textContent = String(online);
@@ -960,11 +1005,17 @@
     const hasItems = items.length > 0;
     accountsTable?.toggleAttribute("hidden", !hasItems);
     accountsMobile.toggleAttribute("hidden", !hasItems);
-    accountsEmpty?.toggleAttribute("hidden", allAccounts.length > 0);
+    accountsEmpty?.toggleAttribute(
+      "hidden",
+      activeAccounts.length > 0 || showDeletedAccounts,
+    );
     accountsFilterEmpty?.toggleAttribute(
       "hidden",
-      hasItems || allAccounts.length === 0,
+      hasItems || (!showDeletedAccounts && activeAccounts.length === 0),
     );
+    if (accountDeletedCount) {
+      accountDeletedCount.textContent = String(deletedAccounts.length);
+    }
     accountsLoading?.setAttribute("hidden", "");
     if (!hasItems) {
       updateSelectionControls();
@@ -1052,7 +1103,9 @@
       });
       deleteDialog?.close();
       managedAccount = null;
-      showAccountToast("账号及本地授权会话已删除");
+      showDeletedAccounts = true;
+      accountShowDeleted?.setAttribute("aria-pressed", "true");
+      showAccountToast("账号已进入待删除状态，可在 24 小时内恢复");
       await loadAccounts();
     } catch (error) {
       showNotice(deleteNotice, error.message, true);
@@ -1086,7 +1139,11 @@
     try {
       const payload = verifySessions
         ? await requestJSON("/api/v1/accounts/refresh", {method: "POST", body: "{}"})
-        : await requestJSON("/api/v1/accounts?limit=100");
+        : await requestJSON("/api/v1/accounts?limit=100&include_deleted=true");
+      if (verifySessions) {
+        showDeletedAccounts = false;
+        accountShowDeleted?.setAttribute("aria-pressed", "false");
+      }
       allAccounts = Array.isArray(payload?.items) ? payload.items : [];
       const validAccountIDs = new Set(allAccounts.map((account) => Number(account.id)));
       for (const accountID of selectedAccountIDs) {
@@ -1142,6 +1199,27 @@
     }
   };
 
+  const restoreAccount = async (account, button) => {
+    button?.setAttribute("disabled", "");
+    button?.setAttribute("aria-busy", "true");
+    showNotice(accountsError, "");
+    try {
+      await requestJSON(
+        `/api/v1/accounts/${encodeURIComponent(account.id)}/restore`,
+        {method: "POST", body: "{}"},
+      );
+      showDeletedAccounts = false;
+      accountShowDeleted?.setAttribute("aria-pressed", "false");
+      showAccountToast("账号已恢复，请重新校验 Telegram 授权状态");
+      await loadAccounts();
+    } catch (error) {
+      showNotice(accountsError, error.message, true);
+    } finally {
+      button?.removeAttribute("disabled");
+      button?.removeAttribute("aria-busy");
+    }
+  };
+
   [accountSearch, accountStatusFilter, accountGroupFilter].forEach((control) => {
     control?.addEventListener("input", () => renderAccounts(filteredAccounts()));
     control?.addEventListener("change", () => renderAccounts(filteredAccounts()));
@@ -1156,11 +1234,22 @@
     if (accountGroupFilter) {
       accountGroupFilter.value = "";
     }
+    showDeletedAccounts = false;
+    accountShowDeleted?.setAttribute("aria-pressed", "false");
     renderAccounts(filteredAccounts());
     accountSearch?.focus();
   });
+  accountShowDeleted?.addEventListener("click", () => {
+    showDeletedAccounts = !showDeletedAccounts;
+    selectedAccountIDs.clear();
+    accountShowDeleted.setAttribute("aria-pressed", String(showDeletedAccounts));
+    renderAccounts(filteredAccounts());
+  });
   accountSelectAll?.addEventListener("change", () => {
     filteredAccounts().forEach((account) => {
+      if (isDeletedAccount(account)) {
+        return;
+      }
       const accountID = Number(account.id);
       if (accountSelectAll.checked) {
         selectedAccountIDs.add(accountID);
@@ -1246,12 +1335,12 @@
       return;
     }
     if (!window.confirm(
-      `确定删除所选 ${targets.length} 个本地账号及其授权会话吗？Telegram 账号本身不会注销。`,
+      `确定删除所选 ${targets.length} 个本地账号吗？账号将进入 24 小时待删除状态，期间可以恢复。`,
     )) {
       return;
     }
     setBatchButtonsDisabled(true);
-    showNotice(accountsError, `正在删除 ${targets.length} 个账号...`);
+    showNotice(accountsError, `正在将 ${targets.length} 个账号加入待删除...`);
     let failed = 0;
     try {
       for (const account of targets) {
@@ -1265,10 +1354,13 @@
         }
       }
       await loadAccounts();
+      showDeletedAccounts = true;
+      accountShowDeleted?.setAttribute("aria-pressed", "true");
+      renderAccounts(filteredAccounts());
       if (failed > 0) {
-        showNotice(accountsError, `${failed} 个账号删除失败，请检查授权会话清理状态。`, true);
+        showNotice(accountsError, `${failed} 个账号未能加入待删除，请稍后重试。`, true);
       } else {
-        showAccountToast(`${targets.length} 个本地账号已删除`);
+        showAccountToast(`${targets.length} 个账号已进入待删除状态`);
       }
     } finally {
       setBatchButtonsDisabled(false);

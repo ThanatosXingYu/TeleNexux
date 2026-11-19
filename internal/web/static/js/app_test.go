@@ -61,6 +61,10 @@ func TestScriptUsesOnlyReferencedControls(t *testing.T) {
 		`data-account-search`,
 		`data-account-batch-bar`,
 		`/api/v1/accounts/refresh`,
+		`include_deleted=true`,
+		`data-account-show-deleted`,
+		`/restore`,
+		`restoreAccount(account, restore)`,
 		`accountStatus(account).key !== "online"`,
 		`.account-row-select input`,
 	}

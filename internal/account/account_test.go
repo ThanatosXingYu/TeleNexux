@@ -26,6 +26,7 @@ func (r *memoryRepository) Create(_ context.Context, input CreateInput, now time
 		Username:    input.Username,
 		DisplayName: input.DisplayName,
 		Status:      StatusPending,
+		PurgeState:  PurgeStateActive,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -42,6 +43,10 @@ func (r *memoryRepository) Upsert(
 	item, exists := r.accounts[input.ID]
 	if !exists {
 		item.CreatedAt = now
+		item.PurgeState = PurgeStateActive
+	}
+	if item.PurgeState != PurgeStateActive {
+		return Account{}, ErrConflict
 	}
 	item.ID = input.ID
 	item.PhoneNumber = input.PhoneNumber
@@ -56,6 +61,9 @@ func (r *memoryRepository) Upsert(
 func (r *memoryRepository) List(_ context.Context, filter Filter) ([]Account, error) {
 	items := make([]Account, 0, len(r.accounts))
 	for _, item := range r.accounts {
+		if !filter.IncludeDeleted && item.PurgeState != PurgeStateActive {
+			continue
+		}
 		if filter.Status != "" && item.Status != filter.Status {
 			continue
 		}
@@ -65,6 +73,14 @@ func (r *memoryRepository) List(_ context.Context, filter Filter) ([]Account, er
 }
 
 func (r *memoryRepository) Get(_ context.Context, id int64) (Account, error) {
+	item, exists := r.accounts[id]
+	if !exists || item.PurgeState != PurgeStateActive {
+		return Account{}, ErrNotFound
+	}
+	return item, nil
+}
+
+func (r *memoryRepository) GetIncludingDeleted(_ context.Context, id int64) (Account, error) {
 	item, exists := r.accounts[id]
 	if !exists {
 		return Account{}, ErrNotFound
@@ -79,7 +95,7 @@ func (r *memoryRepository) UpdateStatus(
 	now time.Time,
 ) (Account, error) {
 	item, exists := r.accounts[id]
-	if !exists {
+	if !exists || item.PurgeState != PurgeStateActive {
 		return Account{}, ErrNotFound
 	}
 	item.Status = status
@@ -96,7 +112,7 @@ func (r *memoryRepository) RecordVerification(
 	now time.Time,
 ) (Account, error) {
 	item, exists := r.accounts[id]
-	if !exists {
+	if !exists || item.PurgeState != PurgeStateActive {
 		return Account{}, ErrNotFound
 	}
 	item.Status = status
@@ -114,7 +130,7 @@ func (r *memoryRepository) Update(
 	now time.Time,
 ) (Account, error) {
 	item, exists := r.accounts[id]
-	if !exists {
+	if !exists || item.PurgeState != PurgeStateActive {
 		return Account{}, ErrNotFound
 	}
 	item.PhoneNumber = input.PhoneNumber
@@ -125,8 +141,116 @@ func (r *memoryRepository) Update(
 	return item, nil
 }
 
+func (r *memoryRepository) ScheduleDeletion(
+	_ context.Context,
+	id int64,
+	now time.Time,
+	effectiveAt time.Time,
+) (Account, error) {
+	item, exists := r.accounts[id]
+	if !exists {
+		return Account{}, ErrNotFound
+	}
+	if item.PurgeState == PurgeStatePurging {
+		return Account{}, ErrDeletionInProgress
+	}
+	if item.PurgeState == PurgeStateActive {
+		item.PurgeState = PurgeStateScheduled
+		item.DeletionRequestedAt = &now
+		item.DeletionEffectiveAt = &effectiveAt
+		item.UpdatedAt = now
+		r.accounts[id] = item
+	}
+	return item, nil
+}
+
+func (r *memoryRepository) Restore(
+	_ context.Context,
+	id int64,
+	now time.Time,
+) (Account, error) {
+	item, exists := r.accounts[id]
+	if !exists {
+		return Account{}, ErrNotFound
+	}
+	if item.PurgeState == PurgeStateActive {
+		return item, nil
+	}
+	if item.PurgeState != PurgeStateScheduled {
+		return Account{}, ErrDeletionInProgress
+	}
+	item.PurgeState = PurgeStateActive
+	item.PurgeError = ""
+	item.DeletionRequestedAt = nil
+	item.DeletionEffectiveAt = nil
+	item.UpdatedAt = now
+	r.accounts[id] = item
+	return item, nil
+}
+
+func (r *memoryRepository) ListDueForPurge(
+	_ context.Context,
+	now time.Time,
+	limit int,
+) ([]Account, error) {
+	items := make([]Account, 0, limit)
+	for _, item := range r.accounts {
+		if item.PurgeState != PurgeStateScheduled && item.PurgeState != PurgeStateFailed {
+			continue
+		}
+		if item.DeletionEffectiveAt == nil || item.DeletionEffectiveAt.After(now) {
+			continue
+		}
+		items = append(items, item)
+		if len(items) == limit {
+			break
+		}
+	}
+	return items, nil
+}
+
+func (r *memoryRepository) ClaimPurge(
+	_ context.Context,
+	id int64,
+	now time.Time,
+) (Account, error) {
+	item, exists := r.accounts[id]
+	if !exists {
+		return Account{}, ErrNotFound
+	}
+	if item.PurgeState != PurgeStateScheduled && item.PurgeState != PurgeStateFailed {
+		return Account{}, ErrDeletionInProgress
+	}
+	if item.DeletionEffectiveAt == nil || item.DeletionEffectiveAt.After(now) {
+		return Account{}, ErrNotFound
+	}
+	item.PurgeState = PurgeStatePurging
+	item.PurgeError = ""
+	item.UpdatedAt = now
+	r.accounts[id] = item
+	return item, nil
+}
+
+func (r *memoryRepository) FailPurge(
+	_ context.Context,
+	id int64,
+	reason string,
+	now time.Time,
+) error {
+	item, exists := r.accounts[id]
+	if !exists || item.PurgeState != PurgeStatePurging {
+		return ErrNotFound
+	}
+	item.PurgeState = PurgeStateFailed
+	item.PurgeError = reason
+	item.UpdatedAt = now
+	r.accounts[id] = item
+	return nil
+}
+
 func (r *memoryRepository) Delete(_ context.Context, id int64) error {
-	if _, exists := r.accounts[id]; !exists {
+	item, exists := r.accounts[id]
+	if !exists || item.PurgeState != PurgeStatePurging {
 		return ErrNotFound
 	}
 	delete(r.accounts, id)
@@ -232,8 +356,9 @@ func TestServiceUpdateStatusPersistsRealSessionState(t *testing.T) {
 	}
 }
 
-func TestServiceUpdatesAndDeletesAccount(t *testing.T) {
-	service := NewService(newMemoryRepository())
+func TestServiceUpdatesAndSchedulesDeletion(t *testing.T) {
+	repository := newMemoryRepository()
+	service := NewServiceWithDeletionGrace(repository, time.Hour)
 	item, err := service.Create(context.Background(), CreateInput{
 		ID:          42,
 		PhoneNumber: "+15550001001",
@@ -255,10 +380,18 @@ func TestServiceUpdatesAndDeletesAccount(t *testing.T) {
 		updated.DisplayName != "After" {
 		t.Fatalf("Update() = %+v, want normalized account details", updated)
 	}
-	if err := service.Delete(context.Background(), item.ID); err != nil {
-		t.Fatalf("Delete() error = %v", err)
+	scheduled, err := service.ScheduleDeletion(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("ScheduleDeletion() error = %v", err)
 	}
-	if _, err := service.Get(context.Background(), item.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("Get() after Delete() error = %v, want ErrNotFound", err)
+	if scheduled.PurgeState != PurgeStateScheduled || scheduled.DeletionEffectiveAt == nil {
+		t.Fatalf("ScheduleDeletion() = %+v, want scheduled account", scheduled)
+	}
+	restored, err := service.Restore(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("Restore() error = %v", err)
+	}
+	if restored.PurgeState != PurgeStateActive || restored.DeletionEffectiveAt != nil {
+		t.Fatalf("Restore() = %+v, want active account", restored)
 	}
 }

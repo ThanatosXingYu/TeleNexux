@@ -8,9 +8,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ThanatosXingYu/TeleNexux/internal/account"
 	"github.com/ThanatosXingYu/TeleNexux/internal/operations"
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramchat"
 )
+
+type AccountLookup interface {
+	Get(ctx context.Context, id int64) (account.Account, error)
+}
 
 type ChatReader interface {
 	Messages(
@@ -32,6 +37,7 @@ type Status struct {
 
 type Scheduler struct {
 	operations *operations.Service
+	accounts   AccountLookup
 	chats      ChatReader
 	interval   time.Duration
 	logger     *slog.Logger
@@ -42,6 +48,7 @@ type Scheduler struct {
 
 func New(
 	service *operations.Service,
+	accounts AccountLookup,
 	chats ChatReader,
 	interval time.Duration,
 	logger *slog.Logger,
@@ -51,6 +58,7 @@ func New(
 	}
 	return &Scheduler{
 		operations: service,
+		accounts:   accounts,
 		chats:      chats,
 		interval:   interval,
 		logger:     logger,
@@ -58,7 +66,7 @@ func New(
 }
 
 func (s *Scheduler) Start(ctx context.Context) {
-	if s == nil || s.operations == nil || s.chats == nil {
+	if s == nil || s.operations == nil || s.accounts == nil || s.chats == nil {
 		return
 	}
 	go func() {
@@ -79,7 +87,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 }
 
 func (s *Scheduler) RunOnce(ctx context.Context) error {
-	if s == nil || s.operations == nil || s.chats == nil {
+	if s == nil || s.operations == nil || s.accounts == nil || s.chats == nil {
 		return errors.New("monitor scheduler is not configured")
 	}
 	s.runMu.Lock()
@@ -93,10 +101,28 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 		return err
 	}
 	var runErr error
+	activeAccounts := make(map[int64]bool)
 	for _, target := range targets {
 		if err := ctx.Err(); err != nil {
 			runErr = err
 			break
+		}
+		active, checked := activeAccounts[target.AccountID]
+		if !checked {
+			_, err := s.accounts.Get(ctx, target.AccountID)
+			if errors.Is(err, account.ErrNotFound) {
+				activeAccounts[target.AccountID] = false
+				continue
+			}
+			if err != nil {
+				runErr = err
+				continue
+			}
+			active = true
+			activeAccounts[target.AccountID] = true
+		}
+		if !active {
+			continue
 		}
 		page, err := s.chats.Messages(
 			ctx,

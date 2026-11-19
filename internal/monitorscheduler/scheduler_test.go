@@ -9,9 +9,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ThanatosXingYu/TeleNexux/internal/account"
 	"github.com/ThanatosXingYu/TeleNexux/internal/operations"
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramchat"
 )
+
+type fakeAccountLookup struct {
+	inactive map[int64]bool
+}
+
+func (f fakeAccountLookup) Get(
+	_ context.Context,
+	id int64,
+) (account.Account, error) {
+	if f.inactive[id] {
+		return account.Account{}, account.ErrNotFound
+	}
+	return account.Account{ID: id, PurgeState: account.PurgeStateActive}, nil
+}
 
 type fakeChatReader struct {
 	page telegramchat.MessagePage
@@ -96,7 +111,7 @@ func TestSchedulerEstablishesBaselineBeforeIndexingNewMessages(t *testing.T) {
 			{ID: 11, Sender: "Bob", Text: "baseline", SentAt: time.Now().Add(-time.Minute)},
 		}},
 	}}
-	scheduler := New(service, chats, time.Minute, testLogger())
+	scheduler := New(service, fakeAccountLookup{}, chats, time.Minute, testLogger())
 	if err := scheduler.RunOnce(ctx); err != nil {
 		t.Fatalf("first RunOnce() error = %v", err)
 	}
@@ -166,7 +181,7 @@ func TestRunOncePersistsNewMessagesAndCheckpoint(t *testing.T) {
 		{ID: 100, Sender: "Alice", Text: "baseline", SentAt: now.Add(-time.Minute)},
 		{ID: 101, Sender: "Alice", Text: "scheduled update", MediaType: "photo", SentAt: now},
 	}}}
-	scheduler := New(service, reader, time.Minute, testLogger())
+	scheduler := New(service, fakeAccountLookup{}, reader, time.Minute, testLogger())
 	if err := scheduler.RunOnce(ctx); err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
@@ -201,6 +216,7 @@ func TestRunOnceRecordsCollectionFailure(t *testing.T) {
 	readerErr := errors.New("Telegram unavailable")
 	scheduler := New(
 		service,
+		fakeAccountLookup{},
 		fakeChatReader{err: readerErr},
 		time.Minute,
 		testLogger(),
@@ -218,5 +234,34 @@ func TestRunOnceRecordsCollectionFailure(t *testing.T) {
 	}
 	if status := scheduler.Status(); status.LastError != readerErr.Error() {
 		t.Fatalf("Status() = %+v", status)
+	}
+}
+
+func TestRunOnceSkipsAccountsPendingDeletion(t *testing.T) {
+	ctx := context.Background()
+	service := testOperationsService(t)
+	if _, err := service.CreateRule(ctx, "Deleting", 9, "channel", 99, "Archive", nil); err != nil {
+		t.Fatalf("CreateRule() error = %v", err)
+	}
+	reader := &chatSequence{}
+	scheduler := New(
+		service,
+		fakeAccountLookup{inactive: map[int64]bool{9: true}},
+		reader,
+		time.Minute,
+		testLogger(),
+	)
+	if err := scheduler.RunOnce(ctx); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if reader.index != 0 {
+		t.Fatal("scheduler read Telegram for an account pending deletion")
+	}
+	targets, err := service.ListCollectionTargets(ctx)
+	if err != nil {
+		t.Fatalf("ListCollectionTargets() error = %v", err)
+	}
+	if len(targets) != 1 || targets[0].ConsecutiveFailures != 0 {
+		t.Fatalf("pending deletion target changed checkpoint state: %+v", targets)
 	}
 }

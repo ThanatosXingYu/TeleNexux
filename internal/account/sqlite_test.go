@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestSQLiteRepositoryPersistsAccounts(t *testing.T) {
@@ -152,7 +153,7 @@ func TestSQLiteRepositoryUpdatesAccountStatus(t *testing.T) {
 	}
 }
 
-func TestSQLiteRepositoryUpdatesAndDeletesAccount(t *testing.T) {
+func TestSQLiteRepositoryUpdatesAndPurgesAccount(t *testing.T) {
 	ctx := context.Background()
 	repository, err := NewSQLiteRepository(ctx, filepath.Join(t.TempDir(), "accounts.db"))
 	if err != nil {
@@ -164,7 +165,9 @@ func TestSQLiteRepositoryUpdatesAndDeletesAccount(t *testing.T) {
 		}
 	})
 
-	service := NewService(repository)
+	now := time.Date(2026, time.November, 20, 8, 0, 0, 0, time.UTC)
+	service := NewServiceWithDeletionGrace(repository, time.Hour)
+	service.clock = func() time.Time { return now }
 	item, err := service.Create(ctx, CreateInput{
 		ID:          8003,
 		PhoneNumber: "+15550001003",
@@ -184,10 +187,72 @@ func TestSQLiteRepositoryUpdatesAndDeletesAccount(t *testing.T) {
 	if updated.PhoneNumber != "+15550001004" || updated.Username != "updated_user" {
 		t.Fatalf("Update() = %+v, want persisted account details", updated)
 	}
-	if err := service.Delete(ctx, item.ID); err != nil {
-		t.Fatalf("Delete() error = %v", err)
+	scheduled, err := service.ScheduleDeletion(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("ScheduleDeletion() error = %v", err)
+	}
+	if scheduled.PurgeState != PurgeStateScheduled {
+		t.Fatalf("ScheduleDeletion() state = %q", scheduled.PurgeState)
 	}
 	if _, err := repository.Get(ctx, item.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("Get() after Delete() error = %v, want ErrNotFound", err)
+		t.Fatalf("Get() after scheduling error = %v, want ErrNotFound", err)
+	}
+	item, err = repository.GetIncludingDeleted(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("GetIncludingDeleted() error = %v", err)
+	}
+	now = *item.DeletionEffectiveAt
+	due, err := service.ListDueForPurge(ctx, 10)
+	if err != nil || len(due) != 1 {
+		t.Fatalf("ListDueForPurge() = %+v, %v", due, err)
+	}
+	claimed, err := service.ClaimPurge(ctx, item.ID)
+	if err != nil || claimed.PurgeState != PurgeStatePurging {
+		t.Fatalf("ClaimPurge() = %+v, %v", claimed, err)
+	}
+	if err := service.FinalizePurge(ctx, item.ID); err != nil {
+		t.Fatalf("FinalizePurge() error = %v", err)
+	}
+	if _, err := repository.GetIncludingDeleted(ctx, item.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetIncludingDeleted() after purge error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSQLiteRepositoryOnlyRestoresScheduledDeletion(t *testing.T) {
+	ctx := context.Background()
+	repository, err := NewSQLiteRepository(ctx, filepath.Join(t.TempDir(), "accounts.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteRepository() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	now := time.Date(2026, time.November, 20, 8, 0, 0, 0, time.UTC)
+	service := NewServiceWithDeletionGrace(repository, time.Hour)
+	service.clock = func() time.Time { return now }
+	item, err := service.Create(ctx, CreateInput{ID: 8004, PhoneNumber: "+15550001005"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if _, err := service.ScheduleDeletion(ctx, item.ID); err != nil {
+		t.Fatalf("ScheduleDeletion() error = %v", err)
+	}
+	if _, err := service.ClaimPurge(ctx, item.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ClaimPurge() before effective time error = %v, want ErrNotFound", err)
+	}
+
+	scheduled, err := repository.GetIncludingDeleted(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("GetIncludingDeleted() error = %v", err)
+	}
+	now = *scheduled.DeletionEffectiveAt
+	if _, err := service.ClaimPurge(ctx, item.ID); err != nil {
+		t.Fatalf("ClaimPurge() error = %v", err)
+	}
+	if _, err := service.Restore(ctx, item.ID); !errors.Is(err, ErrDeletionInProgress) {
+		t.Fatalf("Restore() after purge claim error = %v, want ErrDeletionInProgress", err)
 	}
 }

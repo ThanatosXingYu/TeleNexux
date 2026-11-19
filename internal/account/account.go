@@ -12,30 +12,41 @@ import (
 )
 
 const (
-	StatusPending  = "pending"
-	StatusOnline   = "online"
-	StatusPaused   = "paused"
-	StatusError    = "error"
-	MaxDisplayName = 64
-	MaxUsername    = 32
-	MaxPhoneNumber = 20
+	StatusPending              = "pending"
+	StatusOnline               = "online"
+	StatusPaused               = "paused"
+	StatusError                = "error"
+	PurgeStateActive           = "active"
+	PurgeStateScheduled        = "scheduled"
+	PurgeStatePurging          = "purging"
+	PurgeStateFailed           = "failed"
+	MaxDisplayName             = 64
+	MaxUsername                = 32
+	MaxPhoneNumber             = 20
+	DefaultDeletionGracePeriod = 24 * time.Hour
+	PurgeClaimTimeout          = 15 * time.Minute
 )
 
 var (
-	ErrNotFound = errors.New("account not found")
-	ErrConflict = errors.New("account already exists")
+	ErrNotFound           = errors.New("account not found")
+	ErrConflict           = errors.New("account already exists")
+	ErrDeletionInProgress = errors.New("account deletion is in progress")
 )
 
 type Account struct {
-	ID             int64      `json:"id"`
-	PhoneNumber    string     `json:"phone_number"`
-	Username       string     `json:"username"`
-	DisplayName    string     `json:"display_name"`
-	Status         string     `json:"status"`
-	StatusReason   string     `json:"status_reason,omitempty"`
-	LastVerifiedAt *time.Time `json:"last_verified_at,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID                  int64      `json:"id"`
+	PhoneNumber         string     `json:"phone_number"`
+	Username            string     `json:"username"`
+	DisplayName         string     `json:"display_name"`
+	Status              string     `json:"status"`
+	StatusReason        string     `json:"status_reason,omitempty"`
+	LastVerifiedAt      *time.Time `json:"last_verified_at,omitempty"`
+	DeletionRequestedAt *time.Time `json:"deletion_requested_at,omitempty"`
+	DeletionEffectiveAt *time.Time `json:"deletion_effective_at,omitempty"`
+	PurgeState          string     `json:"purge_state"`
+	PurgeError          string     `json:"purge_error,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 type CreateInput struct {
@@ -52,9 +63,10 @@ type UpdateInput struct {
 }
 
 type Filter struct {
-	Status string
-	Limit  int
-	Offset int
+	Status         string
+	Limit          int
+	Offset         int
+	IncludeDeleted bool
 }
 
 type Repository interface {
@@ -62,6 +74,7 @@ type Repository interface {
 	Upsert(ctx context.Context, input CreateInput, status string, now time.Time) (Account, error)
 	List(ctx context.Context, filter Filter) ([]Account, error)
 	Get(ctx context.Context, id int64) (Account, error)
+	GetIncludingDeleted(ctx context.Context, id int64) (Account, error)
 	UpdateStatus(ctx context.Context, id int64, status string, now time.Time) (Account, error)
 	RecordVerification(
 		ctx context.Context,
@@ -71,18 +84,40 @@ type Repository interface {
 		now time.Time,
 	) (Account, error)
 	Update(ctx context.Context, id int64, input UpdateInput, now time.Time) (Account, error)
+	ScheduleDeletion(
+		ctx context.Context,
+		id int64,
+		now time.Time,
+		effectiveAt time.Time,
+	) (Account, error)
+	Restore(ctx context.Context, id int64, now time.Time) (Account, error)
+	ListDueForPurge(ctx context.Context, now time.Time, limit int) ([]Account, error)
+	ClaimPurge(ctx context.Context, id int64, now time.Time) (Account, error)
+	FailPurge(ctx context.Context, id int64, reason string, now time.Time) error
 	Delete(ctx context.Context, id int64) error
 }
 
 type Service struct {
-	repository Repository
-	clock      func() time.Time
+	repository          Repository
+	clock               func() time.Time
+	deletionGracePeriod time.Duration
 }
 
 func NewService(repository Repository) *Service {
+	return NewServiceWithDeletionGrace(repository, DefaultDeletionGracePeriod)
+}
+
+func NewServiceWithDeletionGrace(
+	repository Repository,
+	deletionGracePeriod time.Duration,
+) *Service {
+	if deletionGracePeriod <= 0 {
+		deletionGracePeriod = DefaultDeletionGracePeriod
+	}
 	return &Service{
-		repository: repository,
-		clock:      time.Now,
+		repository:          repository,
+		clock:               time.Now,
+		deletionGracePeriod: deletionGracePeriod,
 	}
 }
 
@@ -162,7 +197,55 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Acco
 	return s.repository.Update(ctx, id, normalized, s.clock().UTC())
 }
 
-func (s *Service) Delete(ctx context.Context, id int64) error {
+func (s *Service) ScheduleDeletion(ctx context.Context, id int64) (Account, error) {
+	if id <= 0 {
+		return Account{}, errors.New("account ID must be positive")
+	}
+	now := s.clock().UTC()
+	return s.repository.ScheduleDeletion(
+		ctx,
+		id,
+		now,
+		now.Add(s.deletionGracePeriod),
+	)
+}
+
+func (s *Service) Restore(ctx context.Context, id int64) (Account, error) {
+	if id <= 0 {
+		return Account{}, errors.New("account ID must be positive")
+	}
+	return s.repository.Restore(ctx, id, s.clock().UTC())
+}
+
+func (s *Service) ListDueForPurge(ctx context.Context, limit int) ([]Account, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	return s.repository.ListDueForPurge(ctx, s.clock().UTC(), limit)
+}
+
+func (s *Service) ClaimPurge(ctx context.Context, id int64) (Account, error) {
+	if id <= 0 {
+		return Account{}, errors.New("account ID must be positive")
+	}
+	return s.repository.ClaimPurge(ctx, id, s.clock().UTC())
+}
+
+func (s *Service) FailPurge(ctx context.Context, id int64, reason string) error {
+	if id <= 0 {
+		return errors.New("account ID must be positive")
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "account purge failed"
+	}
+	if utf8.RuneCountInString(reason) > 300 {
+		reason = string([]rune(reason)[:300])
+	}
+	return s.repository.FailPurge(ctx, id, reason, s.clock().UTC())
+}
+
+func (s *Service) FinalizePurge(ctx context.Context, id int64) error {
 	if id <= 0 {
 		return errors.New("account ID must be positive")
 	}

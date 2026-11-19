@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ThanatosXingYu/TeleNexux/internal/account"
+	"github.com/ThanatosXingYu/TeleNexux/internal/accountpurge"
 	"github.com/ThanatosXingYu/TeleNexux/internal/auth"
 	"github.com/ThanatosXingYu/TeleNexux/internal/config"
 	"github.com/ThanatosXingYu/TeleNexux/internal/health"
@@ -116,18 +117,38 @@ func run() error {
 			return fmt.Errorf("initialize Telegram chat service: %w", err)
 		}
 	}
+	accountService := account.NewService(repository)
 	var monitorRunner httpapi.MonitorRunner
 	if telegramChats != nil {
-		scheduler := monitorscheduler.New(operationsStore, telegramChats, time.Minute, logger)
+		scheduler := monitorscheduler.New(
+			operationsStore,
+			accountService,
+			telegramChats,
+			time.Minute,
+			logger,
+		)
 		scheduler.Start(ctx)
 		monitorRunner = scheduler
 	}
 	go cleanupMessageIndex(ctx, operationsStore, logger)
+	var purgeSessionCleaner accountpurge.SessionCleaner
+	if telegramChats != nil {
+		purgeSessionCleaner = telegramChats
+	}
+	purgeWorker, err := accountpurge.New(
+		accountService,
+		purgeSessionCleaner,
+		operationsStore,
+	)
+	if err != nil {
+		return fmt.Errorf("initialize account purge worker: %w", err)
+	}
+	go runAccountPurgeLoop(ctx, purgeWorker, logger)
 
 	server := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: httpapi.New(
-			account.NewService(repository),
+			accountService,
 			telegramAuth,
 			telegramChats,
 			settingsStore,
@@ -168,6 +189,25 @@ func run() error {
 		return fmt.Errorf("shutdown HTTP server: %w", err)
 	}
 	return nil
+}
+
+func runAccountPurgeLoop(
+	ctx context.Context,
+	worker *accountpurge.Service,
+	logger *slog.Logger,
+) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		if err := worker.RunOnce(ctx); err != nil {
+			logger.Error("account purge cycle failed", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func cleanupMessageIndex(

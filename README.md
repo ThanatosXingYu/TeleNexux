@@ -76,7 +76,8 @@ sidecar；后续连接沿用同一资料，不会使用项目名称作为设备�
 账号；顶部刷新和单账号“校验状态”都会调用真实 Telegram 校验并持久化
 结果，成功后同步更新“最近校验”时间。每个账号都保留“重新登录”入口，
 在线账号也可主动重新授权；从账号 Web 发现会话失效时会直接打开该账号的
-二维码登录流程。
+二维码登录流程。删除操作进入 24 小时待删除状态，账号页可切换“待删除”
+视图并恢复；到期后的清理会遵守活动法律保留，并写入不可修改的销毁记录。
 
 ## 配置
 
@@ -117,7 +118,13 @@ curl -X PUT http://localhost:9487/api/v1/accounts/10001 \
   -H 'Content-Type: application/json' \
   -d '{"phone_number":"+15550001001","username":"example","display_name":"Example"}'
 curl -X DELETE http://localhost:9487/api/v1/accounts/10001
+curl -X POST http://localhost:9487/api/v1/accounts/10001/restore \
+  -H 'Content-Type: application/json' -d '{}'
 ```
+
+`DELETE` 将账号置为 24 小时待删除状态；使用
+`GET /api/v1/accounts?include_deleted=true` 可查看待删除账号。宽限期结束前
+可通过恢复接口撤回，进入清理阶段后只能等待重试或最终销毁。
 
 登录相关端点：
 
@@ -139,6 +146,7 @@ GET    /api/v1/settings
 PUT    /api/v1/settings
 POST   /api/v1/accounts/refresh
 POST   /api/v1/accounts/{id}/refresh
+POST   /api/v1/accounts/{id}/restore
 GET    /api/v1/accounts/{id}/chats
 GET    /api/v1/accounts/{id}/search?q={username}
 GET    /api/v1/accounts/{id}/chats/{type}/{peer_id}/messages

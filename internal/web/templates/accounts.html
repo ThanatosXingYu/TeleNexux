@@ -9,6 +9,10 @@
       <span class="icon icon-refresh-cw" aria-hidden="true"></span>
       <span data-accounts-refresh-label>刷新状态</span>
     </button>
+    <button class="button button-secondary" type="button" data-account-show-deleted aria-pressed="false">
+      <span class="icon icon-trash" aria-hidden="true"></span>
+      待删除 <span data-account-deleted-count>0</span>
+    </button>
     <button class="button button-primary" type="button" data-open-login>
       <span class="icon icon-user-round-plus" aria-hidden="true"></span>
       添加账号
@@ -334,7 +338,7 @@
         <span class="icon icon-x" aria-hidden="true"></span>
       </button>
     </div>
-    <p>确定删除 <strong data-account-delete-name>该账号</strong> 吗？本地账号记录和授权会话将被删除，Telegram 账号本身不会注销。</p>
+    <p>确定删除 <strong data-account-delete-name>该账号</strong> 吗？账号将进入 24 小时待删除状态，期间可以恢复；到期后本地授权会话、消息索引和证据数据会被清理。Telegram 账号本身不会注销。</p>
     <p class="form-notice form-notice-error" data-account-delete-notice hidden></p>
     <div class="dialog-actions">
       <button class="button button-secondary" type="button" data-account-delete-close>取消</button>

@@ -62,15 +62,17 @@ func (h authenticatedTestHandler) ServeHTTP(w http.ResponseWriter, r *http.Reque
 }
 
 type fakeAccountService struct {
-	items     []account.Account
-	created   account.Account
-	createErr error
-	upsertErr error
-	listErr   error
-	getErr    error
-	updateErr error
-	deleteErr error
-	deletedID int64
+	items       []account.Account
+	created     account.Account
+	createErr   error
+	upsertErr   error
+	listErr     error
+	listFilter  account.Filter
+	getErr      error
+	updateErr   error
+	deleteErr   error
+	scheduledID int64
+	restoredID  int64
 }
 
 func (s *fakeAccountService) Create(_ context.Context, input account.CreateInput) (account.Account, error) {
@@ -106,7 +108,11 @@ func (s *fakeAccountService) UpsertAuthorized(
 	return s.created, nil
 }
 
-func (s *fakeAccountService) List(_ context.Context, _ account.Filter) ([]account.Account, error) {
+func (s *fakeAccountService) List(
+	_ context.Context,
+	filter account.Filter,
+) ([]account.Account, error) {
+	s.listFilter = filter
 	return s.items, s.listErr
 }
 
@@ -160,12 +166,36 @@ func (s *fakeAccountService) Update(
 	return s.created, nil
 }
 
-func (s *fakeAccountService) Delete(_ context.Context, id int64) error {
+func (s *fakeAccountService) ScheduleDeletion(
+	_ context.Context,
+	id int64,
+) (account.Account, error) {
 	if s.deleteErr != nil {
-		return s.deleteErr
+		return account.Account{}, s.deleteErr
 	}
-	s.deletedID = id
-	return nil
+	now := time.Unix(20, 0).UTC()
+	effectiveAt := now.Add(24 * time.Hour)
+	s.scheduledID = id
+	s.created.ID = id
+	s.created.PurgeState = account.PurgeStateScheduled
+	s.created.DeletionRequestedAt = &now
+	s.created.DeletionEffectiveAt = &effectiveAt
+	return s.created, nil
+}
+
+func (s *fakeAccountService) Restore(
+	_ context.Context,
+	id int64,
+) (account.Account, error) {
+	if s.deleteErr != nil {
+		return account.Account{}, s.deleteErr
+	}
+	s.restoredID = id
+	s.created.ID = id
+	s.created.PurgeState = account.PurgeStateActive
+	s.created.DeletionRequestedAt = nil
+	s.created.DeletionEffectiveAt = nil
+	return s.created, nil
 }
 
 type fakeTelegramAuthService struct {
@@ -576,7 +606,7 @@ func TestUpdateAccount(t *testing.T) {
 	}
 }
 
-func TestDeleteAccountRemovesSessionAndAccount(t *testing.T) {
+func TestDeleteAccountSchedulesRecoverablePurge(t *testing.T) {
 	accounts := &fakeAccountService{}
 	chats := &fakeTelegramChatService{}
 	request := httptest.NewRequest(http.MethodDelete, "/api/v1/accounts/42", nil)
@@ -585,28 +615,48 @@ func TestDeleteAccountRemovesSessionAndAccount(t *testing.T) {
 	newTestHandlerWithDependencies(accounts, &fakeTelegramAuthService{}, chats, nil).
 		ServeHTTP(recorder, request)
 
-	if recorder.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204; body: %s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body: %s", recorder.Code, recorder.Body.String())
 	}
-	if chats.sessionID != 42 || accounts.deletedID != 42 {
-		t.Fatalf("session ID = %d, deleted ID = %d, want 42", chats.sessionID, accounts.deletedID)
+	if accounts.scheduledID != 42 || chats.sessionID != 0 {
+		t.Fatalf("scheduled ID = %d, session ID = %d, want 42 and no synchronous cleanup",
+			accounts.scheduledID, chats.sessionID)
 	}
 }
 
-func TestDeleteAccountStopsWhenSessionCleanupFails(t *testing.T) {
-	accounts := &fakeAccountService{}
-	chats := &fakeTelegramChatService{deleteErr: errors.New("unsafe session path")}
+func TestDeleteAccountReportsSchedulingFailure(t *testing.T) {
+	accounts := &fakeAccountService{deleteErr: errors.New("disk is unavailable")}
 	request := httptest.NewRequest(http.MethodDelete, "/api/v1/accounts/42", nil)
 	recorder := httptest.NewRecorder()
 
-	newTestHandlerWithDependencies(accounts, &fakeTelegramAuthService{}, chats, nil).
+	newTestHandler(accounts).
 		ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500; body: %s", recorder.Code, recorder.Body.String())
 	}
-	if accounts.deletedID != 0 {
-		t.Fatal("account must not be deleted when session cleanup fails")
+	if strings.Contains(recorder.Body.String(), "disk is unavailable") {
+		t.Fatal("response must not expose storage details")
+	}
+}
+
+func TestRestoreAccountClearsScheduledDeletion(t *testing.T) {
+	accounts := &fakeAccountService{}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/accounts/42/restore",
+		strings.NewReader(`{}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	newTestHandler(accounts).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if accounts.restoredID != 42 || accounts.created.PurgeState != account.PurgeStateActive {
+		t.Fatalf("restored account = %+v", accounts.created)
 	}
 }
 
@@ -622,6 +672,25 @@ func TestListAccountsHidesInfrastructureErrors(t *testing.T) {
 	}
 	if strings.Contains(recorder.Body.String(), "disk is unavailable") {
 		t.Fatal("response must not expose infrastructure details")
+	}
+}
+
+func TestListAccountsCanIncludePendingDeletion(t *testing.T) {
+	service := &fakeAccountService{}
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/accounts?include_deleted=true&limit=10",
+		nil,
+	)
+	recorder := httptest.NewRecorder()
+
+	newTestHandler(service).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if !service.listFilter.IncludeDeleted {
+		t.Fatal("List() filter did not include pending deletion accounts")
 	}
 }
 

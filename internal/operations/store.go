@@ -16,7 +16,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-var ErrNotFound = errors.New("operations record not found")
+var (
+	ErrNotFound        = errors.New("operations record not found")
+	ErrActiveLegalHold = errors.New("account has an active legal hold")
+)
 
 type Group struct {
 	ID           int64     `json:"id"`
@@ -366,6 +369,22 @@ CREATE TRIGGER IF NOT EXISTS retention_destructions_no_delete
 BEFORE DELETE ON retention_destructions
 BEGIN
 	SELECT RAISE(ABORT, 'retention destruction records are append-only');
+END;
+CREATE TABLE IF NOT EXISTS account_destructions (
+	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+	account_id INTEGER NOT NULL UNIQUE,
+	destroyed_at TEXT NOT NULL,
+	reason TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS account_destructions_no_update
+BEFORE UPDATE ON account_destructions
+BEGIN
+	SELECT RAISE(ABORT, 'account destruction records are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS account_destructions_no_delete
+BEFORE DELETE ON account_destructions
+BEGIN
+	SELECT RAISE(ABORT, 'account destruction records are append-only');
 END;
 CREATE TABLE IF NOT EXISTS audit_events (
 	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1162,11 +1181,15 @@ func (s *Service) Dashboard(ctx context.Context, telegramReady bool) (Dashboard,
 		query string
 		args  []any
 	}{
-		{dest: &result.AccountCount, query: `SELECT COUNT(1) FROM accounts`},
 		{
-			dest:  &result.OnlineCount,
-			query: `SELECT COUNT(1) FROM accounts WHERE status = 'online' AND last_verified_at >= ?`,
-			args:  []any{now.Add(-10 * time.Minute).Format(time.RFC3339Nano)},
+			dest:  &result.AccountCount,
+			query: `SELECT COUNT(1) FROM accounts WHERE purge_state = 'active'`,
+		},
+		{
+			dest: &result.OnlineCount,
+			query: `SELECT COUNT(1) FROM accounts
+WHERE status = 'online' AND purge_state = 'active' AND last_verified_at >= ?`,
+			args: []any{now.Add(-10 * time.Minute).Format(time.RFC3339Nano)},
 		},
 		{dest: &result.MonitorCount, query: `SELECT COUNT(1) FROM monitor_rules WHERE enabled = 1`},
 		{
@@ -1188,23 +1211,66 @@ func (s *Service) Dashboard(ctx context.Context, telegramReady bool) (Dashboard,
 }
 
 func (s *Service) PurgeAccount(ctx context.Context, accountID int64) error {
+	if err := s.CheckAccountPurge(ctx, accountID); err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin purge account operations: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	var heldAccountID int64
+	if err := tx.QueryRowContext(ctx, `
+SELECT account_id
+FROM legal_holds
+WHERE account_id = ? AND released_at = ''
+LIMIT 1`, accountID).Scan(&heldAccountID); err == nil {
+		return ErrActiveLegalHold
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("check account legal holds: %w", err)
+	}
 	for _, query := range []string{
 		`DELETE FROM account_group_members WHERE account_id = ?`,
 		`DELETE FROM monitor_alerts WHERE account_id = ?`,
 		`DELETE FROM monitor_rules WHERE account_id = ?`,
 		`DELETE FROM indexed_messages WHERE account_id = ?`,
+		`DELETE FROM monitor_checkpoints WHERE account_id = ?`,
+		`DELETE FROM ingestion_batches WHERE account_id = ?`,
+		`DELETE FROM evidence_events WHERE account_id = ?`,
 	} {
 		if _, err := tx.ExecContext(ctx, query, accountID); err != nil {
 			return fmt.Errorf("purge account operations: %w", err)
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT OR IGNORE INTO account_destructions (account_id, destroyed_at, reason)
+VALUES (?, ?, 'account_purge')`,
+		accountID,
+		s.now().UTC().Format(time.RFC3339Nano),
+	); err != nil {
+		return fmt.Errorf("record account destruction: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit purge account operations: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) CheckAccountPurge(ctx context.Context, accountID int64) error {
+	if accountID <= 0 {
+		return ErrNotFound
+	}
+	var holdID int64
+	err := s.db.QueryRowContext(ctx, `
+SELECT id
+FROM legal_holds
+WHERE account_id = ? AND released_at = ''
+LIMIT 1`, accountID).Scan(&holdID)
+	if err == nil {
+		return ErrActiveLegalHold
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("check account legal holds: %w", err)
 	}
 	return nil
 }

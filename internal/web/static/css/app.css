@@ -2327,6 +2327,11 @@ a {
   color: #595959;
 }
 
+.account-status-deleted {
+  background: #f0f5ff;
+  color: #2f54eb;
+}
+
 .account-status-stale {
   background: #fffbe6;
   color: #ad6800;
