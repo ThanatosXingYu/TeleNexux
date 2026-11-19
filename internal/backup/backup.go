@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -201,6 +202,9 @@ func Restore(ctx context.Context, backupPath, targetPath string) (Manifest, erro
 	if err := verifyDatabase(ctx, temporaryPath, manifest); err != nil {
 		return Manifest{}, err
 	}
+	if _, err := secureDirectory(filepath.Dir(targetPath)); err != nil {
+		return Manifest{}, fmt.Errorf("revalidate restore directory: %w", err)
+	}
 	if err := publishNoReplace(temporaryPath, targetPath); err != nil {
 		return Manifest{}, fmt.Errorf("publish restored database: %w", err)
 	}
@@ -364,6 +368,9 @@ func readManifest(path, backupPath string) (Manifest, error) {
 }
 
 func writeManifest(manifest Manifest, path string) error {
+	if _, err := secureDirectory(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("validate backup manifest directory: %w", err)
+	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode backup manifest: %w", err)
@@ -389,6 +396,9 @@ func writeManifest(manifest Manifest, path string) error {
 	}
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("close backup manifest: %w", err)
+	}
+	if _, err := secureDirectory(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("revalidate backup manifest directory: %w", err)
 	}
 	if err := publishNoReplace(temporaryPath, path); err != nil {
 		return fmt.Errorf("publish backup manifest: %w", err)
@@ -432,6 +442,9 @@ func regularFile(path string) (string, error) {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return "", errors.New("path must be a regular file, not a symlink")
 	}
+	if err := validateDirectoryChain(filepath.Dir(absolute), false); err != nil {
+		return "", err
+	}
 	return absolute, nil
 }
 
@@ -444,23 +457,82 @@ func secureDirectory(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve backup output directory: %w", err)
 	}
-	info, err := os.Lstat(absolute)
-	if errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(absolute, 0o700); err != nil {
-			return "", fmt.Errorf("create backup output directory: %w", err)
-		}
-		return absolute, nil
+	if err := validateDirectoryChain(absolute, true); err != nil {
+		return "", fmt.Errorf("validate backup output directory: %w", err)
 	}
+	info, err := os.Lstat(absolute)
 	if err != nil {
 		return "", fmt.Errorf("inspect backup output directory: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return "", errors.New("backup output must be a directory, not a symlink")
 	}
 	if info.Mode().Perm()&0o077 != 0 {
 		return "", errors.New("backup output directory must not grant group or other access")
 	}
 	return absolute, nil
+}
+
+func validateDirectoryChain(path string, create bool) error {
+	root := string(filepath.Separator)
+	if volume := filepath.VolumeName(path); volume != "" {
+		root = volume + string(filepath.Separator)
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return fmt.Errorf("resolve directory path: %w", err)
+	}
+	current := root
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) && create {
+			if err := os.Mkdir(current, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+				return fmt.Errorf("create secure directory: %w", err)
+			}
+			info, err = os.Lstat(current)
+		}
+		if err != nil {
+			return fmt.Errorf("inspect directory path: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if !trustedSystemDirectoryLink(current, info) {
+				return errors.New("directory path must not contain symlinks")
+			}
+			info, err = os.Stat(current)
+			if err != nil {
+				return fmt.Errorf("inspect system directory link: %w", err)
+			}
+		}
+		if !info.IsDir() {
+			return errors.New("directory path contains a non-directory component")
+		}
+	}
+	return nil
+}
+
+func trustedSystemDirectoryLink(path string, info os.FileInfo) bool {
+	if runtime.GOOS != "darwin" || filepath.Dir(path) != string(filepath.Separator) {
+		return false
+	}
+	expectedTargets := map[string]string{
+		"/etc": "/private/etc",
+		"/tmp": "/private/tmp",
+		"/var": "/private/var",
+	}
+	expectedTarget, ok := expectedTargets[filepath.Clean(path)]
+	if !ok {
+		return false
+	}
+	target, err := os.Readlink(path)
+	if err != nil {
+		return false
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(path), target)
+	}
+	return filepath.Clean(target) == expectedTarget &&
+		info.Mode()&os.ModeSymlink != 0
 }
 
 func cleanTarget(path string) (string, error) {

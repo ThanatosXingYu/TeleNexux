@@ -258,7 +258,7 @@ func TestRestoreRejectsSymlinkAndInsecureParent(t *testing.T) {
 			backupPath,
 			filepath.Join(linkDirectory, "restored.db"),
 		)
-		if err == nil || !strings.Contains(err.Error(), "not a symlink") {
+		if err == nil || !strings.Contains(err.Error(), "not contain symlinks") {
 			t.Fatalf("Restore() error = %v, want symlink rejection", err)
 		}
 	})
@@ -276,6 +276,40 @@ func TestRestoreRejectsSymlinkAndInsecureParent(t *testing.T) {
 			t.Fatalf("Restore() error = %v, want insecure directory rejection", err)
 		}
 	})
+}
+
+func TestBackupRejectsSymlinkInAncestorDirectory(t *testing.T) {
+	ctx := context.Background()
+	sourcePath := newApplicationDatabase(t)
+	root := t.TempDir()
+	realDirectory := filepath.Join(root, "real")
+	if err := os.Mkdir(realDirectory, 0o700); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	linkDirectory := filepath.Join(root, "link")
+	if err := os.Symlink(realDirectory, linkDirectory); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
+	outputDirectory := filepath.Join(linkDirectory, "nested", "backups")
+	_, _, err := backup.Create(ctx, sourcePath, outputDirectory, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "not contain symlinks") {
+		t.Fatalf("Create() error = %v, want ancestor symlink rejection", err)
+	}
+
+	existingOutput := filepath.Join(realDirectory, "backups")
+	_, backupPath, err := backup.Create(ctx, sourcePath, existingOutput, time.Now())
+	if err != nil {
+		t.Fatalf("Create() setup error = %v", err)
+	}
+	_, err = backup.Restore(
+		ctx,
+		backupPath,
+		filepath.Join(linkDirectory, "nested", "restored.db"),
+	)
+	if err == nil || !strings.Contains(err.Error(), "not contain symlinks") {
+		t.Fatalf("Restore() error = %v, want ancestor symlink rejection", err)
+	}
 }
 
 func newApplicationDatabase(t *testing.T) string {
