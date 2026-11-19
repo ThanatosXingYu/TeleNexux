@@ -153,6 +153,58 @@ func TestWebhookNotificationRetriesWithBackoffAndStops(t *testing.T) {
 	}
 }
 
+func TestNotificationClaimUsesLeaseToAvoidConcurrentDelivery(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	channel, err := service.CreateWebhookChannel(
+		ctx,
+		"Leased webhook",
+		"https://hooks.example.test/lease",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("CreateWebhookChannel() error = %v", err)
+	}
+	if _, err := service.CreateRuleWithChannel(
+		ctx,
+		"Leased alerts",
+		7,
+		"chat",
+		42,
+		"Ops",
+		channel.ID,
+		nil,
+	); err != nil {
+		t.Fatalf("CreateRuleWithChannel() error = %v", err)
+	}
+	if _, _, err := service.IngestMessages(ctx, []MessageRecord{{
+		AccountID: 7,
+		PeerType:  "chat",
+		PeerID:    42,
+		MessageID: 203,
+		Text:      "message",
+		SentAt:    now,
+	}}); err != nil {
+		t.Fatalf("IngestMessages() error = %v", err)
+	}
+
+	first, found, err := service.ClaimNotificationDelivery(ctx)
+	if err != nil || !found || first.AttemptCount != 1 {
+		t.Fatalf("first ClaimNotificationDelivery() = %+v, %v, %v", first, found, err)
+	}
+	if _, found, err := service.ClaimNotificationDelivery(ctx); err != nil || found {
+		t.Fatalf("concurrent ClaimNotificationDelivery() found = %v, error = %v", found, err)
+	}
+	now = now.Add(notificationClaimLease + time.Second)
+	reclaimed, found, err := service.ClaimNotificationDelivery(ctx)
+	if err != nil || !found || reclaimed.ID != first.ID || reclaimed.AttemptCount != 2 {
+		t.Fatalf("expired lease ClaimNotificationDelivery() = %+v, %v, %v",
+			reclaimed, found, err)
+	}
+}
+
 func TestWebhookChannelRejectsUnsafeInput(t *testing.T) {
 	service := newTestService(t)
 	if _, err := service.CreateWebhookChannel(

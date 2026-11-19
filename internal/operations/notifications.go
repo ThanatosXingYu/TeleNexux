@@ -16,6 +16,7 @@ const (
 	NotificationKindInApp   = "in_app"
 	NotificationKindWebhook = "webhook"
 	notificationMaxAttempts = 5
+	notificationClaimLease  = 2 * time.Minute
 )
 
 type WebhookChannelConfig struct {
@@ -164,13 +165,16 @@ LIMIT 1`,
 	if err != nil {
 		return NotificationDelivery{}, false, fmt.Errorf("select notification delivery: %w", err)
 	}
+	leaseUntil := now.Add(notificationClaimLease)
 	result, err := tx.ExecContext(ctx, `
 UPDATE notification_deliveries
 SET attempt_count = attempt_count + 1,
 	last_attempt_at = ?,
+	next_attempt_at = ?,
 	updated_at = ?
 WHERE id = ? AND state = 'queued' AND attempt_count = ?`,
 		now.Format(time.RFC3339Nano),
+		leaseUntil.Format(time.RFC3339Nano),
 		now.Format(time.RFC3339Nano),
 		item.ID,
 		attemptCount,
