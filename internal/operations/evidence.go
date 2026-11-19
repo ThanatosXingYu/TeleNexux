@@ -247,6 +247,10 @@ func (s *Service) ingestBatchTx(
 		if err := s.advanceCheckpointTx(ctx, tx, input, checkpointAfter, now); err != nil {
 			return IngestBatchResult{}, err
 		}
+	} else if input.BacklogDetected {
+		if err := s.markBacklogTx(ctx, tx, input, now); err != nil {
+			return IngestBatchResult{}, err
+		}
 	}
 	return result, nil
 }
@@ -539,6 +543,32 @@ WHERE account_id = ? AND peer_type = ? AND peer_id = ?`,
 		input.PeerID,
 	); err != nil {
 		return fmt.Errorf("update monitor rule checkpoints: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) markBacklogTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	input IngestBatchInput,
+	now time.Time,
+) error {
+	timestamp := now.Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO monitor_checkpoints (
+	account_id, peer_type, peer_id, last_message_id, consecutive_failures,
+	last_error, backlog_detected, updated_at
+) VALUES (?, ?, ?, ?, 0, '', 1, ?)
+ON CONFLICT(account_id, peer_type, peer_id) DO UPDATE SET
+	backlog_detected = 1,
+	updated_at = excluded.updated_at`,
+		input.AccountID,
+		input.PeerType,
+		input.PeerID,
+		input.CheckpointBefore,
+		timestamp,
+	); err != nil {
+		return fmt.Errorf("mark monitor checkpoint backlog: %w", err)
 	}
 	return nil
 }

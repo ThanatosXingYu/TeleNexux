@@ -18,15 +18,21 @@ type AccountLookup interface {
 }
 
 type ChatReader interface {
-	Messages(
+	CollectMessages(
 		ctx context.Context,
 		accountID int64,
 		peerType string,
 		peerID int64,
-		beforeID int,
-		limit int,
-	) (telegramchat.MessagePage, error)
+		checkpointID int,
+		pageSize int,
+		maxPages int,
+	) (telegramchat.MessageCollection, error)
 }
+
+const (
+	collectionPageSize = 50
+	collectionMaxPages = 20
+)
 
 type Status struct {
 	Running      bool       `json:"running"`
@@ -124,13 +130,14 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 		if !active {
 			continue
 		}
-		page, err := s.chats.Messages(
+		collection, err := s.chats.CollectMessages(
 			ctx,
 			target.AccountID,
 			target.PeerType,
 			target.PeerID,
-			0,
-			50,
+			target.LastMessageID,
+			collectionPageSize,
+			collectionMaxPages,
 		)
 		if err != nil {
 			if recordErr := s.operations.RecordBatchFailure(ctx, operations.IngestBatchInput{
@@ -140,7 +147,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 				PeerID:           target.PeerID,
 				PeerTitle:        target.PeerTitle,
 				CheckpointBefore: target.LastMessageID,
-				BacklogDetected:  target.BacklogDetected,
+				BacklogDetected:  target.BacklogDetected || collection.Backlog,
 			}, err); recordErr != nil {
 				s.logger.Warn("record monitor batch failure",
 					"account_id", target.AccountID,
@@ -155,25 +162,19 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 			continue
 		}
 
-		maxID := target.LastMessageID
-		messages := make([]operations.MessageRecord, 0, len(page.Items))
-		for _, message := range page.Items {
-			if message.ID > maxID {
-				maxID = message.ID
-			}
-			if target.LastMessageID > 0 && message.ID > target.LastMessageID {
-				messages = append(messages, operations.MessageRecord{
-					AccountID: target.AccountID,
-					PeerType:  target.PeerType,
-					PeerID:    target.PeerID,
-					PeerTitle: target.PeerTitle,
-					MessageID: message.ID,
-					Sender:    message.Sender,
-					Text:      message.Text,
-					MediaType: message.MediaType,
-					SentAt:    message.SentAt,
-				})
-			}
+		messages := make([]operations.MessageRecord, 0, len(collection.Items))
+		for _, message := range collection.Items {
+			messages = append(messages, operations.MessageRecord{
+				AccountID: target.AccountID,
+				PeerType:  target.PeerType,
+				PeerID:    target.PeerID,
+				PeerTitle: target.PeerTitle,
+				MessageID: message.ID,
+				Sender:    message.Sender,
+				Text:      message.Text,
+				MediaType: message.MediaType,
+				SentAt:    message.SentAt,
+			})
 		}
 		if _, err := s.operations.IngestBatch(ctx, operations.IngestBatchInput{
 			Source:           "scheduler",
@@ -182,12 +183,23 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 			PeerID:           target.PeerID,
 			PeerTitle:        target.PeerTitle,
 			CheckpointBefore: target.LastMessageID,
-			CheckpointAfter:  maxID,
-			Complete:         true,
-			BacklogDetected:  target.BacklogDetected,
+			CheckpointAfter:  collection.NewestID,
+			Complete:         collection.Complete,
+			BacklogDetected:  collection.Backlog,
 			Messages:         messages,
 		}); err != nil {
 			runErr = err
+			continue
+		}
+		if collection.Backlog {
+			s.logger.Warn(
+				"monitor collection remains backlogged",
+				"account_id", target.AccountID,
+				"peer_type", target.PeerType,
+				"peer_id", target.PeerID,
+				"checkpoint", target.LastMessageID,
+				"pages_read", collection.PagesRead,
+			)
 		}
 	}
 	s.finish(started, runErr)
