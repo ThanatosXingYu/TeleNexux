@@ -1659,6 +1659,11 @@
     const tableWrap = document.querySelector("[data-report-table-wrap]");
     const empty = document.querySelector("[data-report-empty]");
     const error = document.querySelector("[data-report-error]");
+    const manifestError = document.querySelector("[data-evidence-manifest-error]");
+    const manifestState = document.querySelector("[data-evidence-manifest-state]");
+    const manifestIssues = document.querySelector("[data-evidence-manifest-issues]");
+    const manifestIssuesWrap = document.querySelector("[data-evidence-manifest-issues-wrap]");
+    const manifestIssuesEmpty = document.querySelector("[data-evidence-manifest-empty]");
     let accounts = [];
 
     const load = async () => {
@@ -1701,8 +1706,87 @@
         showNotice(error, requestError.message, true);
       }
     };
+
+    const generateManifest = async (event) => {
+      const button = event?.currentTarget || document.querySelector("[data-evidence-manifest-generate]");
+      if (button) {
+        button.disabled = true;
+      }
+      showNotice(manifestError);
+      try {
+        const daysValue = encodeURIComponent(days?.value || "7");
+        const manifest = await api(`/api/v1/evidence/manifest?days=${daysValue}`);
+        const state = String(manifest?.data_state || "empty");
+        const stateLabels = {
+          complete: "完整",
+          incomplete: "数据不完整",
+          empty: "无证据",
+        };
+        if (manifestState) {
+          manifestState.className = state === "complete"
+            ? "badge badge-blue"
+            : state === "incomplete"
+              ? "badge badge-red"
+              : "badge badge-neutral";
+          manifestState.textContent = stateLabels[state] || "未知";
+        }
+        setText("[data-evidence-manifest-actor]", manifest?.generated_by || "—");
+        setText("[data-evidence-manifest-generated]", formatDate(manifest?.generated_at));
+        setText("[data-evidence-manifest-events]", Number(manifest?.event_count) || 0);
+        setText("[data-evidence-manifest-messages]", Number(manifest?.message_count) || 0);
+        setText(
+          "[data-evidence-manifest-batches]",
+          `${Number(manifest?.batch_count) || 0} 批`,
+        );
+        setText(
+          "[data-evidence-manifest-completeness]",
+          `完成 ${Number(manifest?.completed_batches) || 0} · 部分 ${Number(manifest?.partial_batches) || 0} · 失败 ${Number(manifest?.failed_batches) || 0}`,
+        );
+        setText(
+          "[data-evidence-manifest-sequence]",
+          manifest?.first_sequence || manifest?.last_sequence
+            ? `${manifest.first_sequence} — ${manifest.last_sequence}`
+            : "—",
+        );
+        setText(
+          "[data-evidence-manifest-observed]",
+          manifest?.first_observed_at
+            ? `${formatDate(manifest.first_observed_at)} — ${formatDate(manifest.last_observed_at)}`
+            : "—",
+        );
+        setText("[data-evidence-manifest-sha]", manifest?.evidence_sha256 || "—");
+        const issues = Array.isArray(manifest?.incomplete_batches)
+          ? manifest.incomplete_batches
+          : [];
+        const accountMap = accountMapFrom(accounts);
+        manifestIssues?.replaceChildren(...issues.map((item) => {
+          const row = document.createElement("tr");
+          const account = accountMap.get(Number(item.account_id));
+          appendCell(row, item.batch_id);
+          appendCell(row, account ? accountLabel(account) : `账号 ${item.account_id}`);
+          appendCell(row, `${peerLabels[item.peer_type] || item.peer_type} · ${item.peer_id}`);
+          appendCell(
+            row,
+            item.status === "failed"
+              ? element("span", "badge badge-red", "失败")
+              : element("span", "badge badge-red", "部分完成"),
+          );
+          return row;
+        }));
+        manifestIssuesWrap?.toggleAttribute("hidden", issues.length === 0);
+        manifestIssuesEmpty?.toggleAttribute("hidden", issues.length > 0);
+      } catch (requestError) {
+        showNotice(manifestError, requestError.message, true);
+      } finally {
+        if (button) {
+          button.disabled = false;
+        }
+      }
+    };
     days?.addEventListener("change", load);
     document.querySelector("[data-report-refresh]")?.addEventListener("click", load);
+    document.querySelector("[data-evidence-manifest-generate]")
+      ?.addEventListener("click", generateManifest);
     loadAccounts()
       .then((items) => {
         accounts = items;

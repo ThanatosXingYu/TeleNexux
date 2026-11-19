@@ -2047,6 +2047,84 @@ func TestMonitorStatusIncludesCollectionHealth(t *testing.T) {
 	}
 }
 
+func TestEvidenceManifestAPIIncludesIntegritySummary(t *testing.T) {
+	ctx := context.Background()
+	operationsService, err := operations.Open(
+		ctx,
+		filepath.Join(t.TempDir(), "manifest-api.db"),
+	)
+	if err != nil {
+		t.Fatalf("open operations service: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := operationsService.Close(); err != nil {
+			t.Errorf("close operations service: %v", err)
+		}
+	})
+	if _, err := operationsService.IngestBatch(ctx, operations.IngestBatchInput{
+		BatchID:         "manifest-api-batch",
+		Source:          "test",
+		AccountID:       7,
+		PeerType:        "chat",
+		PeerID:          42,
+		PeerTitle:       "Ops",
+		CheckpointAfter: 101,
+		Complete:        true,
+		Messages: []operations.MessageRecord{{
+			AccountID: 7,
+			PeerType:  "chat",
+			PeerID:    42,
+			PeerTitle: "Ops",
+			MessageID: 101,
+			Sender:    "Alice",
+			Text:      "manifest API",
+			SentAt:    time.Now().UTC(),
+		}},
+	}); err != nil {
+		t.Fatalf("seed evidence: %v", err)
+	}
+	manager, token, _ := testAuthentication()
+	webHandler, err := web.New()
+	if err != nil {
+		t.Fatalf("web.New() error = %v", err)
+	}
+	handler := New(
+		nil,
+		nil,
+		nil,
+		nil,
+		manager,
+		webHandler.Handler(),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		nil,
+		operationsService,
+		nil,
+	).Handler()
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/evidence/manifest?days=7&account_id=7",
+		nil,
+	)
+	request.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", recorder.Code, recorder.Body.String())
+	}
+	var manifest operations.EvidenceManifest
+	if err := json.NewDecoder(recorder.Body).Decode(&manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	if manifest.DataState != "complete" ||
+		manifest.EventCount != 1 ||
+		manifest.BatchCount != 1 ||
+		manifest.AccountID != 7 ||
+		manifest.GeneratedBy == "" ||
+		len(manifest.EvidenceSHA256) != 64 {
+		t.Fatalf("manifest = %+v", manifest)
+	}
+}
+
 func TestRetentionAndLegalHoldAPI(t *testing.T) {
 	ctx := context.Background()
 	operationsService, err := operations.Open(

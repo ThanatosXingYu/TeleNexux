@@ -183,6 +183,10 @@ type OperationsService interface {
 	ListCollectionTargets(ctx context.Context) ([]operations.CollectionTarget, error)
 	SearchMessages(ctx context.Context, filter operations.MessageQuery) (operations.MessagePage, error)
 	BuildReport(ctx context.Context, days int) (operations.Report, error)
+	BuildEvidenceManifest(
+		ctx context.Context,
+		filter operations.EvidenceManifestFilter,
+	) (operations.EvidenceManifest, error)
 	Dashboard(ctx context.Context, telegramReady bool) (operations.Dashboard, error)
 	CleanupMessages(ctx context.Context, input operations.RetentionCleanupInput) (operations.RetentionResult, error)
 	GetRetentionPolicy(ctx context.Context) (operations.RetentionPolicy, error)
@@ -322,6 +326,8 @@ func (a *API) Handler() http.Handler {
 	)
 	mux.HandleFunc("GET /api/v1/reports",
 		a.requireAPIPermission(auth.PermissionReportRead, a.messageReport))
+	mux.HandleFunc("GET /api/v1/evidence/manifest",
+		a.requireAPIPermission(auth.PermissionReportRead, a.evidenceManifest))
 	mux.Handle("GET /", a.requirePage(a.web))
 
 	mux.HandleFunc("GET /api/v1/accounts",
@@ -1054,6 +1060,46 @@ func (a *API) messageReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+func (a *API) evidenceManifest(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+	if days <= 0 {
+		days = 7
+	}
+	if days > 3650 {
+		writeError(w, http.StatusBadRequest, "invalid_manifest_range",
+			"清单时间范围不能超过 3650 天")
+		return
+	}
+	accountID := int64(0)
+	if raw := r.URL.Query().Get("account_id"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid_account_id",
+				"account_id 必须是正整数")
+			return
+		}
+		accountID = parsed
+	}
+	manifest, err := a.operations.BuildEvidenceManifest(
+		r.Context(),
+		operations.EvidenceManifestFilter{
+			Days:        days,
+			AccountID:   accountID,
+			GeneratedBy: currentActor(r),
+		},
+	)
+	if err != nil {
+		a.logger.Error("build evidence manifest", "error", err)
+		writeError(w, http.StatusInternalServerError, "manifest_failed",
+			"无法生成证据完整性摘要")
+		return
+	}
+	writeJSON(w, http.StatusOK, manifest)
 }
 
 func (a *API) prepareOperations(w http.ResponseWriter) bool {

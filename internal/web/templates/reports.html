@@ -12,10 +12,16 @@
       </select>
     </label>
   </div>
-  <button class="button button-secondary" type="button" data-report-refresh>
-    <span class="icon icon-refresh-cw" aria-hidden="true"></span>
-    刷新报表
-  </button>
+  <div class="heading-actions">
+    <button class="button button-secondary" type="button" data-report-refresh>
+      <span class="icon icon-refresh-cw" aria-hidden="true"></span>
+      刷新报表
+    </button>
+    <button class="button button-secondary" type="button" data-evidence-manifest-generate>
+      <span class="icon icon-shield-check" aria-hidden="true"></span>
+      生成完整性摘要
+    </button>
+  </div>
 </section>
 
 <div class="business-overview-grid">
@@ -50,6 +56,34 @@
     <p>浏览账号会话或运行监控任务后，这里会生成真实统计。</p>
   </div>
   <p class="form-notice form-notice-error" data-report-error hidden></p>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2>证据完整性摘要</h2>
+    <span class="badge badge-neutral" data-evidence-manifest-state>未生成</span>
+  </div>
+  <dl class="info-list">
+    <div><dt>生成人</dt><dd data-evidence-manifest-actor>—</dd></div>
+    <div><dt>生成时间</dt><dd data-evidence-manifest-generated>—</dd></div>
+    <div><dt>证据事件</dt><dd data-evidence-manifest-events>—</dd></div>
+    <div><dt>消息数</dt><dd data-evidence-manifest-messages>—</dd></div>
+    <div><dt>采集批次</dt><dd data-evidence-manifest-batches>—</dd></div>
+    <div><dt>完整性</dt><dd data-evidence-manifest-completeness>—</dd></div>
+    <div><dt>序列范围</dt><dd data-evidence-manifest-sequence>—</dd></div>
+    <div><dt>观察时间</dt><dd data-evidence-manifest-observed>—</dd></div>
+    <div><dt>证据清单 SHA-256</dt><dd data-evidence-manifest-sha>—</dd></div>
+  </dl>
+  <div class="business-table-wrap" data-evidence-manifest-issues-wrap hidden>
+    <table class="business-table">
+      <thead><tr><th>批次</th><th>账号</th><th>会话</th><th>状态</th></tr></thead>
+      <tbody data-evidence-manifest-issues></tbody>
+    </table>
+  </div>
+  <div class="empty-state compact" data-evidence-manifest-empty hidden>
+    <p>当前范围没有不完整采集批次。</p>
+  </div>
+  <p class="form-notice form-notice-error" data-evidence-manifest-error hidden></p>
 </section>
 
 <div class="account-toast" data-business-toast role="status" aria-live="polite" hidden></div>

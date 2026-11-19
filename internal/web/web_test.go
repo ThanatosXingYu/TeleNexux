@@ -82,7 +82,12 @@ func TestBusinessPagesExposeRealDataControls(t *testing.T) {
 		},
 		"/monitor/alerts": {"data-alerts-list", "data-alert-state", "data-alert-action-form"},
 		"/messages":       {"data-message-filter", "data-messages-body"},
-		"/reports":        {"data-report-chart", "data-report-table-body"},
+		"/reports": {
+			"data-report-chart",
+			"data-report-table-body",
+			"data-evidence-manifest-generate",
+			"data-evidence-manifest-sha",
+		},
 	}
 	for path, expected := range tests {
 		t.Run(path, func(t *testing.T) {
