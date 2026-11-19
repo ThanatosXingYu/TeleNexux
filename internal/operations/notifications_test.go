@@ -3,6 +3,7 @@ package operations
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -222,6 +223,51 @@ func TestWebhookChannelRejectsUnsafeInput(t *testing.T) {
 		"short",
 	); err == nil {
 		t.Fatal("CreateWebhookChannel() accepted a short signing secret")
+	}
+}
+
+func TestDeleteNotificationChannelProtectsBuiltInAndReferencedChannels(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	if err := service.DeleteNotificationChannel(ctx, 1); !errors.Is(err, ErrProtectedChannel) {
+		t.Fatalf("DeleteNotificationChannel(built-in) error = %v", err)
+	}
+	channel, err := service.CreateWebhookChannel(
+		ctx,
+		"Disposable webhook",
+		"https://hooks.example.test/disposable",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("CreateWebhookChannel() error = %v", err)
+	}
+	rule, err := service.CreateRuleWithChannel(
+		ctx,
+		"Uses disposable channel",
+		7,
+		"chat",
+		42,
+		"Ops",
+		channel.ID,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("CreateRuleWithChannel() error = %v", err)
+	}
+	if err := service.DeleteNotificationChannel(
+		ctx,
+		channel.ID,
+	); !errors.Is(err, ErrNotificationChannelUse) {
+		t.Fatalf("DeleteNotificationChannel(referenced) error = %v", err)
+	}
+	if err := service.DeleteRule(ctx, rule.ID); err != nil {
+		t.Fatalf("DeleteRule() error = %v", err)
+	}
+	if err := service.DeleteNotificationChannel(ctx, channel.ID); err != nil {
+		t.Fatalf("DeleteNotificationChannel() error = %v", err)
+	}
+	if err := service.DeleteNotificationChannel(ctx, channel.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteNotificationChannel(missing) error = %v", err)
 	}
 }
 

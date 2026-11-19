@@ -740,6 +740,8 @@
     const wrap = document.querySelector("[data-tasks-wrap]");
     const empty = document.querySelector("[data-tasks-empty]");
     const error = document.querySelector("[data-tasks-error]");
+    const channelBody = document.querySelector("[data-channel-list-body]");
+    const channelError = document.querySelector("[data-channel-list-error]");
     const dialog = document.getElementById("monitor-rule-dialog");
     const form = document.querySelector("[data-monitor-rule-form]");
     const formNotice = document.querySelector("[data-monitor-rule-notice]");
@@ -846,8 +848,73 @@
       setText("[data-task-enabled-count]", rules.filter((rule) => rule.enabled).length);
     };
 
+    const renderChannels = (items, rules) => {
+      const usage = new Map();
+      rules.forEach((rule) => {
+        const id = Number(rule.notification_channel_id);
+        usage.set(id, (usage.get(id) || 0) + 1);
+      });
+      channelBody.replaceChildren();
+      items.forEach((channel) => {
+        const row = document.createElement("tr");
+        const identity = element("span", "business-cell-stack");
+        identity.append(
+          element("strong", "", channel.name || "未命名渠道"),
+          element("small", "", channel.kind === "in_app" ? "系统内置" : "Webhook"),
+        );
+        appendCell(row, identity);
+        appendCell(row, channel.kind === "in_app" ? "站内通知" : "Webhook");
+        const status = element(
+          "span",
+          `badge ${
+            channel.configured && channel.enabled ? "badge-green" : "badge-red"
+          }`,
+          channel.configured
+            ? channel.enabled ? "可用" : "已停用"
+            : "配置缺失",
+        );
+        appendCell(row, status);
+        appendCell(row, formatDate(channel.created_at));
+        if (channel.kind === "in_app") {
+          appendCell(row, "不可删除");
+        } else {
+          const references = usage.get(Number(channel.id)) || 0;
+          const remove = element(
+            "button",
+            "button button-danger-ghost button-compact",
+            references > 0 ? `使用中 · ${references}` : "删除",
+          );
+          remove.type = "button";
+          remove.disabled = references > 0;
+          remove.title = references > 0 ? "请先删除引用此渠道的监控规则" : "";
+          remove.addEventListener("click", async () => {
+            if (references > 0 ||
+                !window.confirm(`删除通知渠道“${channel.name}”？`)) {
+              return;
+            }
+            remove.disabled = true;
+            try {
+              await api(`/api/v1/monitor/channels/${encodeURIComponent(channel.id)}`, {
+                method: "DELETE",
+              });
+              showToast("通知渠道已删除");
+              await load();
+            } catch (requestError) {
+              showNotice(channelError, requestError.message, true);
+            } finally {
+              remove.disabled = false;
+            }
+          });
+          appendCell(row, remove);
+        }
+        channelBody.append(row);
+      });
+      setText("[data-channel-count]", items.length);
+    };
+
     const load = async () => {
       showNotice(error);
+      showNotice(channelError);
       try {
         const [rulesPayload, channelPayload, accountItems] = await Promise.all([
           api("/api/v1/monitor/rules"),
@@ -856,7 +923,9 @@
         ]);
         accounts = accountItems;
         channels = Array.isArray(channelPayload?.items) ? channelPayload.items : [];
-        renderRules(Array.isArray(rulesPayload?.items) ? rulesPayload.items : []);
+        const rules = Array.isArray(rulesPayload?.items) ? rulesPayload.items : [];
+        renderRules(rules);
+        renderChannels(channels, rules);
       } catch (requestError) {
         showNotice(error, requestError.message, true);
       }

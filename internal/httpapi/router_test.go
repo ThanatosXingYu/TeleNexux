@@ -1308,6 +1308,28 @@ func TestMonitorNotificationChannelAPI(t *testing.T) {
 		!createdChannel.Configured {
 		t.Fatalf("created channel = %+v", createdChannel)
 	}
+	protectedDeleteRequest := httptest.NewRequest(
+		http.MethodDelete,
+		"/api/v1/monitor/channels/1",
+		nil,
+	)
+	protectedDeleteRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(protectedDeleteRecorder, protectedDeleteRequest)
+	if protectedDeleteRecorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("delete built-in channel response = %d %s",
+			protectedDeleteRecorder.Code, protectedDeleteRecorder.Body.String())
+	}
+	deleteChannelRequest := httptest.NewRequest(
+		http.MethodDelete,
+		"/api/v1/monitor/channels/"+strconv.FormatInt(createdChannel.ID, 10),
+		nil,
+	)
+	deleteChannelRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(deleteChannelRecorder, deleteChannelRequest)
+	if deleteChannelRecorder.Code != http.StatusNoContent {
+		t.Fatalf("delete channel response = %d %s",
+			deleteChannelRecorder.Code, deleteChannelRecorder.Body.String())
+	}
 
 	ruleRequest := httptest.NewRequest(
 		http.MethodPost,

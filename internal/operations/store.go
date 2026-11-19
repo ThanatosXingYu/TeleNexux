@@ -17,10 +17,12 @@ import (
 )
 
 var (
-	ErrNotFound        = errors.New("operations record not found")
-	ErrActiveLegalHold = errors.New("account has an active legal hold")
-	ErrAlertInvalid    = errors.New("invalid monitor alert update")
-	ErrAlertConflict   = errors.New("monitor alert state conflict")
+	ErrNotFound               = errors.New("operations record not found")
+	ErrActiveLegalHold        = errors.New("account has an active legal hold")
+	ErrAlertInvalid           = errors.New("invalid monitor alert update")
+	ErrAlertConflict          = errors.New("monitor alert state conflict")
+	ErrProtectedChannel       = errors.New("built-in notification channel cannot be deleted")
+	ErrNotificationChannelUse = errors.New("notification channel is used by monitor rules")
 )
 
 type Group struct {

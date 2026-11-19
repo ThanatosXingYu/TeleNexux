@@ -16,6 +16,23 @@
   </div>
 </section>
 
+<section class="card" data-channel-list>
+  <div class="card-header">
+    <div>
+      <h2>通知渠道</h2>
+      <p>Webhook 地址与签名密钥保存后不会再次显示。</p>
+    </div>
+    <span class="badge badge-neutral"><strong data-channel-count>—</strong> 个渠道</span>
+  </div>
+  <div class="business-table-wrap">
+    <table class="business-table">
+      <thead><tr><th>渠道</th><th>类型</th><th>状态</th><th>创建于</th><th>操作</th></tr></thead>
+      <tbody data-channel-list-body></tbody>
+    </table>
+  </div>
+  <p class="form-notice form-notice-error" data-channel-list-error hidden></p>
+</section>
+
 <section class="card">
   <div class="business-table-wrap" data-tasks-wrap hidden>
     <table class="business-table">

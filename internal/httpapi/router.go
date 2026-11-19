@@ -157,6 +157,7 @@ type OperationsService interface {
 		url string,
 		secret string,
 	) (operations.NotificationChannel, error)
+	DeleteNotificationChannel(ctx context.Context, id int64) error
 	SetRuleEnabled(ctx context.Context, id int64, enabled bool) error
 	DeleteRule(ctx context.Context, id int64) error
 	ListAlerts(ctx context.Context, state string, limit int) ([]operations.Alert, error)
@@ -265,6 +266,8 @@ func (a *API) Handler() http.Handler {
 		a.requireAPIPermission(auth.PermissionMonitorRead, a.listNotificationChannels))
 	mux.HandleFunc("POST /api/v1/monitor/channels",
 		a.requireAPIPermission(auth.PermissionMonitorWrite, a.createNotificationChannel))
+	mux.HandleFunc("DELETE /api/v1/monitor/channels/{id}",
+		a.requireAPIPermission(auth.PermissionMonitorWrite, a.deleteNotificationChannel))
 	mux.HandleFunc("POST /api/v1/monitor/run",
 		a.requireAPIPermission(auth.PermissionMonitorOperate, a.runMonitor))
 	mux.HandleFunc("GET /api/v1/monitor/status",
@@ -575,6 +578,21 @@ func (a *API) createNotificationChannel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusCreated, item)
+}
+
+func (a *API) deleteNotificationChannel(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if err := a.operations.DeleteNotificationChannel(r.Context(), id); err != nil {
+		a.writeOperationsError(w, err, "notification channel")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) createMonitorRule(w http.ResponseWriter, r *http.Request) {
@@ -949,6 +967,16 @@ func (a *API) prepareOperations(w http.ResponseWriter) bool {
 func (a *API) writeOperationsError(w http.ResponseWriter, err error, subject string) {
 	if errors.Is(err, operations.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", subject+" was not found")
+		return
+	}
+	if errors.Is(err, operations.ErrProtectedChannel) {
+		writeError(w, http.StatusUnprocessableEntity, "protected_channel",
+			"内置通知渠道不可删除")
+		return
+	}
+	if errors.Is(err, operations.ErrNotificationChannelUse) {
+		writeError(w, http.StatusConflict, "notification_channel_in_use",
+			"通知渠道仍被监控规则引用")
 		return
 	}
 	a.logger.Error("operations request failed", "subject", subject, "error", err)

@@ -101,6 +101,48 @@ INSERT INTO notification_channels (
 	return item, nil
 }
 
+func (s *Service) DeleteNotificationChannel(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return errors.New("notification channel ID must be positive")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin notification channel deletion: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var kind string
+	err = tx.QueryRowContext(ctx, `
+SELECT kind FROM notification_channels WHERE id = ?`, id,
+	).Scan(&kind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("read notification channel: %w", err)
+	}
+	if kind == NotificationKindInApp {
+		return ErrProtectedChannel
+	}
+	var usageCount int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(1) FROM monitor_rules WHERE notification_channel_id = ?`, id,
+	).Scan(&usageCount); err != nil {
+		return fmt.Errorf("count notification channel rules: %w", err)
+	}
+	if usageCount > 0 {
+		return ErrNotificationChannelUse
+	}
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM notification_channels WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete notification channel: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit notification channel deletion: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) ClaimNotificationDelivery(
 	ctx context.Context,
 ) (NotificationDelivery, bool, error) {

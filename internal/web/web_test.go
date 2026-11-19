@@ -67,6 +67,8 @@ func TestBusinessPagesExposeRealDataControls(t *testing.T) {
 			"data-monitor-channel",
 			"data-notification-channel-form",
 			"data-channel-create",
+			"data-channel-list-body",
+			"data-channel-list-error",
 		},
 		"/monitor/alerts": {"data-alerts-list", "data-alert-state", "data-alert-action-form"},
 		"/messages":       {"data-message-filter", "data-messages-body"},

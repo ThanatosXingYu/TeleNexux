@@ -19,6 +19,7 @@ func TestBusinessScriptUsesAuthenticatedAPIs(t *testing.T) {
 		`/api/v1/monitor/rules`,
 		`/api/v1/monitor/channels`,
 		`data-notification-channel-form`,
+		`data-channel-list-body`,
 		`delivery_next_attempt_at`,
 		`/api/v1/monitor/alerts`,
 		`/api/v1/monitor/targets`,
