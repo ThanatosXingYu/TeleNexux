@@ -2,6 +2,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -24,6 +25,9 @@ const (
 	CookieName = "telenexus_session"
 	CSRFCookie = "telenexus_csrf"
 	CSRFHeader = "X-CSRF-Token"
+
+	RoleAdministrator = "administrator"
+	PermissionAccess  = "access"
 )
 
 var (
@@ -41,9 +45,18 @@ type credentials struct {
 }
 
 type session struct {
+	Actor     string
+	Role      string
 	CSRF      string
 	ExpiresAt time.Time
 }
+
+type Principal struct {
+	Actor string
+	Role  string
+}
+
+type principalContextKey struct{}
 
 type Manager struct {
 	path         string
@@ -144,7 +157,11 @@ func (m *Manager) Login(username, password string) error {
 }
 
 func (m *Manager) CreateSession() (string, Session, error) {
-	if !m.Configured() {
+	m.mu.RLock()
+	actor := m.username
+	configured := m.username != "" && m.passwordHash != ""
+	m.mu.RUnlock()
+	if !configured {
 		return "", Session{}, ErrNotConfigured
 	}
 	token, err := randomToken()
@@ -156,7 +173,12 @@ func (m *Manager) CreateSession() (string, Session, error) {
 		return "", Session{}, fmt.Errorf("generate CSRF token: %w", err)
 	}
 	now := m.now().UTC()
-	item := session{CSRF: csrf, ExpiresAt: now.Add(m.sessionTTL)}
+	item := session{
+		Actor:     actor,
+		Role:      RoleAdministrator,
+		CSRF:      csrf,
+		ExpiresAt: now.Add(m.sessionTTL),
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -166,7 +188,7 @@ func (m *Manager) CreateSession() (string, Session, error) {
 		}
 	}
 	m.sessions[sessionKey(token)] = item
-	return token, Session{CSRF: csrf, ExpiresAt: item.ExpiresAt}, nil
+	return token, publicSession(item), nil
 }
 
 func (m *Manager) Lookup(token string) (Session, error) {
@@ -180,7 +202,7 @@ func (m *Manager) Lookup(token string) (Session, error) {
 		}
 		return Session{}, ErrInvalidSession
 	}
-	return Session{CSRF: item.CSRF, ExpiresAt: item.ExpiresAt}, nil
+	return publicSession(item), nil
 }
 
 func (m *Manager) Delete(token string) {
@@ -193,8 +215,23 @@ func (m *Manager) Delete(token string) {
 }
 
 type Session struct {
+	Actor     string
+	Role      string
 	CSRF      string
 	ExpiresAt time.Time
+}
+
+func WithPrincipal(ctx context.Context, principal Principal) context.Context {
+	return context.WithValue(ctx, principalContextKey{}, principal)
+}
+
+func PrincipalFromContext(ctx context.Context) (Principal, bool) {
+	principal, ok := ctx.Value(principalContextKey{}).(Principal)
+	return principal, ok && principal.Actor != "" && principal.Role != ""
+}
+
+func CanAccess(role, permission string) bool {
+	return role == RoleAdministrator && permission == PermissionAccess
 }
 
 func (m *Manager) load() error {
@@ -289,4 +326,13 @@ func constantTimeStringEqual(left, right string) bool {
 	leftHash := sha256.Sum256([]byte(left))
 	rightHash := sha256.Sum256([]byte(right))
 	return subtle.ConstantTimeCompare(leftHash[:], rightHash[:]) == 1
+}
+
+func publicSession(item session) Session {
+	return Session{
+		Actor:     item.Actor,
+		Role:      item.Role,
+		CSRF:      item.CSRF,
+		ExpiresAt: item.ExpiresAt,
+	}
 }

@@ -309,7 +309,35 @@ CREATE TABLE IF NOT EXISTS evidence_events (
 CREATE INDEX IF NOT EXISTS evidence_events_message_idx
 	ON evidence_events(account_id, peer_type, peer_id, message_id, version DESC);
 CREATE INDEX IF NOT EXISTS evidence_events_batch_idx
-	ON evidence_events(batch_id, sequence);`
+	ON evidence_events(batch_id, sequence);
+CREATE TABLE IF NOT EXISTS audit_events (
+	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+	request_id TEXT NOT NULL UNIQUE,
+	actor TEXT NOT NULL,
+	role TEXT NOT NULL,
+	method TEXT NOT NULL,
+	route TEXT NOT NULL,
+	resource_type TEXT NOT NULL DEFAULT '',
+	resource_id TEXT NOT NULL DEFAULT '',
+	client_ip TEXT NOT NULL DEFAULT '',
+	status_code INTEGER NOT NULL,
+	outcome TEXT NOT NULL CHECK (outcome IN ('success', 'denied', 'failure')),
+	occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS audit_events_occurred_idx
+	ON audit_events(occurred_at DESC, sequence DESC);
+CREATE INDEX IF NOT EXISTS audit_events_actor_idx
+	ON audit_events(actor, occurred_at DESC);
+CREATE TRIGGER IF NOT EXISTS audit_events_no_update
+BEFORE UPDATE ON audit_events
+BEGIN
+	SELECT RAISE(ABORT, 'audit events are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
+BEFORE DELETE ON audit_events
+BEGIN
+	SELECT RAISE(ABORT, 'audit events are append-only');
+END;`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate operations database: %w", err)
 	}

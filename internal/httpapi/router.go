@@ -3,6 +3,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -153,6 +155,8 @@ type OperationsService interface {
 	Dashboard(ctx context.Context, telegramReady bool) (operations.Dashboard, error)
 	CleanupMessages(ctx context.Context, retentionDays int) (int64, error)
 	PurgeAccount(ctx context.Context, accountID int64) error
+	RecordAudit(ctx context.Context, input operations.AuditEventInput) error
+	ListAuditEvents(ctx context.Context, filter operations.AuditFilter) (operations.AuditPage, error)
 }
 
 type MonitorRunner interface {
@@ -217,6 +221,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/login", a.loginAdministrator)
 	mux.HandleFunc("POST /api/v1/auth/logout", a.requireAPI(a.logoutAdministrator))
 	mux.HandleFunc("GET /api/v1/health", a.requireAPI(a.healthDetails))
+	mux.HandleFunc("GET /api/v1/audit/events", a.requireAPI(a.listAuditEvents))
 	mux.HandleFunc("GET /api/v1/dashboard", a.requireAPI(a.dashboard))
 	mux.HandleFunc("GET /api/v1/groups", a.requireAPI(a.listGroups))
 	mux.HandleFunc("POST /api/v1/groups", a.requireAPI(a.createGroup))
@@ -289,7 +294,7 @@ func (a *API) Handler() http.Handler {
 		"DELETE /api/v1/telegram/auth/{loginID}",
 		a.requireAPI(a.cancelTelegramLogin),
 	)
-	return a.recoverPanic(a.logRequests(mux))
+	return a.logRequests(a.recoverPanic(mux))
 }
 
 func (a *API) health(w http.ResponseWriter, r *http.Request) {
@@ -334,6 +339,37 @@ func (a *API) dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *API) listAuditEvents(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	filter := operations.AuditFilter{
+		Actor: strings.TrimSpace(r.URL.Query().Get("actor")),
+	}
+	var err error
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		filter.Limit, err = strconv.Atoi(raw)
+		if err != nil || filter.Limit < 1 || filter.Limit > 200 {
+			writeError(w, http.StatusBadRequest, "invalid_limit", "limit must be between 1 and 200")
+			return
+		}
+	}
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		filter.Offset, err = strconv.Atoi(raw)
+		if err != nil || filter.Offset < 0 {
+			writeError(w, http.StatusBadRequest, "invalid_offset", "offset must be a non-negative integer")
+			return
+		}
+	}
+	page, err := a.operations.ListAuditEvents(r.Context(), filter)
+	if err != nil {
+		a.logger.Error("list operation audit", "error", err)
+		writeError(w, http.StatusInternalServerError, "audit_unavailable", "操作审计记录暂时不可用")
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 
 func (a *API) listGroups(w http.ResponseWriter, r *http.Request) {
@@ -696,6 +732,11 @@ type authSessionResponse struct {
 	CSRFToken     string `json:"csrf_token,omitempty"`
 }
 
+const (
+	anonymousAuditActor = "anonymous"
+	anonymousAuditRole  = "anonymous"
+)
+
 func (a *API) authSession(w http.ResponseWriter, r *http.Request) {
 	if a.auth == nil {
 		writeError(w, http.StatusServiceUnavailable, "auth_unavailable", "管理员鉴权尚未初始化")
@@ -715,6 +756,12 @@ func (a *API) authSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) setupAdministrator(w http.ResponseWriter, r *http.Request) {
+	w = responseWriter(w)
+	principal := auth.Principal{Actor: anonymousAuditActor, Role: anonymousAuditRole}
+	defer func() {
+		a.recordAudit(r, responseWriter(w).StatusCode(), principal)
+	}()
+	defer a.recoverRequest(w, r)
 	if a.auth == nil {
 		writeError(w, http.StatusServiceUnavailable, "auth_unavailable", "管理员鉴权尚未初始化")
 		return
@@ -738,6 +785,7 @@ func (a *API) setupAdministrator(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_admin_credentials", err.Error())
 		return
 	}
+	principal = auth.Principal{Actor: a.auth.Username(), Role: auth.RoleAdministrator}
 	if err := a.startAdministratorSession(w, r); err != nil {
 		a.logger.Error("create initial administrator session", "error", err)
 		writeError(w, http.StatusInternalServerError, "session_failed", "管理员已创建，请重新登录")
@@ -745,6 +793,12 @@ func (a *API) setupAdministrator(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) loginAdministrator(w http.ResponseWriter, r *http.Request) {
+	w = responseWriter(w)
+	principal := auth.Principal{Actor: anonymousAuditActor, Role: anonymousAuditRole}
+	defer func() {
+		a.recordAudit(r, responseWriter(w).StatusCode(), principal)
+	}()
+	defer a.recoverRequest(w, r)
 	if a.auth == nil {
 		writeError(w, http.StatusServiceUnavailable, "auth_unavailable", "管理员鉴权尚未初始化")
 		return
@@ -774,6 +828,7 @@ func (a *API) loginAdministrator(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid_login", "管理员账号或密码不正确")
 		return
 	}
+	principal = auth.Principal{Actor: a.auth.Username(), Role: auth.RoleAdministrator}
 	a.clearLoginAttempts(key)
 	if err := a.startAdministratorSession(w, r); err != nil {
 		a.logger.Error("create administrator session", "error", err)
@@ -825,15 +880,27 @@ func (a *API) startAdministratorSession(w http.ResponseWriter, r *http.Request) 
 
 func (a *API) requireAPI(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		w = responseWriter(w)
+		principal := auth.Principal{Actor: anonymousAuditActor, Role: anonymousAuditRole}
+		defer func() {
+			a.recordAudit(r, responseWriter(w).StatusCode(), principal)
+		}()
+		defer a.recoverRequest(w, r)
 		session, ok := a.authorizedSession(w, r, false)
 		if !ok {
 			return
 		}
+		if !auth.CanAccess(session.Role, auth.PermissionAccess) {
+			writeError(w, http.StatusForbidden, "permission_denied", "当前操作者没有访问权限")
+			return
+		}
+		principal = auth.Principal{Actor: session.Actor, Role: session.Role}
+		request := r.WithContext(auth.WithPrincipal(r.Context(), principal))
 		if isUnsafeMethod(r.Method) && r.Header.Get(auth.CSRFHeader) != session.CSRF {
 			writeError(w, http.StatusForbidden, "invalid_csrf", "请求校验失败，请刷新页面后重试")
 			return
 		}
-		next(w, r)
+		next(w, request)
 	}
 }
 
@@ -1967,26 +2034,179 @@ func parseFilter(r *http.Request) (account.Filter, error) {
 
 func (a *API) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := newRequestID()
+		w.Header().Set("X-Request-ID", requestID)
+		r = r.WithContext(context.WithValue(r.Context(), requestIDContextKey{}, requestID))
+		writer := responseWriter(w)
 		started := time.Now()
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(writer, r)
 		a.logger.Info("http request",
+			"request_id", requestID,
 			"method", r.Method,
 			"path", r.URL.Path,
+			"status", writer.StatusCode(),
 			"duration", time.Since(started),
 		)
 	})
 }
 
+type requestIDContextKey struct{}
+
+type statusResponseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func responseWriter(w http.ResponseWriter) *statusResponseWriter {
+	if writer, ok := w.(*statusResponseWriter); ok {
+		return writer
+	}
+	return &statusResponseWriter{ResponseWriter: w}
+}
+
+func (w *statusResponseWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusResponseWriter) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *statusResponseWriter) StatusCode() int {
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
+}
+
+func (w *statusResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func newRequestID() string {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(value)
+}
+
+func requestIDFromContext(ctx context.Context) string {
+	value, _ := ctx.Value(requestIDContextKey{}).(string)
+	return value
+}
+
+func (a *API) recordAudit(
+	r *http.Request,
+	statusCode int,
+	principal auth.Principal,
+) {
+	if a.operations == nil || !shouldAuditRequest(r.Method, r.Pattern) {
+		return
+	}
+	route := r.Pattern
+	if index := strings.IndexByte(route, ' '); index >= 0 {
+		route = strings.TrimSpace(route[index+1:])
+	}
+	if route == "" {
+		route = r.URL.Path
+	}
+	resourceType, resourceID := auditResource(r)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 3*time.Second)
+	defer cancel()
+	if err := a.operations.RecordAudit(ctx, operations.AuditEventInput{
+		RequestID:    requestIDFromContext(r.Context()),
+		Actor:        principal.Actor,
+		Role:         principal.Role,
+		Method:       r.Method,
+		Route:        route,
+		ResourceType: resourceType,
+		ResourceID:   resourceID,
+		ClientIP:     clientAddress(r),
+		StatusCode:   statusCode,
+	}); err != nil {
+		a.logger.Error("record operation audit",
+			"request_id", requestIDFromContext(r.Context()),
+			"actor", principal.Actor,
+			"route", route,
+			"error", err)
+	}
+}
+
+func shouldAuditRequest(method, pattern string) bool {
+	route := pattern
+	if index := strings.IndexByte(route, ' '); index >= 0 {
+		route = strings.TrimSpace(route[index+1:])
+	}
+	if route == "" || !strings.HasPrefix(route, "/api/v1/") {
+		return false
+	}
+	switch route {
+	case "/api/v1/health",
+		"/api/v1/telegram/auth/qr/{loginID}",
+		"/api/v1/accounts/{id}/chats/{peerType}/{peerID}/avatar":
+		return method != http.MethodGet
+	default:
+		return true
+	}
+}
+
+func auditResource(r *http.Request) (string, string) {
+	pattern := r.Pattern
+	if index := strings.IndexByte(pattern, ' '); index >= 0 {
+		pattern = strings.TrimSpace(pattern[index+1:])
+	}
+	if peerID := r.PathValue("peerID"); peerID != "" {
+		return "chat", strings.Join([]string{
+			r.PathValue("id"),
+			r.PathValue("peerType"),
+			peerID,
+		}, "/")
+	}
+	if accountID := r.PathValue("id"); accountID != "" &&
+		strings.HasPrefix(pattern, "/api/v1/accounts/") {
+		return "account", accountID
+	}
+	if loginID := r.PathValue("loginID"); loginID != "" {
+		return "telegram_login", loginID
+	}
+	if ruleID := r.PathValue("id"); ruleID != "" &&
+		strings.Contains(pattern, "/monitor/rules/") {
+		return "monitor_rule", ruleID
+	}
+	if alertID := r.PathValue("id"); alertID != "" &&
+		strings.Contains(pattern, "/monitor/alerts/") {
+		return "monitor_alert", alertID
+	}
+	if groupID := r.PathValue("id"); groupID != "" &&
+		strings.Contains(pattern, "/groups/") {
+		return "account_group", groupID
+	}
+	return "api", ""
+}
+
 func (a *API) recoverPanic(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				a.logger.Error("panic serving request", "path", r.URL.Path, "panic", fmt.Sprint(recovered))
-				writeError(w, http.StatusInternalServerError, "internal_error", "unexpected server error")
-			}
-		}()
+		defer a.recoverRequest(w, r)
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (a *API) recoverRequest(w http.ResponseWriter, r *http.Request) {
+	if recovered := recover(); recovered != nil {
+		a.logger.Error("panic serving request",
+			"request_id", requestIDFromContext(r.Context()),
+			"path", r.URL.Path,
+			"panic", fmt.Sprint(recovered))
+		writeError(w, http.StatusInternalServerError, "internal_error", "unexpected server error")
+	}
 }
 
 type errorResponse struct {

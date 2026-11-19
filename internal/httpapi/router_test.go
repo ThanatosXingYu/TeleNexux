@@ -1037,6 +1037,255 @@ func TestMonitorNotificationChannelAPI(t *testing.T) {
 	}
 }
 
+func TestAuthenticatedAPIAccessIsAudited(t *testing.T) {
+	ctx := context.Background()
+	operationsService, err := operations.Open(
+		ctx,
+		filepath.Join(t.TempDir(), "audit.db"),
+	)
+	if err != nil {
+		t.Fatalf("open operations service: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := operationsService.Close(); err != nil {
+			t.Errorf("close operations service: %v", err)
+		}
+	})
+	webHandler, err := web.New()
+	if err != nil {
+		t.Fatalf("create web handler: %v", err)
+	}
+	manager, token, csrf := testAuthentication()
+	handler := authenticatedTestHandler{
+		next: New(
+			&fakeAccountService{created: account.Account{ID: 42}},
+			nil,
+			nil,
+			nil,
+			manager,
+			webHandler.Handler(),
+			slog.New(slog.NewTextHandler(io.Discard, nil)),
+			nil,
+			operationsService,
+			nil,
+		).Handler(),
+		token: token,
+		csrf:  csrf,
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/42?secret=ignored", nil)
+	request.RemoteAddr = "127.0.0.1:50123"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+
+	deniedRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/accounts",
+		strings.NewReader(`{}`),
+	)
+	deniedRequest.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	deniedRequest.Header.Set("Content-Type", "application/json")
+	deniedRecorder := httptest.NewRecorder()
+	handler.next.ServeHTTP(deniedRecorder, deniedRequest)
+	if deniedRecorder.Code != http.StatusForbidden {
+		t.Fatalf("denied status = %d, want 403; body: %s",
+			deniedRecorder.Code, deniedRecorder.Body.String())
+	}
+
+	page, err := operationsService.ListAuditEvents(ctx, operations.AuditFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListAuditEvents() error = %v", err)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("audit events = %+v", page.Items)
+	}
+	readEvent := page.Items[1]
+	if readEvent.Actor != "admin" || readEvent.Role != auth.RoleAdministrator ||
+		readEvent.Method != http.MethodGet ||
+		readEvent.ResourceType != "account" || readEvent.ResourceID != "42" ||
+		readEvent.StatusCode != http.StatusOK || readEvent.Outcome != "success" ||
+		readEvent.RequestID == "" {
+		t.Fatalf("read audit event = %+v", readEvent)
+	}
+	if strings.Contains(readEvent.Route, "secret") {
+		t.Fatalf("audit route leaked query data: %q", readEvent.Route)
+	}
+	deniedEvent := page.Items[0]
+	if deniedEvent.StatusCode != http.StatusForbidden ||
+		deniedEvent.Outcome != "denied" ||
+		deniedEvent.Method != http.MethodPost {
+		t.Fatalf("denied audit event = %+v", deniedEvent)
+	}
+}
+
+func TestAuthenticationEventsAreAuditedWithoutCredentials(t *testing.T) {
+	ctx := context.Background()
+	operationsService, err := operations.Open(
+		ctx,
+		filepath.Join(t.TempDir(), "auth-audit.db"),
+	)
+	if err != nil {
+		t.Fatalf("open operations service: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := operationsService.Close(); err != nil {
+			t.Errorf("close operations service: %v", err)
+		}
+	})
+	manager, err := auth.NewManager(filepath.Join(t.TempDir(), "credentials.json"))
+	if err != nil {
+		t.Fatalf("create auth manager: %v", err)
+	}
+	webHandler, err := web.New()
+	if err != nil {
+		t.Fatalf("create web handler: %v", err)
+	}
+	handler := New(
+		nil,
+		nil,
+		nil,
+		nil,
+		manager,
+		webHandler.Handler(),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		nil,
+		operationsService,
+		nil,
+	).Handler()
+
+	submit := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(
+			http.MethodPost,
+			"/api/v1/auth/login?redirect=/secret",
+			strings.NewReader(body),
+		)
+		request.RemoteAddr = "127.0.0.1:50200"
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder
+	}
+
+	setupRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/setup",
+		strings.NewReader(`{"username":"audit-admin","password":"strong-password-123"}`),
+	)
+	setupRequest.RemoteAddr = "127.0.0.1:50200"
+	setupRequest.Header.Set("Content-Type", "application/json")
+	setupRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(setupRecorder, setupRequest)
+	if setupRecorder.Code != http.StatusOK {
+		t.Fatalf("setup status = %d; body: %s",
+			setupRecorder.Code, setupRecorder.Body.String())
+	}
+
+	failed := submit(`{"username":"audit-admin","password":"wrong-password-456"}`)
+	if failed.Code != http.StatusUnauthorized {
+		t.Fatalf("failed login status = %d; body: %s", failed.Code, failed.Body.String())
+	}
+	succeeded := submit(`{"username":"audit-admin","password":"strong-password-123"}`)
+	if succeeded.Code != http.StatusOK {
+		t.Fatalf("login status = %d; body: %s", succeeded.Code, succeeded.Body.String())
+	}
+
+	page, err := operationsService.ListAuditEvents(ctx, operations.AuditFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListAuditEvents() error = %v", err)
+	}
+	if len(page.Items) != 3 {
+		t.Fatalf("audit events = %+v", page.Items)
+	}
+	successEvent := page.Items[0]
+	if successEvent.Actor != "audit-admin" ||
+		successEvent.Role != auth.RoleAdministrator ||
+		successEvent.Outcome != "success" {
+		t.Fatalf("login audit event = %+v", successEvent)
+	}
+	failedEvent := page.Items[1]
+	if failedEvent.Actor != anonymousAuditActor ||
+		failedEvent.Role != anonymousAuditRole ||
+		failedEvent.Outcome != "denied" {
+		t.Fatalf("failed login audit event = %+v", failedEvent)
+	}
+	setupEvent := page.Items[2]
+	if setupEvent.Actor != "audit-admin" ||
+		setupEvent.Method != http.MethodPost ||
+		setupEvent.Route != "/api/v1/auth/setup" {
+		t.Fatalf("setup audit event = %+v", setupEvent)
+	}
+	for _, item := range page.Items {
+		serialized := strings.Join([]string{
+			item.RequestID,
+			item.Actor,
+			item.Role,
+			item.Method,
+			item.Route,
+			item.ResourceType,
+			item.ResourceID,
+			item.ClientIP,
+			item.Outcome,
+		}, " ")
+		for _, secret := range []string{
+			"strong-password-123",
+			"wrong-password-456",
+			"redirect",
+			"secret",
+		} {
+			if strings.Contains(serialized, secret) {
+				t.Fatalf("audit event leaked %q: %+v", secret, item)
+			}
+		}
+	}
+}
+
+func TestPanickedAPIRequestIsAuditedAsFailure(t *testing.T) {
+	ctx := context.Background()
+	operationsService, err := operations.Open(
+		ctx,
+		filepath.Join(t.TempDir(), "panic-audit.db"),
+	)
+	if err != nil {
+		t.Fatalf("open operations service: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := operationsService.Close(); err != nil {
+			t.Errorf("close operations service: %v", err)
+		}
+	})
+	manager, token, _ := testAuthentication()
+	api := &API{
+		auth:       manager,
+		operations: operationsService,
+		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	handler := api.logRequests(api.requireAPI(func(http.ResponseWriter, *http.Request) {
+		panic("synthetic panic")
+	}))
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/accounts", nil)
+	request.Pattern = "/api/v1/accounts"
+	request.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("panic status = %d, want 500; body: %s",
+			recorder.Code, recorder.Body.String())
+	}
+	page, err := operationsService.ListAuditEvents(ctx, operations.AuditFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListAuditEvents() error = %v", err)
+	}
+	if len(page.Items) != 1 ||
+		page.Items[0].StatusCode != http.StatusInternalServerError ||
+		page.Items[0].Outcome != "failure" {
+		t.Fatalf("panic audit events = %+v", page.Items)
+	}
+}
+
 func TestDeleteChatMessagesUsesRequestedScope(t *testing.T) {
 	for _, test := range []struct {
 		name       string

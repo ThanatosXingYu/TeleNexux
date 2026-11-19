@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -53,6 +54,9 @@ func TestManagerCreatesAndRevokesSessions(t *testing.T) {
 	if token == "" || session.CSRF == "" || token == session.CSRF {
 		t.Fatalf("CreateSession() returned unsafe tokens: token=%q csrf=%q", token, session.CSRF)
 	}
+	if session.Actor != "admin" || session.Role != RoleAdministrator {
+		t.Fatalf("CreateSession() principal = %q/%q", session.Actor, session.Role)
+	}
 	got, err := manager.Lookup(token)
 	if err != nil {
 		t.Fatalf("Lookup() error = %v", err)
@@ -60,9 +64,28 @@ func TestManagerCreatesAndRevokesSessions(t *testing.T) {
 	if got.CSRF != session.CSRF {
 		t.Fatalf("Lookup() CSRF = %q, want %q", got.CSRF, session.CSRF)
 	}
+	if got.Actor != session.Actor || got.Role != session.Role {
+		t.Fatalf("Lookup() principal = %q/%q", got.Actor, got.Role)
+	}
 	manager.Delete(token)
 	if _, err := manager.Lookup(token); !errors.Is(err, ErrInvalidSession) {
 		t.Fatalf("Lookup() after Delete() error = %v, want ErrInvalidSession", err)
+	}
+}
+
+func TestPrincipalContextAndRolePolicy(t *testing.T) {
+	principal := Principal{Actor: "admin", Role: RoleAdministrator}
+	ctx := WithPrincipal(context.Background(), principal)
+	got, ok := PrincipalFromContext(ctx)
+	if !ok || got != principal {
+		t.Fatalf("PrincipalFromContext() = %+v, %v", got, ok)
+	}
+	if !CanAccess(RoleAdministrator, PermissionAccess) {
+		t.Fatal("administrator access was denied")
+	}
+	if CanAccess("viewer", PermissionAccess) ||
+		CanAccess(RoleAdministrator, "unknown") {
+		t.Fatal("unknown role or permission was allowed")
 	}
 }
 
