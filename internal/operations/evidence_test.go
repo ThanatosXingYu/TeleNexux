@@ -168,6 +168,67 @@ WHERE account_id = 7 AND peer_type = 'chat' AND peer_id = 42 AND message_id = 10
 	}
 }
 
+func TestDeletedMessageExcludedFromSearchAndStatistics(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	if _, err := service.db.ExecContext(ctx, `
+CREATE TABLE accounts (
+	id INTEGER PRIMARY KEY,
+	status TEXT NOT NULL,
+	last_verified_at TEXT NOT NULL,
+	purge_state TEXT NOT NULL DEFAULT 'active'
+)`); err != nil {
+		t.Fatalf("create accounts table: %v", err)
+	}
+	if _, err := service.db.ExecContext(ctx, `
+INSERT INTO accounts (id, status, last_verified_at, purge_state)
+VALUES (7, 'offline', ?, 'active')`, now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("insert account: %v", err)
+	}
+	message := MessageRecord{
+		AccountID: 7,
+		PeerType:  "chat",
+		PeerID:    42,
+		PeerTitle: "Operations",
+		MessageID: 101,
+		Sender:    "Alice",
+		Text:      "deleted search term",
+		SentAt:    now,
+	}
+	if _, _, err := service.IngestMessages(ctx, []MessageRecord{message}); err != nil {
+		t.Fatalf("IngestMessages() error = %v", err)
+	}
+	if _, err := service.RecordDeletion(ctx, 7, "chat", 42, []int{101}, "tester"); err != nil {
+		t.Fatalf("RecordDeletion() error = %v", err)
+	}
+
+	for _, query := range []string{"", "deleted search term"} {
+		page, err := service.SearchMessages(ctx, MessageQuery{Query: query, Limit: 20})
+		if err != nil {
+			t.Fatalf("SearchMessages(%q) error = %v", query, err)
+		}
+		if page.Total != 0 || len(page.Items) != 0 {
+			t.Fatalf("SearchMessages(%q) returned deleted message: %+v", query, page)
+		}
+	}
+	report, err := service.BuildReport(ctx, 7)
+	if err != nil {
+		t.Fatalf("BuildReport() error = %v", err)
+	}
+	if report.Total != 0 || len(report.ByDay) != 0 || len(report.ByAccount) != 0 {
+		t.Fatalf("BuildReport() counted deleted message: %+v", report)
+	}
+	dashboard, err := service.Dashboard(ctx, true)
+	if err != nil {
+		t.Fatalf("Dashboard() error = %v", err)
+	}
+	if dashboard.TodayMessages != 0 {
+		t.Fatalf("Dashboard() counted deleted message: %+v", dashboard)
+	}
+}
+
 func TestEvidenceMediaReferenceRefreshDoesNotCreateFalseEdit(t *testing.T) {
 	ctx := context.Background()
 	service := newTestService(t)

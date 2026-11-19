@@ -2082,7 +2082,7 @@ func (s *Service) SearchMessages(ctx context.Context, filter MessageQuery) (Mess
 	if filter.Offset < 0 {
 		return MessagePage{}, errors.New("offset must not be negative")
 	}
-	where := make([]string, 0, 5)
+	where := []string{"deleted_at = ''"}
 	args := make([]any, 0, 6)
 	if filter.Query != "" {
 		if utf8.RuneCountInString(filter.Query) >= 3 {
@@ -2165,7 +2165,7 @@ func (s *Service) BuildReport(ctx context.Context, days int) (Report, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT substr(sent_at, 1, 10) AS day, COUNT(1)
 FROM indexed_messages
-WHERE sent_at >= ?
+WHERE sent_at >= ? AND deleted_at = ''
 GROUP BY day
 ORDER BY day`, since.Format(time.RFC3339Nano))
 	if err != nil {
@@ -2188,7 +2188,7 @@ ORDER BY day`, since.Format(time.RFC3339Nano))
 	accountRows, err := s.db.QueryContext(ctx, `
 SELECT account_id, COUNT(1)
 FROM indexed_messages
-WHERE sent_at >= ?
+WHERE sent_at >= ? AND deleted_at = ''
 GROUP BY account_id
 ORDER BY COUNT(1) DESC`, since.Format(time.RFC3339Nano))
 	if err != nil {
@@ -2236,9 +2236,10 @@ WHERE status = 'online' AND purge_state = 'active' AND last_verified_at >= ?`,
 		},
 		{dest: &result.MonitorCount, query: `SELECT COUNT(1) FROM monitor_rules WHERE enabled = 1`},
 		{
-			dest:  &result.TodayMessages,
-			query: `SELECT COUNT(1) FROM indexed_messages WHERE sent_at >= ?`,
-			args:  []any{now.Truncate(24 * time.Hour).Format(time.RFC3339Nano)},
+			dest: &result.TodayMessages,
+			query: `SELECT COUNT(1) FROM indexed_messages
+WHERE sent_at >= ? AND deleted_at = ''`,
+			args: []any{now.Truncate(24 * time.Hour).Format(time.RFC3339Nano)},
 		},
 		{
 			dest: &result.PendingAlerts,
