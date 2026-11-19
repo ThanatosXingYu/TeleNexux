@@ -1,0 +1,31 @@
+{{define "monitor_alerts.html"}}
+<section class="account-toolbar" aria-label="告警筛选">
+  <div class="account-toolbar-summary">
+    <span><strong data-alert-total>—</strong> 条记录</span>
+    <label class="inline-filter">
+      <span>状态</span>
+      <select data-alert-state>
+        <option value="pending">待处理</option>
+        <option value="resolved">已解决</option>
+        <option value="">全部</option>
+      </select>
+    </label>
+  </div>
+  <button class="button button-secondary" type="button" data-alerts-refresh>
+    <span class="icon icon-refresh-cw" aria-hidden="true"></span>
+    刷新
+  </button>
+</section>
+
+<section class="card">
+  <div class="business-list" data-alerts-list></div>
+  <div class="empty-state compact" data-alerts-empty hidden>
+    <span class="empty-icon"><span class="icon icon-bell-ring" aria-hidden="true"></span></span>
+    <h2>没有符合条件的告警</h2>
+    <p>监控规则命中关键词后，告警会显示在这里。</p>
+  </div>
+  <p class="form-notice form-notice-error" data-alerts-error hidden></p>
+</section>
+
+<div class="account-toast" data-business-toast role="status" aria-live="polite" hidden></div>
+{{end}}

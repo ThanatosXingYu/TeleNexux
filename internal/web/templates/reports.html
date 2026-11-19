@@ -1,0 +1,56 @@
+{{define "reports.html"}}
+<section class="account-toolbar" aria-label="报表筛选">
+  <div class="account-toolbar-summary">
+    <span><strong data-report-total>—</strong> 条索引消息</span>
+    <label class="inline-filter">
+      <span>范围</span>
+      <select data-report-days>
+        <option value="7">最近 7 天</option>
+        <option value="14">最近 14 天</option>
+        <option value="30">最近 30 天</option>
+        <option value="90">最近 90 天</option>
+      </select>
+    </label>
+  </div>
+  <button class="button button-secondary" type="button" data-report-refresh>
+    <span class="icon icon-refresh-cw" aria-hidden="true"></span>
+    刷新报表
+  </button>
+</section>
+
+<div class="business-overview-grid">
+  <section class="card">
+    <div class="card-header">
+      <h2>每日消息量</h2>
+      <span class="muted" data-report-generated>读取中</span>
+    </div>
+    <div class="business-chart business-chart-large" data-report-chart>
+      <p class="business-empty-copy">正在统计数据...</p>
+    </div>
+  </section>
+  <section class="card">
+    <div class="card-header"><h2>账号分布</h2></div>
+    <div class="business-compact-list" data-report-accounts>
+      <p class="business-empty-copy">正在统计账号...</p>
+    </div>
+  </section>
+</div>
+
+<section class="card">
+  <div class="card-header"><h2>每日明细</h2></div>
+  <div class="business-table-wrap" data-report-table-wrap hidden>
+    <table class="business-table">
+      <thead><tr><th>日期</th><th>消息数</th></tr></thead>
+      <tbody data-report-table-body></tbody>
+    </table>
+  </div>
+  <div class="empty-state compact" data-report-empty hidden>
+    <span class="empty-icon"><span class="icon icon-chart-no-axes-column" aria-hidden="true"></span></span>
+    <h2>暂无索引数据</h2>
+    <p>浏览账号会话或运行监控任务后，这里会生成真实统计。</p>
+  </div>
+  <p class="form-notice form-notice-error" data-report-error hidden></p>
+</section>
+
+<div class="account-toast" data-business-toast role="status" aria-live="polite" hidden></div>
+{{end}}

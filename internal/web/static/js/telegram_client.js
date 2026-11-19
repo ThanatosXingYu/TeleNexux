@@ -56,6 +56,7 @@
     selectionBar: root.querySelector("[data-selection-bar]"),
     selectionCount: root.querySelector("[data-selection-count]"),
     contextMenu: root.querySelector("[data-context-menu]"),
+    appContextMenu: root.querySelector("[data-app-context-menu]"),
     forwardDialog: root.querySelector("[data-forward-dialog]"),
     forwardForm: root.querySelector("[data-forward-form]"),
     forwardTarget: root.querySelector("[data-forward-target]"),
@@ -108,6 +109,16 @@
   const requestJSON = async (path, options = {}) => {
     const headers = new Headers(options.headers || {});
     headers.set("Accept", "application/json");
+    if (options.method && !["GET", "HEAD", "OPTIONS"].includes(options.method.toUpperCase())) {
+      const csrf = document.cookie
+        .split(";")
+        .map((part) => part.trim())
+        .find((part) => part.startsWith("telenexus_csrf="))
+        ?.slice("telenexus_csrf=".length);
+      if (csrf) {
+        headers.set("X-CSRF-Token", decodeURIComponent(csrf));
+      }
+    }
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 35000);
     try {
@@ -122,6 +133,9 @@
         }
       }
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.replace("/login");
+        }
         const error = new Error(payload?.error?.message || `请求失败（${response.status}）`);
         error.code = payload?.error?.code || "request_failed";
         error.status = response.status;
@@ -935,20 +949,29 @@
 
   const hideContextMenu = () => {
     elements.contextMenu?.setAttribute("hidden", "");
+    elements.appContextMenu?.setAttribute("hidden", "");
     state.contextMessage = null;
   };
 
+  const placeContextMenu = (menu, event) => {
+    if (!menu) {
+      return;
+    }
+    menu.hidden = false;
+    const menuRect = menu.getBoundingClientRect();
+    const left = Math.min(event.clientX, window.innerWidth - menuRect.width - 8);
+    const top = Math.min(event.clientY, window.innerHeight - menuRect.height - 8);
+    menu.style.left = `${Math.max(8, left)}px`;
+    menu.style.top = `${Math.max(8, top)}px`;
+  };
+
   const openContextMenu = (event, message) => {
-    if (!elements.contextMenu || !message) {
+    if (!message) {
+      placeContextMenu(elements.appContextMenu, event);
       return;
     }
     state.contextMessage = message;
-    elements.contextMenu.hidden = false;
-    const menuRect = elements.contextMenu.getBoundingClientRect();
-    const left = Math.min(event.clientX, window.innerWidth - menuRect.width - 8);
-    const top = Math.min(event.clientY, window.innerHeight - menuRect.height - 8);
-    elements.contextMenu.style.left = `${Math.max(8, left)}px`;
-    elements.contextMenu.style.top = `${Math.max(8, top)}px`;
+    placeContextMenu(elements.contextMenu, event);
   };
 
   const copyMessageText = async (message) => {
@@ -1315,9 +1338,24 @@
     const row = event.target.closest("[data-message-id]");
     const message = row ? findMessage(row.dataset.messageId) : null;
     hideContextMenu();
-    if (message) {
-      openContextMenu(event, message);
+    openContextMenu(event, message);
+  });
+
+  elements.appContextMenu?.addEventListener("click", (event) => {
+    const action = event.target.closest("[data-app-context-action]")?.dataset.appContextAction;
+    if (!action) {
+      return;
     }
+    hideContextMenu();
+    if (action === "refresh") {
+      loadChats(true);
+      return;
+    }
+    if (action === "profile") {
+      loadProfile({kind: "current"});
+      return;
+    }
+    root.dataset.mobileView = "list";
   });
 
   elements.contextMenu?.addEventListener("click", (event) => {
@@ -1423,7 +1461,7 @@
   });
 
   document.addEventListener("click", (event) => {
-    if (!event.target.closest("[data-context-menu]")) {
+    if (!event.target.closest("[data-context-menu], [data-app-context-menu]")) {
       hideContextMenu();
     }
   });
@@ -1486,7 +1524,7 @@
     if (event.key !== "Escape") {
       return;
     }
-    if (!elements.contextMenu?.hidden) {
+    if (!elements.contextMenu?.hidden || !elements.appContextMenu?.hidden) {
       hideContextMenu();
       return;
     }

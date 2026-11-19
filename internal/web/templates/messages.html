@@ -1,0 +1,63 @@
+{{define "messages.html"}}
+<section class="card business-filter-card" aria-label="消息检索条件">
+  <form class="business-filter-form" data-message-filter>
+    <label class="field">
+      <span>关键词</span>
+      <input name="q" type="search" maxlength="100" placeholder="消息、发送者或会话名称">
+    </label>
+    <label class="field">
+      <span>账号</span>
+      <select name="account_id" data-message-account>
+        <option value="">全部账号</option>
+      </select>
+    </label>
+    <label class="field">
+      <span>来源类型</span>
+      <select name="peer_type">
+        <option value="">全部类型</option>
+        <option value="user">私聊</option>
+        <option value="chat">群组</option>
+        <option value="channel">频道</option>
+      </select>
+    </label>
+    <label class="field">
+      <span>开始时间</span>
+      <input name="from" type="datetime-local">
+    </label>
+    <label class="field">
+      <span>结束时间</span>
+      <input name="to" type="datetime-local">
+    </label>
+    <button class="button button-primary" type="submit">
+      <span class="icon icon-search" aria-hidden="true"></span>
+      检索
+    </button>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2>索引结果</h2>
+    <span class="muted" data-message-total>正在读取...</span>
+  </div>
+  <div class="business-table-wrap" data-messages-wrap hidden>
+    <table class="business-table">
+      <thead><tr><th>时间</th><th>账号</th><th>会话</th><th>发送者</th><th>消息内容</th></tr></thead>
+      <tbody data-messages-body></tbody>
+    </table>
+  </div>
+  <div class="empty-state compact" data-messages-empty hidden>
+    <span class="empty-icon"><span class="icon icon-message-square-text" aria-hidden="true"></span></span>
+    <h2>没有找到消息</h2>
+    <p>调整关键词或时间范围。消息会在浏览会话或监控任务读取 Telegram 后进入索引。</p>
+  </div>
+  <div class="business-pagination" data-messages-pagination hidden>
+    <button class="button button-secondary" type="button" data-messages-prev>上一页</button>
+    <span data-messages-page>第 1 页</span>
+    <button class="button button-secondary" type="button" data-messages-next>下一页</button>
+  </div>
+  <p class="form-notice form-notice-error" data-messages-index-error hidden></p>
+</section>
+
+<div class="account-toast" data-business-toast role="status" aria-live="polite" hidden></div>
+{{end}}

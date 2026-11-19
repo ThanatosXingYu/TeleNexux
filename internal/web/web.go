@@ -21,6 +21,7 @@ type pageData struct {
 	ActivePath  string
 	TabPath     string
 	Page        string
+	SettingsTab string
 	Breadcrumbs []breadcrumb
 	Navigation  []navGroup
 	Account     accountSummary
@@ -50,6 +51,7 @@ type pageDefinition struct {
 	Path        string
 	Group       string
 	Title       string
+	Page        string
 	Description string
 }
 
@@ -88,12 +90,13 @@ func (r *Renderer) Handler() http.Handler {
 	mux.HandleFunc("GET /accounts/{id}/web", r.accountWorkspace)
 	mux.HandleFunc("GET /accounts/{id}", r.accountDetail)
 	for _, page := range pages {
-		if page.Path == "/accounts" || page.Path == "/system" {
+		if page.Path == "/accounts" || page.Path == "/system" || page.Path == "/system/health" {
 			continue
 		}
-		mux.HandleFunc("GET "+page.Path, r.placeholder(page))
+		mux.HandleFunc("GET "+page.Path, r.businessPage(page))
 	}
 	mux.HandleFunc("GET /system", r.system)
+	mux.HandleFunc("GET /system/health", r.healthSettings)
 	return secureHeaders(mux)
 }
 
@@ -181,13 +184,29 @@ func (r *Renderer) system(w http.ResponseWriter, _ *http.Request) {
 		ActivePath:  "/system",
 		TabPath:     "/system",
 		Page:        "system",
+		SettingsTab: "basic",
 		Navigation:  navigation("/system"),
 		Breadcrumbs: []breadcrumb{{Label: "工作台", Path: "/"}, {Label: "系统配置"}, {Label: "基础配置"}},
 		Account:     defaultAccount,
 	})
 }
 
-func (r *Renderer) placeholder(page pageDefinition) http.HandlerFunc {
+func (r *Renderer) healthSettings(w http.ResponseWriter, _ *http.Request) {
+	r.render(w, pageData{
+		Title:       "服务状态",
+		Section:     "服务状态",
+		Description: "查看 Go 服务、SQLite、Telegram 会话和运行配置状态",
+		ActivePath:  "/system/health",
+		TabPath:     "/system/health",
+		Page:        "system",
+		SettingsTab: "status",
+		Navigation:  navigation("/system/health"),
+		Breadcrumbs: []breadcrumb{{Label: "工作台", Path: "/"}, {Label: "系统配置", Path: "/system"}, {Label: "服务状态"}},
+		Account:     defaultAccount,
+	})
+}
+
+func (r *Renderer) businessPage(page pageDefinition) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		path := "/" + strings.TrimPrefix(req.URL.Path, "/")
 		groupLabel := groupLabelForPath(page.Path)
@@ -202,7 +221,7 @@ func (r *Renderer) placeholder(page pageDefinition) http.HandlerFunc {
 			Description: page.Description,
 			ActivePath:  path,
 			TabPath:     path,
-			Page:        "placeholder",
+			Page:        page.Page,
 			Navigation:  navigation(path),
 			Breadcrumbs: breadcrumbs,
 			Account:     defaultAccount,
@@ -211,15 +230,15 @@ func (r *Renderer) placeholder(page pageDefinition) http.HandlerFunc {
 }
 
 var pages = []pageDefinition{
-	{Path: "/accounts", Group: "accounts", Title: "账号列表", Description: "管理、验证、监控 Telegram 账号"},
-	{Path: "/accounts/groups", Group: "accounts", Title: "账号分组", Description: "按业务场景组织多个 Telegram 账号"},
-	{Path: "/monitor", Group: "monitor", Title: "实时监控", Description: "订阅群组、关键词和消息告警"},
-	{Path: "/monitor/tasks", Group: "monitor", Title: "监控任务", Description: "配置采集范围、频率和通知渠道"},
-	{Path: "/monitor/alerts", Group: "monitor", Title: "告警记录", Description: "查看已触发的监控告警"},
-	{Path: "/messages", Group: "data", Title: "消息记录", Description: "检索已采集的 Telegram 消息"},
-	{Path: "/reports", Group: "data", Title: "数据报表", Description: "查看账号活跃度和监控趋势"},
-	{Path: "/system", Group: "system", Title: "系统配置", Description: "配置运行环境、Telegram 凭据与服务参数"},
-	{Path: "/system/health", Group: "system", Title: "服务状态", Description: "查看 Go 服务与基础设施状态"},
+	{Path: "/accounts", Group: "accounts", Title: "账号列表", Page: "accounts", Description: "管理、验证、监控 Telegram 账号"},
+	{Path: "/accounts/groups", Group: "accounts", Title: "账号分组", Page: "account-groups", Description: "按业务场景组织多个 Telegram 账号"},
+	{Path: "/monitor", Group: "monitor", Title: "实时监控", Page: "monitor", Description: "订阅群组、关键词和消息告警"},
+	{Path: "/monitor/tasks", Group: "monitor", Title: "监控任务", Page: "monitor-tasks", Description: "配置采集范围、频率和通知渠道"},
+	{Path: "/monitor/alerts", Group: "monitor", Title: "告警记录", Page: "monitor-alerts", Description: "查看已触发的监控告警"},
+	{Path: "/messages", Group: "data", Title: "消息记录", Page: "messages", Description: "检索已采集的 Telegram 消息"},
+	{Path: "/reports", Group: "data", Title: "数据报表", Page: "reports", Description: "查看账号活跃度和监控趋势"},
+	{Path: "/system", Group: "system", Title: "系统配置", Page: "system", Description: "配置运行环境、Telegram 凭据与服务参数"},
+	{Path: "/system/health", Group: "system", Title: "服务状态", Page: "system-health", Description: "查看 Go 服务与基础设施状态"},
 }
 
 func navigation(activePath string) []navGroup {

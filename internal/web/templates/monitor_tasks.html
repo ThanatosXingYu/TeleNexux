@@ -1,0 +1,68 @@
+{{define "monitor_tasks.html"}}
+<section class="account-toolbar" aria-label="监控任务操作">
+  <div class="account-toolbar-summary">
+    <span><strong data-task-count>—</strong> 条规则</span>
+    <span><strong data-task-enabled-count>—</strong> 条启用</span>
+  </div>
+  <button class="button button-primary" type="button" data-task-create>
+    <span class="icon icon-radio-tower" aria-hidden="true"></span>
+    新建规则
+  </button>
+</section>
+
+<section class="card">
+  <div class="business-table-wrap" data-tasks-wrap hidden>
+    <table class="business-table">
+      <thead><tr><th>规则</th><th>监听取话</th><th>关键词</th><th>更新于</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody data-tasks-body></tbody>
+    </table>
+  </div>
+  <div class="empty-state compact" data-tasks-empty>
+    <span class="empty-icon"><span class="icon icon-clipboard-list" aria-hidden="true"></span></span>
+    <h2>还没有监控规则</h2>
+    <p>选择账号、会话和关键词后，系统会按分钟读取新消息。</p>
+    <button class="button button-primary" type="button" data-task-create>创建第一条规则</button>
+  </div>
+  <p class="form-notice form-notice-error" data-tasks-error hidden></p>
+</section>
+
+<dialog class="account-dialog business-dialog" id="monitor-rule-dialog" aria-labelledby="monitor-rule-title">
+  <form class="dialog-card" data-monitor-rule-form>
+    <div class="dialog-header">
+      <div>
+        <p class="eyebrow">监控规则</p>
+        <h2 id="monitor-rule-title">新建规则</h2>
+      </div>
+      <button class="tool-button" type="button" data-monitor-rule-close aria-label="关闭监控规则">
+        <span class="icon icon-x" aria-hidden="true"></span>
+      </button>
+    </div>
+    <label class="field">
+      <span>规则名称</span>
+      <input name="name" type="text" maxlength="60" required>
+    </label>
+    <label class="field">
+      <span>Telegram 账号</span>
+      <select name="account_id" data-monitor-account required></select>
+    </label>
+    <label class="field">
+      <span>监听取话</span>
+      <select name="chat" data-monitor-chat required disabled>
+        <option value="">请先选择在线账号</option>
+      </select>
+    </label>
+    <label class="field">
+      <span>关键词</span>
+      <textarea name="keywords" rows="3" maxlength="1000" placeholder="每行一个关键词；留空表示该会话的全部新消息"></textarea>
+      <small class="field-hint">监控命中后生成告警；留空时告警匹配关键词为空。</small>
+    </label>
+    <p class="form-notice" data-monitor-rule-notice hidden></p>
+    <div class="dialog-actions">
+      <button class="button button-secondary" type="button" data-monitor-rule-close>取消</button>
+      <button class="button button-primary" type="submit">创建规则</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="account-toast" data-business-toast role="status" aria-live="polite" hidden></div>
+{{end}}

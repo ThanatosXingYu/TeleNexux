@@ -27,6 +27,8 @@ func TestTelegramClientScriptBehaviors(t *testing.T) {
 		`/search?`,
 		`chatAvatarURL`,
 		`contextmenu`,
+		`data-app-context-menu`,
+		`placeContextMenu(elements.appContextMenu, event)`,
 		`/messages/forward`,
 		`/messages/delete`,
 		`openProfileEditor`,

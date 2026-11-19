@@ -1,0 +1,78 @@
+{{define "account_groups.html"}}
+<section class="account-toolbar" aria-label="账号分组操作">
+  <div class="account-toolbar-summary">
+    <span><strong data-group-count>—</strong> 个分组</span>
+    <span><strong data-group-account-count>—</strong> 个已分组账号</span>
+  </div>
+  <button class="button button-primary" type="button" data-group-create>
+    <span class="icon icon-folder-users" aria-hidden="true"></span>
+    新建分组
+  </button>
+</section>
+
+<section class="card">
+  <div class="business-grid" data-groups-grid></div>
+  <div class="empty-state compact" data-groups-empty hidden>
+    <span class="empty-icon"><span class="icon icon-folder-users" aria-hidden="true"></span></span>
+    <h2>还没有账号分组</h2>
+    <p>按业务、地区或用途组织多个 Telegram 账号。</p>
+    <button class="button button-primary" type="button" data-group-create>创建第一个分组</button>
+  </div>
+  <p class="form-notice form-notice-error" data-groups-error hidden></p>
+</section>
+
+<dialog class="account-dialog business-dialog" id="group-create-dialog" aria-labelledby="group-create-title">
+  <form class="dialog-card" data-group-form>
+    <div class="dialog-header">
+      <div>
+        <p class="eyebrow">账号分组</p>
+        <h2 id="group-create-title">新建分组</h2>
+      </div>
+      <button class="tool-button" type="button" data-group-close aria-label="关闭新建分组">
+        <span class="icon icon-x" aria-hidden="true"></span>
+      </button>
+    </div>
+    <label class="field">
+      <span>分组名称</span>
+      <input name="name" type="text" maxlength="40" required>
+    </label>
+    <label class="field">
+      <span>标识颜色</span>
+      <select name="color">
+        <option value="blue">蓝色</option>
+        <option value="green">绿色</option>
+        <option value="orange">橙色</option>
+        <option value="red">红色</option>
+        <option value="purple">紫色</option>
+      </select>
+    </label>
+    <p class="form-notice" data-group-form-notice hidden></p>
+    <div class="dialog-actions">
+      <button class="button button-secondary" type="button" data-group-close>取消</button>
+      <button class="button button-primary" type="submit">创建分组</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="account-dialog business-dialog" id="group-members-dialog" aria-labelledby="group-members-title">
+  <form class="dialog-card" data-group-members-form>
+    <div class="dialog-header">
+      <div>
+        <p class="eyebrow">账号分配</p>
+        <h2 id="group-members-title" data-group-members-title>选择账号</h2>
+      </div>
+      <button class="tool-button" type="button" data-group-members-close aria-label="关闭账号分配">
+        <span class="icon icon-x" aria-hidden="true"></span>
+      </button>
+    </div>
+    <div class="business-check-list" data-group-account-options></div>
+    <p class="form-notice" data-group-members-notice hidden></p>
+    <div class="dialog-actions">
+      <button class="button button-secondary" type="button" data-group-members-close>取消</button>
+      <button class="button button-primary" type="submit">保存分配</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="account-toast" data-business-toast role="status" aria-live="polite" hidden></div>
+{{end}}

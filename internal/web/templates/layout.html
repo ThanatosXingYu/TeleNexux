@@ -9,6 +9,7 @@
     <link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/static/css/app.css">
     <script src="/static/js/app.js" defer></script>
+    <script src="/static/js/business.js" defer></script>
   </head>
   <body>
     <div class="app-shell" data-sidebar="expanded">
@@ -80,7 +81,7 @@
               <div class="dropdown user-dropdown" id="user-dropdown" role="menu" hidden>
                 <span class="dropdown-caption">{{.Account.Role}}</span>
                 <a href="/system" role="menuitem">个人设置</a>
-                <a href="/login" role="menuitem">退出登录</a>
+                <button type="button" role="menuitem" data-logout>退出登录</button>
               </div>
             </div>
           </div>
@@ -116,7 +117,7 @@
         </div>
 
         <main class="content" id="main-content">
-          {{if eq .Page "dashboard"}}{{template "dashboard.html" .}}{{else if eq .Page "accounts"}}{{template "accounts.html" .}}{{else if eq .Page "account-detail"}}{{template "account_detail.html" .}}{{else if eq .Page "account-web"}}{{template "account_detail.html" .}}{{else if eq .Page "system"}}{{template "system.html" .}}{{else if eq .Page "placeholder"}}{{template "placeholder.html" .}}{{else}}{{template "notfound.html" .}}{{end}}
+          {{if eq .Page "dashboard"}}{{template "dashboard.html" .}}{{else if eq .Page "accounts"}}{{template "accounts.html" .}}{{else if eq .Page "account-detail"}}{{template "account_detail.html" .}}{{else if eq .Page "account-groups"}}{{template "account_groups.html" .}}{{else if eq .Page "monitor"}}{{template "monitor.html" .}}{{else if eq .Page "monitor-tasks"}}{{template "monitor_tasks.html" .}}{{else if eq .Page "monitor-alerts"}}{{template "monitor_alerts.html" .}}{{else if eq .Page "messages"}}{{template "messages.html" .}}{{else if eq .Page "reports"}}{{template "reports.html" .}}{{else if eq .Page "system"}}{{template "system.html" .}}{{else}}{{template "notfound.html" .}}{{end}}
           <footer class="footer">TeleNexus · Telegram 多账号管理平台</footer>
         </main>
       </div>

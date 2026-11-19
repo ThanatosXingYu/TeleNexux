@@ -49,6 +49,40 @@ func TestEveryNavigationPageRenders(t *testing.T) {
 			if !strings.Contains(body, `aria-expanded="true"`) {
 				t.Error("active menu group was not expanded")
 			}
+			if strings.Contains(body, "当前版本已完成管理台布局") {
+				t.Error("navigation page must not render the generic placeholder")
+			}
+		})
+	}
+}
+
+func TestBusinessPagesExposeRealDataControls(t *testing.T) {
+	handler := newTestHandler(t)
+	tests := map[string][]string{
+		"/accounts/groups": {"data-groups-grid", "data-group-form"},
+		"/monitor":         {"data-monitor-rules-body", "data-monitor-run"},
+		"/monitor/tasks":   {"data-tasks-body", "data-monitor-rule-form"},
+		"/monitor/alerts":  {"data-alerts-list", "data-alert-state"},
+		"/messages":        {"data-message-filter", "data-messages-body"},
+		"/reports":         {"data-report-chart", "data-report-table-body"},
+	}
+	for path, expected := range tests {
+		t.Run(path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", recorder.Code)
+			}
+			body := recorder.Body.String()
+			for _, marker := range expected {
+				if !strings.Contains(body, marker) {
+					t.Errorf("%s missing %q", path, marker)
+				}
+			}
+			if !strings.Contains(body, "business.js") {
+				t.Errorf("%s does not load business interactions", path)
+			}
 		})
 	}
 }
@@ -64,7 +98,7 @@ func TestLoginRendersWithoutAdminShell(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", recorder.Code)
 	}
-	if !strings.Contains(body, "登录 TeleNexus") {
+	if !strings.Contains(body, `data-login-heading`) {
 		t.Error("login page missing form title")
 	}
 	if strings.Contains(body, `class="sidebar"`) {
@@ -231,6 +265,31 @@ func TestSystemPageRendersEditableSettings(t *testing.T) {
 	}
 }
 
+func TestSystemHealthOpensServiceStatus(t *testing.T) {
+	handler := newTestHandler(t)
+	request := httptest.NewRequest(http.MethodGet, "/system/health", nil)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	body := recorder.Body.String()
+	for _, expected := range []string{
+		`data-settings-tab="status">服务状态</button>`,
+		`data-health-checks`,
+		`class="submenu-item active" href="/system/health"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("health settings page missing %q", expected)
+		}
+	}
+	if !strings.Contains(body, `data-settings-panel="status" >`) {
+		t.Error("service status panel must be visible by default on /system/health")
+	}
+}
+
 func TestAccountDetailRendersChatViewer(t *testing.T) {
 	handler := newTestHandler(t)
 	request := httptest.NewRequest(http.MethodGet, "/accounts/42", nil)
@@ -270,6 +329,7 @@ func TestAccountWorkspaceRendersStandaloneChatViewer(t *testing.T) {
 		`data-chat-list`,
 		`data-message-list`,
 		`data-profile-panel`,
+		`data-app-context-menu`,
 		`仅为我删除`,
 		`name="scope" value="me"`,
 		`class="tg-rail-folders"`,

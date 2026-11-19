@@ -304,6 +304,18 @@
     userTrigger.setAttribute("aria-expanded", String(shouldOpen));
   });
 
+  document.querySelector("[data-logout]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await requestJSON("/api/v1/auth/logout", {method: "POST", body: "{}"});
+    } catch {
+      // The login page remains the safe destination when the session expired.
+    } finally {
+      window.location.replace("/login");
+    }
+  });
+
   document.addEventListener("click", (event) => {
     if (userDropdown && !event.target.closest(".user-menu")) {
       userDropdown.hidden = true;
@@ -468,6 +480,16 @@
     if (options.body !== undefined) {
       headers.set("Content-Type", "application/json");
     }
+    if (options.method && !["GET", "HEAD", "OPTIONS"].includes(options.method.toUpperCase())) {
+      const csrf = document.cookie
+        .split(";")
+        .map((part) => part.trim())
+        .find((part) => part.startsWith("telenexus_csrf="))
+        ?.slice("telenexus_csrf=".length);
+      if (csrf) {
+        headers.set("X-CSRF-Token", decodeURIComponent(csrf));
+      }
+    }
     const response = await fetch(path, {...options, headers});
     const text = response.status === 204 ? "" : await response.text();
     let payload = null;
@@ -479,6 +501,9 @@
       }
     }
     if (!response.ok) {
+      if (response.status === 401) {
+        window.location.replace("/login");
+      }
       const error = new Error(payload?.error?.message || `请求失败（${response.status}）`);
       error.code = payload?.error?.code || "request_failed";
       error.status = response.status;
@@ -583,6 +608,43 @@
     paused: "已暂停",
     error: "已掉线",
   };
+  const verificationTTL = 10 * 60 * 1000;
+
+  const accountStatus = (account) => {
+    const verifiedAt = account?.last_verified_at ? new Date(account.last_verified_at) : null;
+    if (
+      account?.status === "online" &&
+      (!verifiedAt || Number.isNaN(verifiedAt.getTime()) ||
+        Date.now() - verifiedAt.getTime() > verificationTTL)
+    ) {
+      return {
+        key: "stale",
+        label: "状态待确认",
+        reason: "请点击“刷新状态”重新验证 Telegram 授权",
+      };
+    }
+    return {
+      key: account?.status || "pending",
+      label: statusLabels[account?.status] || account?.status || "未知",
+      reason: account?.status_reason || "",
+    };
+  };
+
+  const createStatus = (account) => {
+    const state = accountStatus(account);
+    const wrapper = document.createElement("span");
+    wrapper.className = "account-status-copy";
+    const badge = document.createElement("span");
+    badge.className = `account-status account-status-${state.key}`;
+    badge.textContent = state.label;
+    wrapper.append(badge);
+    if (state.reason) {
+      const reason = document.createElement("small");
+      reason.textContent = state.reason;
+      wrapper.append(reason);
+    }
+    return wrapper;
+  };
 
   const tableCell = (content) => {
     const cell = document.createElement("td");
@@ -654,9 +716,7 @@
 
     const header = document.createElement("div");
     header.className = "account-mobile-card-header";
-    const status = document.createElement("span");
-    status.className = `account-status account-status-${account.status}`;
-    status.textContent = statusLabels[account.status] || account.status;
+    const status = createStatus(account);
     header.append(createAccountIdentity(account), status);
 
     const details = document.createElement("dl");
@@ -680,6 +740,10 @@
       account.username ? copyValue(`@${account.username}`, "用户名") : "未设置",
     );
     addDetail("最近更新", formatAccountDate(account.updated_at));
+    addDetail(
+      "最近校验",
+      account.last_verified_at ? formatAccountDate(account.last_verified_at) : "尚未校验",
+    );
 
     card.append(header, details, createAccountActions(account));
     return card;
@@ -700,7 +764,10 @@
       profileName.textContent = name;
     }
     if (profileStatus) {
-      profileStatus.textContent = statusLabels[account.status] || account.status;
+      const state = accountStatus(account);
+      profileStatus.textContent = state.reason
+        ? `${state.label} · ${state.reason}`
+        : state.label;
     }
     if (profileID) {
       profileID.textContent = `Telegram ID ${account.id}`;
@@ -737,7 +804,7 @@
     }
     accountBody.replaceChildren();
     accountsMobile.replaceChildren();
-    const online = items.filter((item) => item.status === "online").length;
+    const online = items.filter((item) => accountStatus(item).key === "online").length;
     accountCounts.forEach((element) => {
       element.textContent = String(items.length);
     });
@@ -765,9 +832,7 @@
         ? copyValue(`@${account.username}`, "用户名")
         : "未设置";
 
-      const status = document.createElement("span");
-      status.className = `account-status account-status-${account.status}`;
-      status.textContent = statusLabels[account.status] || account.status;
+      const status = createStatus(account);
 
       row.append(
         tableCell(identity),
@@ -1640,6 +1705,10 @@
     const settingsTabs = [...document.querySelectorAll("[data-settings-tab]")];
     const settingsPanels = [...document.querySelectorAll("[data-settings-panel]")];
     const settingsActions = document.querySelector("[data-settings-actions]");
+    const healthStatus = document.querySelector("[data-health-status]");
+    const healthChecked = document.querySelector("[data-health-checked]");
+    const healthChecks = document.querySelector("[data-health-checks]");
+    const healthRefresh = document.querySelector("[data-health-refresh]");
     const readOnlySettingsTabs = new Set(["page", "device", "security", "status"]);
 
     const activateSettingsTab = (name) => {
@@ -1712,6 +1781,68 @@
       }
     };
 
+    const healthLabels = {
+      sqlite: "SQLite 数据库",
+      configuration: "运行配置",
+      telegram_sessions: "Telegram 会话目录",
+      telegram_credentials: "Telegram API 凭据",
+      administrator: "管理员鉴权",
+    };
+
+    const loadHealth = async () => {
+      healthRefresh?.setAttribute("disabled", "");
+      if (healthStatus) {
+        healthStatus.textContent = "检查中";
+        healthStatus.className = "badge badge-neutral";
+      }
+      try {
+        const report = await requestJSON("/api/v1/health");
+        const status = String(report?.status || "error");
+        if (healthStatus) {
+          healthStatus.textContent = status === "ok"
+            ? "正常"
+            : (status === "degraded" ? "部分可用" : "异常");
+          healthStatus.className = `badge ${
+            status === "ok" ? "badge-blue" : (status === "degraded" ? "badge-neutral" : "badge-red")
+          }`;
+        }
+        if (healthChecked) {
+          healthChecked.textContent = report?.checked_at
+            ? formatAccountDate(report.checked_at)
+            : "—";
+        }
+        if (healthChecks) {
+          healthChecks.replaceChildren();
+          const items = Array.isArray(report?.checks) ? report.checks : [];
+          items.forEach((check) => {
+            const item = document.createElement("li");
+            item.className = `health-check health-check-${check.status || "error"}`;
+            const name = document.createElement("strong");
+            name.textContent = healthLabels[check.name] || check.name || "未知检查";
+            const message = document.createElement("span");
+            message.textContent = check.message || "";
+            item.append(name, message);
+            healthChecks.append(item);
+          });
+        }
+      } catch (error) {
+        if (healthStatus) {
+          healthStatus.textContent = "检查失败";
+          healthStatus.className = "badge badge-red";
+        }
+        if (healthChecks) {
+          const item = document.createElement("li");
+          item.className = "health-check health-check-error";
+          item.textContent = error.message;
+          healthChecks.replaceChildren(item);
+        }
+      } finally {
+        healthRefresh?.removeAttribute("disabled");
+      }
+    };
+
+    healthRefresh?.addEventListener("click", loadHealth);
+
     settingsForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const button = settingsForm.querySelector("button[type='submit']");
@@ -1747,5 +1878,6 @@
       }
     });
     loadSettings();
+    loadHealth();
   }
 })();
