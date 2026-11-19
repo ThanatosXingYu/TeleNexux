@@ -1404,6 +1404,7 @@
 
   const telegramConfig = document.querySelector("[data-telegram-config]");
   let telegramConfigured = false;
+  let accountVerificationInFlight = false;
   const loadTelegramConfig = async () => {
     try {
       const payload = await requestJSON("/api/v1/telegram/auth/config");
@@ -1422,6 +1423,10 @@
   };
 
   const verifyAccountStatuses = async (automatic = false) => {
+    if (accountVerificationInFlight) {
+      return;
+    }
+    accountVerificationInFlight = true;
     const button = document.querySelector("[data-accounts-refresh]");
     const label = button?.querySelector("[data-accounts-refresh-label]");
     if (button) {
@@ -1461,7 +1466,26 @@
       if (label) {
         label.textContent = "刷新状态";
       }
+      accountVerificationInFlight = false;
     }
+  };
+
+  const automaticStatusCheckNeeded = () => allAccounts.some((account) => (
+    !isDeletedAccount(account) &&
+    ["stale", "error"].includes(accountStatus(account).key)
+  ));
+
+  const maybeVerifyExpiredAccounts = () => {
+    if (document.visibilityState !== "visible" ||
+        !automaticVerificationDue() ||
+        accountVerificationInFlight) {
+      return;
+    }
+    if (!automaticStatusCheckNeeded()) {
+      markAutomaticVerification();
+      return;
+    }
+    verifyAccountStatuses(true);
   };
 
   document.querySelector("[data-accounts-refresh]")?.addEventListener("click", () => {
@@ -1482,15 +1506,13 @@
           return;
         }
       }
-      const needsVerification = allAccounts.some((account) => (
-        !isDeletedAccount(account) &&
-        ["stale", "error"].includes(accountStatus(account).key)
-      ));
-      if (needsVerification && automaticVerificationDue()) {
-        await verifyAccountStatuses(true);
+      if (automaticStatusCheckNeeded() && automaticVerificationDue()) {
+        verifyAccountStatuses(true);
       }
     });
     loadTelegramConfig();
+    window.setInterval(maybeVerifyExpiredAccounts, automaticVerificationInterval);
+    document.addEventListener("visibilitychange", maybeVerifyExpiredAccounts);
   }
 
   const authDialog = document.getElementById("telegram-login-dialog");
