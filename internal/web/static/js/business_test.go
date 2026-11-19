@@ -60,6 +60,8 @@ func TestBusinessScriptUsesAuthenticatedAPIs(t *testing.T) {
 		`initCorrelations`,
 		`confidence_reason`,
 		`evidence_event_id`,
+		`crypto_address`,
+		`explorer_url`,
 		`/api/v1/reports?days=`,
 		`/api/v1/evidence/manifest?days=`,
 		`data-evidence-manifest-generate`,

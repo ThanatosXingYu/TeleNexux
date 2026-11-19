@@ -2283,6 +2283,7 @@ func TestCorrelationAnalysisAPIReturnsTraceableGroups(t *testing.T) {
 			t.Errorf("close operations service: %v", err)
 		}
 	})
+	const cryptoAddress = "0x52908400098527886E0F7030069857D2E4169EE7"
 	for _, accountID := range []int64{1, 2} {
 		if _, err := operationsService.IngestBatch(ctx, operations.IngestBatchInput{
 			BatchID:         fmt.Sprintf("correlation-api-%d", accountID),
@@ -2300,7 +2301,7 @@ func TestCorrelationAnalysisAPIReturnsTraceableGroups(t *testing.T) {
 				PeerTitle: "Operations",
 				MessageID: 101,
 				Sender:    "Alice Smith",
-				Text:      "shared incident link https://example.com/incident?id=42",
+				Text:      "shared incident link https://example.com/incident?id=42 address " + strings.ToLower(cryptoAddress),
 				SentAt:    time.Now().UTC(),
 			}},
 		}); err != nil {
@@ -2351,6 +2352,27 @@ func TestCorrelationAnalysisAPIReturnsTraceableGroups(t *testing.T) {
 		analysis.Groups[0].Sources[0].EvidenceID == "" ||
 		analysis.GoverningNote == "" {
 		t.Fatalf("correlation analysis = %+v", analysis)
+	}
+	cryptoRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(cryptoRecorder, httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/correlations?days=30&types=crypto_address",
+		nil,
+	))
+	if cryptoRecorder.Code != http.StatusOK {
+		t.Fatalf("crypto correlation status = %d; body: %s",
+			cryptoRecorder.Code, cryptoRecorder.Body.String())
+	}
+	var cryptoAnalysis operations.CorrelationAnalysis
+	if err := json.NewDecoder(cryptoRecorder.Body).Decode(&cryptoAnalysis); err != nil {
+		t.Fatalf("decode crypto correlation analysis: %v", err)
+	}
+	if len(cryptoAnalysis.Groups) != 1 ||
+		cryptoAnalysis.Groups[0].Type != operations.CorrelationCrypto ||
+		cryptoAnalysis.Groups[0].Network != operations.CryptoNetworkEthereum ||
+		!strings.HasPrefix(cryptoAnalysis.Groups[0].ExplorerURL, "https://etherscan.io/address/") ||
+		cryptoAnalysis.Groups[0].Sources[0].EvidenceID == "" {
+		t.Fatalf("crypto correlation analysis = %+v", cryptoAnalysis)
 	}
 
 	invalidRecorder := httptest.NewRecorder()

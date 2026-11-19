@@ -19,10 +19,11 @@ const (
 	CorrelationDomain  = "domain"
 	CorrelationSender  = "sender"
 	CorrelationContent = "content"
+	CorrelationCrypto  = "crypto_address"
 
 	correlationMessageLimit = 5000
 	correlationSourceLimit  = 20
-	correlationCaveat       = "关联结果仅用于发现线索，不代表账号属于同一自然人或组织；链接、域名、发送者显示名及相同文本均可能存在误报。"
+	correlationCaveat       = "关联结果仅用于发现线索，不代表账号属于同一自然人或组织；链接、域名、发送者显示名、相同文本及链上地址均可能存在误报。链上地址仅代表格式和重复出现，不推断归属、资金关系或风险等级。"
 )
 
 var correlationURLPattern = regexp.MustCompile("(?i)https?://[^\\s<>\"'`]+")
@@ -55,6 +56,9 @@ type CorrelationGroup struct {
 	Confidence       float64             `json:"confidence"`
 	ConfidenceLabel  string              `json:"confidence_label"`
 	ConfidenceReason string              `json:"confidence_reason"`
+	Network          string              `json:"network,omitempty"`
+	NetworkLabel     string              `json:"network_label,omitempty"`
+	ExplorerURL      string              `json:"explorer_url,omitempty"`
 	AccountCount     int                 `json:"account_count"`
 	SourceCount      int                 `json:"source_count"`
 	Sources          []CorrelationSource `json:"sources"`
@@ -85,12 +89,15 @@ type correlationAccumulator struct {
 }
 
 type correlationMatch struct {
-	kind       string
-	key        string
-	display    string
-	confidence float64
-	label      string
-	reason     string
+	kind         string
+	key          string
+	display      string
+	confidence   float64
+	label        string
+	reason       string
+	network      string
+	networkLabel string
+	explorerURL  string
 }
 
 func (s *Service) AnalyzeCorrelations(
@@ -172,7 +179,7 @@ func normalizeCorrelationQuery(
 				continue
 			}
 			switch item {
-			case CorrelationLink, CorrelationDomain, CorrelationSender, CorrelationContent:
+			case CorrelationLink, CorrelationDomain, CorrelationSender, CorrelationContent, CorrelationCrypto:
 				requested[item] = struct{}{}
 			default:
 				return 0, nil, 0, fmt.Errorf(
@@ -183,8 +190,9 @@ func normalizeCorrelationQuery(
 			}
 		}
 	}
-	types := make([]string, 0, 4)
+	types := make([]string, 0, 5)
 	for _, item := range []string{
+		CorrelationCrypto,
 		CorrelationLink,
 		CorrelationContent,
 		CorrelationDomain,
@@ -256,6 +264,9 @@ func accumulateCorrelations(
 						Confidence:       match.confidence,
 						ConfidenceLabel:  match.label,
 						ConfidenceReason: match.reason,
+						Network:          match.network,
+						NetworkLabel:     match.networkLabel,
+						ExplorerURL:      match.explorerURL,
 					},
 					accounts: make(map[int64]struct{}),
 				}
@@ -277,7 +288,18 @@ func messageCorrelationMatches(
 	message correlationMessage,
 	enabled map[string]struct{},
 ) []correlationMatch {
-	matches := make([]correlationMatch, 0, 4)
+	matches := make([]correlationMatch, 0, 5)
+	if _, ok := enabled[CorrelationCrypto]; ok {
+		for _, address := range extractCryptoAddresses(message.Text) {
+			matches = append(matches, correlationMatch{
+				kind: CorrelationCrypto, key: cryptoAddressKey(address.Network, address.Address),
+				display: address.Address, confidence: 0.85, label: "中高",
+				reason:  "不同账号出现同一链上地址；仅说明格式有效且重复出现，不代表地址归属或资金关系。",
+				network: address.Network, networkLabel: address.NetworkLabel,
+				explorerURL: address.ExplorerURL,
+			})
+		}
+	}
 	links, domains := correlationLinks(message.Text)
 	if _, ok := enabled[CorrelationLink]; ok {
 		for _, link := range links {

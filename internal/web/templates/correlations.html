@@ -14,6 +14,7 @@
       <span>类型</span>
       <select data-correlation-type>
         <option value="">全部线索</option>
+        <option value="crypto_address">链上地址</option>
         <option value="link">相同链接</option>
         <option value="content">相同文本</option>
         <option value="domain">相同域名</option>
@@ -40,7 +41,7 @@
   <div class="empty-state compact" data-correlation-empty hidden>
     <span class="empty-icon"><span class="icon icon-folder-users" aria-hidden="true"></span></span>
     <h2>没有跨账号线索</h2>
-    <p>当前时间范围内没有至少两个账号共享的链接、域名、发送者显示名或文本。</p>
+    <p>当前时间范围内没有至少两个账号共享的链上地址、链接、域名、发送者显示名或文本。</p>
   </div>
   <p class="form-notice form-notice-error" data-correlation-error hidden></p>
 </section>

@@ -17,6 +17,7 @@
     channel: "频道",
   };
   const correlationTypeDetails = {
+    crypto_address: {label: "链上地址", icon: "activity"},
     link: {label: "相同链接", icon: "paperclip"},
     content: {label: "相同文本", icon: "message-square-text"},
     domain: {label: "相同域名", icon: "activity"},
@@ -1772,10 +1773,17 @@
         element(
           "small",
           "",
-          `${details.label} · ${group.account_count} 个账号 · ${group.source_count} 条来源`,
+          `${details.label}${group.network_label ? ` · ${group.network_label}` : ""} · ${group.account_count} 个账号 · ${group.source_count} 条来源`,
         ),
         element("p", "", group.confidence_reason || "请结合原始消息人工核验。"),
       );
+      if (group.type === "crypto_address" && /^https:\/\/(etherscan\.io|tronscan\.org|mempool\.space)\//.test(group.explorer_url || "")) {
+        const explorer = element("a", "button button-secondary button-compact", "在链上浏览器查看");
+        explorer.href = group.explorer_url;
+        explorer.target = "_blank";
+        explorer.rel = "noopener";
+        copy.append(explorer);
+      }
       heading.append(
         icon,
         copy,

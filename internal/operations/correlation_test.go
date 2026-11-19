@@ -101,3 +101,52 @@ func TestAnalyzeCorrelationsRejectsUnknownType(t *testing.T) {
 		t.Fatal("AnalyzeCorrelations() accepted unknown type")
 	}
 }
+
+func TestAnalyzeCorrelationsIdentifiesSharedCryptoAddresses(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	const address = "0x52908400098527886E0F7030069857D2E4169EE7"
+	for _, accountID := range []int64{1, 2} {
+		if _, err := service.IngestBatch(ctx, IngestBatchInput{
+			BatchID:   fmt.Sprintf("crypto-%d", accountID),
+			Source:    "test",
+			AccountID: accountID,
+			PeerType:  "chat",
+			PeerID:    200 + accountID,
+			PeerTitle: "Settlement",
+			Messages: []MessageRecord{{
+				AccountID: accountID,
+				PeerType:  "chat",
+				PeerID:    200 + accountID,
+				PeerTitle: "Settlement",
+				MessageID: 501,
+				Sender:    "Bob",
+				Text:      "please verify " + strings.ToLower(address),
+				SentAt:    now.Add(-time.Minute),
+			}},
+		}); err != nil {
+			t.Fatalf("IngestBatch(account %d) error = %v", accountID, err)
+		}
+	}
+	analysis, err := service.AnalyzeCorrelations(ctx, CorrelationQuery{
+		Days:  30,
+		Types: []string{CorrelationCrypto},
+		Limit: 20,
+	})
+	if err != nil {
+		t.Fatalf("AnalyzeCorrelations() error = %v", err)
+	}
+	if len(analysis.Groups) != 1 {
+		t.Fatalf("crypto groups = %+v", analysis.Groups)
+	}
+	group := analysis.Groups[0]
+	if group.Type != CorrelationCrypto || group.AccountCount != 2 ||
+		group.Network != CryptoNetworkEthereum || group.NetworkLabel == "" ||
+		!strings.HasPrefix(group.ExplorerURL, "https://etherscan.io/address/0x") ||
+		!strings.HasSuffix(group.ExplorerURL, strings.ToLower(address[2:])) ||
+		!strings.Contains(group.ConfidenceReason, "不代表地址归属") {
+		t.Fatalf("crypto group = %+v", group)
+	}
+}

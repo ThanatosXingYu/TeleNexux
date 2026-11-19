@@ -92,6 +92,7 @@ func TestBusinessPagesExposeRealDataControls(t *testing.T) {
 			"data-correlation-days",
 			"data-correlation-type",
 			"data-correlation-refresh",
+			`value="crypto_address"`,
 		},
 		"/reports": {
 			"data-report-chart",
