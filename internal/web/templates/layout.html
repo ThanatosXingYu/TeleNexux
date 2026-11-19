@@ -117,7 +117,7 @@
         </div>
 
         <main class="content" id="main-content">
-          {{if eq .Page "dashboard"}}{{template "dashboard.html" .}}{{else if eq .Page "accounts"}}{{template "accounts.html" .}}{{else if eq .Page "account-detail"}}{{template "account_detail.html" .}}{{else if eq .Page "account-groups"}}{{template "account_groups.html" .}}{{else if eq .Page "monitor"}}{{template "monitor.html" .}}{{else if eq .Page "monitor-tasks"}}{{template "monitor_tasks.html" .}}{{else if eq .Page "monitor-alerts"}}{{template "monitor_alerts.html" .}}{{else if eq .Page "messages"}}{{template "messages.html" .}}{{else if eq .Page "reports"}}{{template "reports.html" .}}{{else if eq .Page "system"}}{{template "system.html" .}}{{else}}{{template "notfound.html" .}}{{end}}
+          {{if eq .Page "dashboard"}}{{template "dashboard.html" .}}{{else if eq .Page "accounts"}}{{template "accounts.html" .}}{{else if eq .Page "account-detail"}}{{template "account_detail.html" .}}{{else if eq .Page "account-groups"}}{{template "account_groups.html" .}}{{else if eq .Page "monitor"}}{{template "monitor.html" .}}{{else if eq .Page "monitor-tasks"}}{{template "monitor_tasks.html" .}}{{else if eq .Page "monitor-alerts"}}{{template "monitor_alerts.html" .}}{{else if eq .Page "messages"}}{{template "messages.html" .}}{{else if eq .Page "correlations"}}{{template "correlations.html" .}}{{else if eq .Page "reports"}}{{template "reports.html" .}}{{else if eq .Page "system"}}{{template "system.html" .}}{{else}}{{template "notfound.html" .}}{{end}}
           <footer class="footer">TeleNexus · Telegram 多账号管理平台</footer>
         </main>
       </div>
@@ -140,6 +140,7 @@
           <li><a href="/accounts">账号列表</a></li>
           <li><a href="/monitor">实时监控</a></li>
           <li><a href="/messages">消息记录</a></li>
+          <li><a href="/correlations">关联分析</a></li>
           <li><a href="/system">系统设置</a></li>
         </ul>
       </section>

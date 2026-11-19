@@ -16,6 +16,12 @@
     chat: "群组",
     channel: "频道",
   };
+  const correlationTypeDetails = {
+    link: {label: "相同链接", icon: "paperclip"},
+    content: {label: "相同文本", icon: "message-square-text"},
+    domain: {label: "相同域名", icon: "activity"},
+    sender: {label: "相同发送者", icon: "user-round"},
+  };
   const countryCodes = [
     "+886", "+852", "+853", "+971", "+966", "+972", "+351",
     "+358", "+353", "+420", "+421", "+385", "+386", "+381", "+380",
@@ -1708,6 +1714,143 @@
       .catch((requestError) => showNotice(error, requestError.message, true));
   };
 
+  const initCorrelations = () => {
+    const list = document.querySelector("[data-correlation-list]");
+    if (!list) {
+      return;
+    }
+    const empty = document.querySelector("[data-correlation-empty]");
+    const error = document.querySelector("[data-correlation-error]");
+    const warning = document.querySelector("[data-correlation-warning]");
+    const days = document.querySelector("[data-correlation-days]");
+    const type = document.querySelector("[data-correlation-type]");
+    let accounts = [];
+    let requestID = 0;
+
+    const renderSource = (source) => {
+      const account = accounts.find((item) => Number(item.id) === Number(source.account_id));
+      const row = element("div", "business-compact-row");
+      const icon = element("span", "business-row-icon");
+      icon.append(element("span", "icon icon-message-square-text"));
+      const copy = element("span", "business-row-copy");
+      copy.append(
+        element(
+          "strong",
+          "",
+          account ? accountLabel(account) : `账号 ${source.account_id}`,
+        ),
+        element(
+          "small",
+          "",
+          `${source.peer_title || peerLabels[source.peer_type] || "会话"} · ${source.sender || "未知发送者"} · ${formatDate(source.sent_at)}`,
+        ),
+        element(
+          "small",
+          "",
+          `消息 #${source.message_id} · 证据 ${String(source.evidence_event_id || "未记录").slice(0, 16)}`,
+        ),
+      );
+      if (source.text_preview) {
+        copy.append(element("p", "business-message-preview", source.text_preview));
+      }
+      row.append(icon, copy);
+      return row;
+    };
+
+    const renderGroup = (group) => {
+      const details = correlationTypeDetails[group.type] || {
+        label: "关联线索",
+        icon: "folder-users",
+      };
+      const card = element("article", "business-list-item");
+      const heading = element("div", "business-list-heading");
+      const icon = element("span", "business-row-icon");
+      icon.append(element("span", `icon icon-${details.icon}`));
+      const copy = element("span", "business-list-copy");
+      copy.append(
+        element("strong", "", group.match || details.label),
+        element(
+          "small",
+          "",
+          `${details.label} · ${group.account_count} 个账号 · ${group.source_count} 条来源`,
+        ),
+        element("p", "", group.confidence_reason || "请结合原始消息人工核验。"),
+      );
+      heading.append(
+        icon,
+        copy,
+        element(
+          "span",
+          Number(group.confidence) >= 0.7 ? "badge badge-blue" : "badge badge-neutral",
+          `${group.confidence_label || "低"}置信度`,
+        ),
+      );
+      const sources = element("div", "business-compact-list");
+      (Array.isArray(group.sources) ? group.sources : []).forEach((source) => {
+        sources.append(renderSource(source));
+      });
+      if (group.sources_truncated) {
+        sources.append(createEmptyCopy("来源较多，仅显示最近记录。"));
+      }
+      card.append(heading, sources);
+      return card;
+    };
+
+    const load = async () => {
+      const currentRequest = ++requestID;
+      showNotice(error);
+      showNotice(warning);
+      try {
+        const query = new URLSearchParams({
+          days: String(days?.value || "30"),
+          limit: "50",
+        });
+        if (type?.value) {
+          query.set("types", type.value);
+        }
+        const payload = await api(`/api/v1/correlations?${query}`);
+        if (currentRequest !== requestID) {
+          return;
+        }
+        const groups = Array.isArray(payload?.groups) ? payload.groups : [];
+        list.replaceChildren(...groups.map(renderGroup));
+        list.toggleAttribute("hidden", groups.length === 0);
+        empty?.toggleAttribute("hidden", groups.length > 0);
+        setText("[data-correlation-total]", Number(payload?.total_groups) || 0);
+        setText(
+          "[data-correlation-scanned]",
+          `分析 ${Number(payload?.message_count) || 0} 条消息 · ${formatDate(payload?.analyzed_at)}`,
+        );
+        setText(
+          "[data-correlation-note]",
+          payload?.governing_note || "关联结果仅用于发现线索，需结合原始消息人工核验。",
+        );
+        if (payload?.truncated) {
+          showNotice(
+            warning,
+            `消息超过单次分析上限 ${Number(payload.message_limit) || 0} 条，结果仅覆盖最近消息。`,
+            true,
+          );
+        }
+      } catch (requestError) {
+        if (currentRequest === requestID) {
+          showNotice(error, requestError.message, true);
+        }
+      }
+    };
+
+    document.querySelector("[data-correlation-refresh]")
+      ?.addEventListener("click", load);
+    days?.addEventListener("change", load);
+    type?.addEventListener("change", load);
+    loadAccounts()
+      .then((items) => {
+        accounts = items;
+        load();
+      })
+      .catch(() => load());
+  };
+
   const initReports = () => {
     const chart = document.querySelector("[data-report-chart]");
     if (!chart) {
@@ -1860,5 +2003,6 @@
   initMonitorTasks();
   initAlerts();
   initMessages();
+  initCorrelations();
   initReports();
 })();

@@ -2269,6 +2269,112 @@ func TestSearchIndexHealthAndRebuildAPI(t *testing.T) {
 	}
 }
 
+func TestCorrelationAnalysisAPIReturnsTraceableGroups(t *testing.T) {
+	ctx := context.Background()
+	operationsService, err := operations.Open(
+		ctx,
+		filepath.Join(t.TempDir(), "correlation-api.db"),
+	)
+	if err != nil {
+		t.Fatalf("open operations service: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := operationsService.Close(); err != nil {
+			t.Errorf("close operations service: %v", err)
+		}
+	})
+	for _, accountID := range []int64{1, 2} {
+		if _, err := operationsService.IngestBatch(ctx, operations.IngestBatchInput{
+			BatchID:         fmt.Sprintf("correlation-api-%d", accountID),
+			Source:          "test",
+			AccountID:       accountID,
+			PeerType:        "chat",
+			PeerID:          100 + accountID,
+			PeerTitle:       "Operations",
+			CheckpointAfter: 101,
+			Complete:        true,
+			Messages: []operations.MessageRecord{{
+				AccountID: accountID,
+				PeerType:  "chat",
+				PeerID:    100 + accountID,
+				PeerTitle: "Operations",
+				MessageID: 101,
+				Sender:    "Alice Smith",
+				Text:      "shared incident link https://example.com/incident?id=42",
+				SentAt:    time.Now().UTC(),
+			}},
+		}); err != nil {
+			t.Fatalf("seed account %d: %v", accountID, err)
+		}
+	}
+	manager, _, _ := testAuthentication()
+	viewerToken, viewerSession, err := manager.CreateRoleSession(auth.RoleViewer)
+	if err != nil {
+		t.Fatalf("create viewer session: %v", err)
+	}
+	webHandler, err := web.New()
+	if err != nil {
+		t.Fatalf("create web handler: %v", err)
+	}
+	handler := authenticatedTestHandler{
+		next: New(
+			nil,
+			nil,
+			nil,
+			nil,
+			manager,
+			webHandler.Handler(),
+			slog.New(slog.NewTextHandler(io.Discard, nil)),
+			nil,
+			operationsService,
+			nil,
+		).Handler(),
+		token: viewerToken,
+		csrf:  viewerSession.CSRF,
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/correlations?days=30&types=link",
+		nil,
+	))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("correlation status = %d; body: %s", recorder.Code, recorder.Body.String())
+	}
+	var analysis operations.CorrelationAnalysis
+	if err := json.NewDecoder(recorder.Body).Decode(&analysis); err != nil {
+		t.Fatalf("decode correlation analysis: %v", err)
+	}
+	if len(analysis.Groups) != 1 ||
+		analysis.Groups[0].Type != operations.CorrelationLink ||
+		analysis.Groups[0].AccountCount != 2 ||
+		analysis.Groups[0].Sources[0].EvidenceID == "" ||
+		analysis.GoverningNote == "" {
+		t.Fatalf("correlation analysis = %+v", analysis)
+	}
+
+	invalidRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(invalidRecorder, httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/correlations?types=identity",
+		nil,
+	))
+	if invalidRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid correlation status = %d; body: %s",
+			invalidRecorder.Code, invalidRecorder.Body.String())
+	}
+	negativeRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(negativeRecorder, httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/correlations?days=-1",
+		nil,
+	))
+	if negativeRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("negative correlation status = %d; body: %s",
+			negativeRecorder.Code, negativeRecorder.Body.String())
+	}
+}
+
 func TestRetentionAndLegalHoldAPI(t *testing.T) {
 	ctx := context.Background()
 	operationsService, err := operations.Open(

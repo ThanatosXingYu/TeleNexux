@@ -1,0 +1,49 @@
+{{define "correlations.html"}}
+<section class="account-toolbar" aria-label="关联分析筛选">
+  <div class="account-toolbar-summary">
+    <span><strong data-correlation-total>—</strong> 组线索</span>
+    <label class="inline-filter">
+      <span>范围</span>
+      <select data-correlation-days>
+        <option value="7">最近 7 天</option>
+        <option value="30" selected>最近 30 天</option>
+        <option value="90">最近 90 天</option>
+      </select>
+    </label>
+    <label class="inline-filter">
+      <span>类型</span>
+      <select data-correlation-type>
+        <option value="">全部线索</option>
+        <option value="link">相同链接</option>
+        <option value="content">相同文本</option>
+        <option value="domain">相同域名</option>
+        <option value="sender">相同发送者</option>
+      </select>
+    </label>
+  </div>
+  <button class="button button-secondary" type="button" data-correlation-refresh>
+    <span class="icon icon-refresh-cw" aria-hidden="true"></span>
+    重新分析
+  </button>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <h2>关联线索</h2>
+    <span class="muted" data-correlation-scanned>读取中</span>
+  </div>
+  <p class="muted" data-correlation-note>
+    关联结果仅用于发现线索，不代表账号属于同一自然人或组织。
+  </p>
+  <p class="form-notice form-notice-error" data-correlation-warning hidden></p>
+  <div class="business-list" data-correlation-list></div>
+  <div class="empty-state compact" data-correlation-empty hidden>
+    <span class="empty-icon"><span class="icon icon-folder-users" aria-hidden="true"></span></span>
+    <h2>没有跨账号线索</h2>
+    <p>当前时间范围内没有至少两个账号共享的链接、域名、发送者显示名或文本。</p>
+  </div>
+  <p class="form-notice form-notice-error" data-correlation-error hidden></p>
+</section>
+
+<div class="account-toast" data-business-toast role="status" aria-live="polite" hidden></div>
+{{end}}

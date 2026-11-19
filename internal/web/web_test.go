@@ -87,6 +87,12 @@ func TestBusinessPagesExposeRealDataControls(t *testing.T) {
 			"data-search-index-state",
 			"data-search-index-rebuild",
 		},
+		"/correlations": {
+			"data-correlation-list",
+			"data-correlation-days",
+			"data-correlation-type",
+			"data-correlation-refresh",
+		},
 		"/reports": {
 			"data-report-chart",
 			"data-report-table-body",

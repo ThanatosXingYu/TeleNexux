@@ -236,6 +236,7 @@ var pages = []pageDefinition{
 	{Path: "/monitor/tasks", Group: "monitor", Title: "监控任务", Page: "monitor-tasks", Description: "配置采集范围、频率和通知渠道"},
 	{Path: "/monitor/alerts", Group: "monitor", Title: "告警记录", Page: "monitor-alerts", Description: "查看已触发的监控告警"},
 	{Path: "/messages", Group: "data", Title: "消息记录", Page: "messages", Description: "检索已采集的 Telegram 消息"},
+	{Path: "/correlations", Group: "data", Title: "关联分析", Page: "correlations", Description: "发现跨账号重复链接、域名、发送者和文本线索"},
 	{Path: "/reports", Group: "data", Title: "数据报表", Page: "reports", Description: "查看账号活跃度和监控趋势"},
 	{Path: "/system", Group: "system", Title: "系统配置", Page: "system", Description: "配置运行环境、Telegram 凭据与服务参数"},
 	{Path: "/system/health", Group: "system", Title: "服务状态", Page: "system-health", Description: "查看 Go 服务与基础设施状态"},
@@ -269,6 +270,7 @@ func navigation(activePath string) []navGroup {
 			Icon:  "messages-square",
 			Items: []navItem{
 				{Label: "消息记录", Path: "/messages"},
+				{Label: "关联分析", Path: "/correlations"},
 				{Label: "数据报表", Path: "/reports"},
 			},
 		},

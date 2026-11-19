@@ -184,6 +184,10 @@ type OperationsService interface {
 	SearchMessages(ctx context.Context, filter operations.MessageQuery) (operations.MessagePage, error)
 	SearchIndexHealth(ctx context.Context) (operations.SearchIndexHealth, error)
 	RebuildSearchIndex(ctx context.Context) (operations.SearchIndexHealth, error)
+	AnalyzeCorrelations(
+		ctx context.Context,
+		query operations.CorrelationQuery,
+	) (operations.CorrelationAnalysis, error)
 	BuildReport(ctx context.Context, days int) (operations.Report, error)
 	BuildEvidenceManifest(
 		ctx context.Context,
@@ -332,6 +336,8 @@ func (a *API) Handler() http.Handler {
 	)
 	mux.HandleFunc("GET /api/v1/reports",
 		a.requireAPIPermission(auth.PermissionReportRead, a.messageReport))
+	mux.HandleFunc("GET /api/v1/correlations",
+		a.requireAPIPermission(auth.PermissionMessageRead, a.correlationAnalysis))
 	mux.HandleFunc("GET /api/v1/evidence/manifest",
 		a.requireAPIPermission(auth.PermissionReportRead, a.evidenceManifest))
 	mux.Handle("GET /", a.requirePage(a.web))
@@ -923,6 +929,29 @@ func (a *API) searchMessages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, page)
 }
 
+func (a *API) correlationAnalysis(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	query, err := parseCorrelationQuery(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_correlation_query", err.Error())
+		return
+	}
+	analysis, err := a.operations.AnalyzeCorrelations(r.Context(), query)
+	if err != nil {
+		if errors.Is(err, operations.ErrInvalidCorrelationQuery) {
+			writeError(w, http.StatusBadRequest, "invalid_correlation_query", err.Error())
+			return
+		}
+		a.logger.Error("analyze cross-account correlations", "error", err)
+		writeError(w, http.StatusInternalServerError, "correlation_analysis_failed",
+			"关联分析暂时不可用")
+		return
+	}
+	writeJSON(w, http.StatusOK, analysis)
+}
+
 func (a *API) searchIndexHealth(w http.ResponseWriter, r *http.Request) {
 	if !a.prepareOperations(w) {
 		return
@@ -1218,6 +1247,29 @@ func parseMessageQuery(r *http.Request) (operations.MessageQuery, error) {
 		To:        to,
 		Limit:     limit,
 		Offset:    offset,
+	}, nil
+}
+
+func parseCorrelationQuery(r *http.Request) (operations.CorrelationQuery, error) {
+	values := r.URL.Query()
+	days, err := strconv.Atoi(values.Get("days"))
+	if err != nil && values.Get("days") != "" {
+		return operations.CorrelationQuery{}, errors.New("days must be an integer")
+	}
+	if days < 0 {
+		return operations.CorrelationQuery{}, errors.New("days must not be negative")
+	}
+	limit, err := strconv.Atoi(values.Get("limit"))
+	if err != nil && values.Get("limit") != "" {
+		return operations.CorrelationQuery{}, errors.New("limit must be an integer")
+	}
+	if limit < 0 {
+		return operations.CorrelationQuery{}, errors.New("limit must not be negative")
+	}
+	return operations.CorrelationQuery{
+		Days:  days,
+		Types: append([]string(nil), values["types"]...),
+		Limit: limit,
 	}, nil
 }
 
