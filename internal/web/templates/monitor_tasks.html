@@ -4,10 +4,16 @@
     <span><strong data-task-count>—</strong> 条规则</span>
     <span><strong data-task-enabled-count>—</strong> 条启用</span>
   </div>
-  <button class="button button-primary" type="button" data-task-create>
-    <span class="icon icon-radio-tower" aria-hidden="true"></span>
-    新建规则
-  </button>
+  <div class="heading-actions">
+    <button class="button button-secondary" type="button" data-channel-create>
+      <span class="icon icon-bell-ring" aria-hidden="true"></span>
+      添加通知渠道
+    </button>
+    <button class="button button-primary" type="button" data-task-create>
+      <span class="icon icon-radio-tower" aria-hidden="true"></span>
+      新建规则
+    </button>
+  </div>
 </section>
 
 <section class="card">
@@ -61,12 +67,50 @@
       <select name="notification_channel_id" data-monitor-channel required>
         <option value="1">站内通知</option>
       </select>
-      <small class="field-hint">告警会写入站内通知中心，并记录本次投递结果。</small>
+      <small class="field-hint">站内通知即时可见；Webhook 由后台排队发送并记录重试结果。</small>
     </label>
     <p class="form-notice" data-monitor-rule-notice hidden></p>
     <div class="dialog-actions">
       <button class="button button-secondary" type="button" data-monitor-rule-close>取消</button>
       <button class="button button-primary" type="submit">创建规则</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="account-dialog business-dialog" id="notification-channel-dialog"
+  aria-labelledby="notification-channel-title">
+  <form class="dialog-card" data-notification-channel-form>
+    <div class="dialog-header">
+      <div>
+        <p class="eyebrow">告警投递</p>
+        <h2 id="notification-channel-title">添加 Webhook 渠道</h2>
+      </div>
+      <button class="tool-button" type="button" data-notification-channel-close
+        aria-label="关闭通知渠道">
+        <span class="icon icon-x" aria-hidden="true"></span>
+      </button>
+    </div>
+    <label class="field">
+      <span>渠道名称</span>
+      <input name="name" type="text" maxlength="60" required placeholder="例如：安全值班 Webhook">
+    </label>
+    <label class="field">
+      <span>Webhook 地址</span>
+      <input name="url" type="url" maxlength="2048" required
+        placeholder="https://example.com/telenexus/alerts">
+      <small class="field-hint">生产环境仅允许 HTTPS 公网地址；地址保存后不会回显。</small>
+    </label>
+    <label class="field">
+      <span>HMAC 签名密钥</span>
+      <input name="secret" type="password" minlength="16" maxlength="128"
+        autocomplete="new-password" placeholder="可选，至少 16 个字符">
+      <small class="field-hint">签名通过 X-TeleNexus-Signature 发送，密钥不会回显。</small>
+    </label>
+    <p class="form-notice" data-notification-channel-notice hidden></p>
+    <div class="dialog-actions">
+      <button class="button button-secondary" type="button"
+        data-notification-channel-close>取消</button>
+      <button class="button button-primary" type="submit">添加渠道</button>
     </div>
   </form>
 </dialog>

@@ -151,6 +151,12 @@ type OperationsService interface {
 	) (operations.Rule, error)
 	ListRules(ctx context.Context, enabledOnly bool) ([]operations.Rule, error)
 	ListNotificationChannels(ctx context.Context) ([]operations.NotificationChannel, error)
+	CreateWebhookChannel(
+		ctx context.Context,
+		name string,
+		url string,
+		secret string,
+	) (operations.NotificationChannel, error)
 	SetRuleEnabled(ctx context.Context, id int64, enabled bool) error
 	DeleteRule(ctx context.Context, id int64) error
 	ListAlerts(ctx context.Context, state string, limit int) ([]operations.Alert, error)
@@ -257,6 +263,8 @@ func (a *API) Handler() http.Handler {
 		a.requireAPIPermission(auth.PermissionMonitorWrite, a.deleteMonitorRule))
 	mux.HandleFunc("GET /api/v1/monitor/channels",
 		a.requireAPIPermission(auth.PermissionMonitorRead, a.listNotificationChannels))
+	mux.HandleFunc("POST /api/v1/monitor/channels",
+		a.requireAPIPermission(auth.PermissionMonitorWrite, a.createNotificationChannel))
 	mux.HandleFunc("POST /api/v1/monitor/run",
 		a.requireAPIPermission(auth.PermissionMonitorOperate, a.runMonitor))
 	mux.HandleFunc("GET /api/v1/monitor/status",
@@ -535,6 +543,38 @@ func (a *API) listNotificationChannels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (a *API) createNotificationChannel(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	var input struct {
+		Name   string `json:"name"`
+		Kind   string `json:"kind"`
+		URL    string `json:"url"`
+		Secret string `json:"secret"`
+	}
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	if input.Kind != "" && input.Kind != operations.NotificationKindWebhook {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_notification_channel",
+			"当前仅支持创建 Webhook 通知渠道")
+		return
+	}
+	item, err := a.operations.CreateWebhookChannel(
+		r.Context(),
+		input.Name,
+		input.URL,
+		input.Secret,
+	)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_notification_channel",
+			err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
 }
 
 func (a *API) createMonitorRule(w http.ResponseWriter, r *http.Request) {

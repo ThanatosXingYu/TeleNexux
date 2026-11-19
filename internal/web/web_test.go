@@ -61,10 +61,16 @@ func TestBusinessPagesExposeRealDataControls(t *testing.T) {
 	tests := map[string][]string{
 		"/accounts/groups": {"data-groups-grid", "data-group-form"},
 		"/monitor":         {"data-monitor-rules-body", "data-monitor-health-body", "data-monitor-run"},
-		"/monitor/tasks":   {"data-tasks-body", "data-monitor-rule-form", "data-monitor-channel"},
-		"/monitor/alerts":  {"data-alerts-list", "data-alert-state", "data-alert-action-form"},
-		"/messages":        {"data-message-filter", "data-messages-body"},
-		"/reports":         {"data-report-chart", "data-report-table-body"},
+		"/monitor/tasks": {
+			"data-tasks-body",
+			"data-monitor-rule-form",
+			"data-monitor-channel",
+			"data-notification-channel-form",
+			"data-channel-create",
+		},
+		"/monitor/alerts": {"data-alerts-list", "data-alert-state", "data-alert-action-form"},
+		"/messages":       {"data-message-filter", "data-messages-body"},
+		"/reports":        {"data-report-chart", "data-report-table-body"},
 	}
 	for path, expected := range tests {
 		t.Run(path, func(t *testing.T) {

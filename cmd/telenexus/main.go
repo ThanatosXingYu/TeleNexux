@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/ThanatosXingYu/TeleNexux/internal/health"
 	"github.com/ThanatosXingYu/TeleNexux/internal/httpapi"
 	"github.com/ThanatosXingYu/TeleNexux/internal/monitorscheduler"
+	"github.com/ThanatosXingYu/TeleNexux/internal/notifications"
 	"github.com/ThanatosXingYu/TeleNexux/internal/operations"
 	"github.com/ThanatosXingYu/TeleNexux/internal/settings"
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramauth"
@@ -76,6 +78,15 @@ func run() error {
 			logger.Error("close operations storage", "error", err)
 		}
 	}()
+	notificationSender := notifications.New(
+		operationsStore,
+		notifications.Options{
+			Interval:     5 * time.Second,
+			AllowPrivate: !strings.EqualFold(cfg.Environment, "production"),
+		},
+		logger,
+	)
+	notificationSender.Start(ctx)
 	webRenderer, err := web.New()
 	if err != nil {
 		return fmt.Errorf("initialize web interface: %w", err)

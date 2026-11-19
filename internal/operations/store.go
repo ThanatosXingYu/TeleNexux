@@ -53,12 +53,13 @@ type Rule struct {
 }
 
 type NotificationChannel struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	Kind      string    `json:"kind"`
-	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID         int64     `json:"id"`
+	Name       string    `json:"name"`
+	Kind       string    `json:"kind"`
+	Enabled    bool      `json:"enabled"`
+	Configured bool      `json:"configured"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type Alert struct {
@@ -80,6 +81,7 @@ type Alert struct {
 	DeliveryCount  int        `json:"delivery_attempts"`
 	DeliveryLastAt *time.Time `json:"delivery_last_attempt_at,omitempty"`
 	DeliveryAt     *time.Time `json:"delivery_at,omitempty"`
+	DeliveryNextAt *time.Time `json:"delivery_next_attempt_at,omitempty"`
 	DeliveryError  string     `json:"delivery_error,omitempty"`
 	Severity       string     `json:"severity"`
 	AssignedTo     string     `json:"assigned_to,omitempty"`
@@ -280,6 +282,7 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
 	attempt_count INTEGER NOT NULL DEFAULT 0,
 	last_attempt_at TEXT NOT NULL DEFAULT '',
 	delivered_at TEXT NOT NULL DEFAULT '',
+	next_attempt_at TEXT NOT NULL DEFAULT '',
 	error_text TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
@@ -515,6 +518,19 @@ INSERT OR IGNORE INTO notification_channels (
 		if err := s.ensureColumn(ctx, "monitor_alerts", column.name, column.definition); err != nil {
 			return err
 		}
+	}
+	if err := s.ensureColumn(
+		ctx,
+		"notification_deliveries",
+		"next_attempt_at",
+		"next_attempt_at TEXT NOT NULL DEFAULT ''",
+	); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `
+CREATE INDEX IF NOT EXISTS notification_deliveries_retry_idx
+	ON notification_deliveries(state, next_attempt_at, id)`); err != nil {
+		return fmt.Errorf("create notification retry index: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `
 UPDATE monitor_alerts SET updated_at = created_at WHERE updated_at = ''`); err != nil {
@@ -811,7 +827,7 @@ func (s *Service) CreateRuleWithChannel(
 	if channelEnabled == 0 {
 		return Rule{}, errors.New("notification channel is disabled")
 	}
-	if channelKind != "in_app" {
+	if channelKind != NotificationKindInApp && channelKind != NotificationKindWebhook {
 		return Rule{}, errors.New("notification channel kind is not supported")
 	}
 	encoded, err := json.Marshal(keywords)
@@ -847,7 +863,7 @@ INSERT INTO monitor_rules (
 
 func (s *Service) ListNotificationChannels(ctx context.Context) ([]NotificationChannel, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, name, kind, enabled, created_at, updated_at
+SELECT id, name, kind, enabled, config_json, created_at, updated_at
 FROM notification_channels
 ORDER BY id`)
 	if err != nil {
@@ -859,6 +875,7 @@ ORDER BY id`)
 		var (
 			item                 NotificationChannel
 			enabled              int
+			configJSON           string
 			createdAt, updatedAt string
 		)
 		if err := rows.Scan(
@@ -866,12 +883,14 @@ ORDER BY id`)
 			&item.Name,
 			&item.Kind,
 			&enabled,
+			&configJSON,
 			&createdAt,
 			&updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan notification channel: %w", err)
 		}
 		item.Enabled = enabled != 0
+		item.Configured = item.Kind == "in_app" || notificationConfigConfigured(configJSON)
 		item.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse notification channel created_at: %w", err)
@@ -1079,7 +1098,7 @@ INSERT OR IGNORE INTO monitor_alerts (
 	if affected == 0 {
 		return Alert{}, nil
 	}
-	if rule.NotificationChannelKind != "in_app" {
+	if rule.NotificationChannelKind != "in_app" && rule.NotificationChannelKind != "webhook" {
 		return Alert{}, errors.New("notification channel kind is not supported")
 	}
 	alert := Alert{
@@ -1100,16 +1119,28 @@ INSERT OR IGNORE INTO monitor_alerts (
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
+	deliveryState := "queued"
+	attemptCount := 0
+	lastAttemptAt := ""
+	deliveredAt := ""
+	if rule.NotificationChannelKind == "in_app" {
+		deliveryState = "delivered"
+		attemptCount = 1
+		lastAttemptAt = now.Format(time.RFC3339Nano)
+		deliveredAt = lastAttemptAt
+	}
 	delivery, err := tx.ExecContext(ctx, `
 INSERT INTO notification_deliveries (
 	alert_id, channel_id, channel_kind, state, attempt_count,
-	last_attempt_at, delivered_at, error_text, created_at, updated_at
-) VALUES (?, ?, ?, 'delivered', 1, ?, ?, '', ?, ?)`,
+	last_attempt_at, delivered_at, next_attempt_at, error_text, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?)`,
 		alert.ID,
 		rule.NotificationChannelID,
 		rule.NotificationChannelKind,
-		now.Format(time.RFC3339Nano),
-		now.Format(time.RFC3339Nano),
+		deliveryState,
+		attemptCount,
+		lastAttemptAt,
+		deliveredAt,
 		now.Format(time.RFC3339Nano),
 		now.Format(time.RFC3339Nano),
 	)
@@ -1121,10 +1152,14 @@ INSERT INTO notification_deliveries (
 		return Alert{}, fmt.Errorf("read notification delivery ID: %w", err)
 	}
 	alert.DeliveryID = deliveryID
-	alert.DeliveryState = "delivered"
-	alert.DeliveryCount = 1
-	alert.DeliveryLastAt = &now
-	alert.DeliveryAt = &now
+	alert.DeliveryState = deliveryState
+	alert.DeliveryCount = attemptCount
+	if lastAttemptAt != "" {
+		alert.DeliveryLastAt = &now
+	}
+	if deliveredAt != "" {
+		alert.DeliveryAt = &now
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO monitor_alert_events (
 	alert_id, action, actor, note, previous_state, next_state, created_at
@@ -1143,7 +1178,7 @@ SELECT a.id, a.rule_id, COALESCE(r.name, ''), a.account_id, a.peer_type, a.peer_
 	COALESCE(r.notification_channel_id, 0), COALESCE(nc.name, ''), a.created_at,
 	COALESCE(d.id, 0), COALESCE(d.state, ''), COALESCE(d.attempt_count, 0),
 	COALESCE(d.last_attempt_at, ''), COALESCE(d.delivered_at, ''),
-	COALESCE(d.error_text, ''), a.severity, a.assigned_to,
+	COALESCE(d.next_attempt_at, ''), COALESCE(d.error_text, ''), a.severity, a.assigned_to,
 	a.acknowledged_by, a.acknowledged_at, a.resolved_by, a.resolved_at,
 	a.updated_at
 FROM monitor_alerts a
@@ -1756,8 +1791,8 @@ func scanRule(row scanner) (Rule, error) {
 func scanAlert(row scanner) (Alert, error) {
 	var item Alert
 	var (
-		createdAt, deliveryLastAt, deliveryAt string
-		acknowledgedAt, resolvedAt, updatedAt string
+		createdAt, deliveryLastAt, deliveryAt, deliveryNextAt string
+		acknowledgedAt, resolvedAt, updatedAt                 string
 	)
 	if err := row.Scan(
 		&item.ID,
@@ -1779,6 +1814,7 @@ func scanAlert(row scanner) (Alert, error) {
 		&item.DeliveryCount,
 		&deliveryLastAt,
 		&deliveryAt,
+		&deliveryNextAt,
 		&item.DeliveryError,
 		&item.Severity,
 		&item.AssignedTo,
@@ -1808,6 +1844,13 @@ func scanAlert(row scanner) (Alert, error) {
 			return Alert{}, fmt.Errorf("parse notification delivery time: %w", err)
 		}
 		item.DeliveryAt = &value
+	}
+	if deliveryNextAt != "" {
+		value, err := time.Parse(time.RFC3339Nano, deliveryNextAt)
+		if err != nil {
+			return Alert{}, fmt.Errorf("parse notification delivery retry time: %w", err)
+		}
+		item.DeliveryNextAt = &value
 	}
 	if acknowledgedAt != "" {
 		value, err := time.Parse(time.RFC3339Nano, acknowledgedAt)

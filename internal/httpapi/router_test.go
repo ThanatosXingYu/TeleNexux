@@ -1278,6 +1278,37 @@ func TestMonitorNotificationChannelAPI(t *testing.T) {
 			channelsRecorder.Code, channelsRecorder.Body.String())
 	}
 
+	createChannelRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/monitor/channels",
+		strings.NewReader(`{
+			"name":"Security webhook",
+			"kind":"webhook",
+			"url":"https://hooks.example.test/telenexus",
+			"secret":"signing-secret-1234"
+		}`),
+	)
+	createChannelRequest.Header.Set("Content-Type", "application/json")
+	createChannelRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(createChannelRecorder, createChannelRequest)
+	if createChannelRecorder.Code != http.StatusCreated {
+		t.Fatalf("create channel response = %d %s",
+			createChannelRecorder.Code, createChannelRecorder.Body.String())
+	}
+	if strings.Contains(createChannelRecorder.Body.String(), "hooks.example.test") ||
+		strings.Contains(createChannelRecorder.Body.String(), "signing-secret-1234") {
+		t.Fatalf("create channel leaked configuration: %s", createChannelRecorder.Body.String())
+	}
+	var createdChannel operations.NotificationChannel
+	if err := json.NewDecoder(createChannelRecorder.Body).Decode(&createdChannel); err != nil {
+		t.Fatalf("decode created channel: %v", err)
+	}
+	if createdChannel.ID <= 1 ||
+		createdChannel.Kind != operations.NotificationKindWebhook ||
+		!createdChannel.Configured {
+		t.Fatalf("created channel = %+v", createdChannel)
+	}
+
 	ruleRequest := httptest.NewRequest(
 		http.MethodPost,
 		"/api/v1/monitor/rules",

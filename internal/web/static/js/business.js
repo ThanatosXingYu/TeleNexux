@@ -746,6 +746,9 @@
     const accountSelect = document.querySelector("[data-monitor-account]");
     const chatSelect = document.querySelector("[data-monitor-chat]");
     const channelSelect = document.querySelector("[data-monitor-channel]");
+    const channelDialog = document.getElementById("notification-channel-dialog");
+    const channelForm = document.querySelector("[data-notification-channel-form]");
+    const channelNotice = document.querySelector("[data-notification-channel-notice]");
     let accounts = [];
     let channels = [];
     let chatRequest = 0;
@@ -881,6 +884,41 @@
     document.querySelectorAll("[data-monitor-rule-close]").forEach((button) => {
       button.addEventListener("click", () => dialog?.close());
     });
+    document.querySelectorAll("[data-channel-create]").forEach((button) => {
+      button.addEventListener("click", () => {
+        channelForm?.reset();
+        showNotice(channelNotice);
+        channelDialog?.showModal();
+      });
+    });
+    document.querySelectorAll("[data-notification-channel-close]").forEach((button) => {
+      button.addEventListener("click", () => channelDialog?.close());
+    });
+    channelForm?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const submit = channelForm.querySelector("button[type='submit']");
+      const data = new FormData(channelForm);
+      submit?.setAttribute("disabled", "");
+      showNotice(channelNotice);
+      try {
+        await api("/api/v1/monitor/channels", {
+          method: "POST",
+          body: JSON.stringify({
+            name: String(data.get("name") || "").trim(),
+            kind: "webhook",
+            url: String(data.get("url") || "").trim(),
+            secret: String(data.get("secret") || "").trim(),
+          }),
+        });
+        channelDialog?.close();
+        showToast("Webhook 通知渠道已添加");
+        await load();
+      } catch (requestError) {
+        showNotice(channelNotice, requestError.message, true);
+      } finally {
+        submit?.removeAttribute("disabled");
+      }
+    });
     accountSelect?.addEventListener("change", loadChats);
     form?.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -982,8 +1020,14 @@
             element("p", "", alert.message_preview || "监控命中"),
             element("small", "", `${alert.peer_title || "会话"} · ${alert.notification_channel_name || "站内通知"} · ${formatDate(alert.created_at)}${alert.matched_keyword ? ` · 命中 ${alert.matched_keyword}` : ""}`),
             element("small", "", `负责人：${alert.assigned_to || "未分派"}${alert.resolved_by ? ` · 解决人：${alert.resolved_by} · ${formatDate(alert.resolved_at)}` : alert.acknowledged_by ? ` · 确认人：${alert.acknowledged_by}` : ""}`),
-            element("small", "", alert.delivery_state === "delivered"
-              ? `投递成功 · ${formatDate(alert.delivery_at)}`
+          element("small", "", alert.delivery_state === "delivered"
+            ? `投递成功 · ${formatDate(alert.delivery_at)}`
+            : alert.delivery_state === "queued"
+              ? `等待投递 · 第 ${Number(alert.delivery_attempts) || 0} 次尝试${
+                alert.delivery_next_attempt_at
+                  ? ` · 下次 ${formatDate(alert.delivery_next_attempt_at)}`
+                  : ""
+              }`
               : alert.delivery_state === "failed"
                 ? `投递失败${alert.delivery_error ? ` · ${alert.delivery_error}` : ""}`
                 : "无投递记录"),
