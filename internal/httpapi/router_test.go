@@ -168,11 +168,13 @@ func (s *fakeAccountService) Delete(_ context.Context, id int64) error {
 }
 
 type fakeTelegramAuthService struct {
-	configured bool
-	challenge  telegramauth.Challenge
-	result     telegramauth.Result
-	sendErr    error
-	submitErr  error
+	configured  bool
+	challenge   telegramauth.Challenge
+	result      telegramauth.Result
+	sendErr     error
+	submitErr   error
+	sendStarted chan struct{}
+	sendRelease <-chan struct{}
 }
 
 func (s *fakeTelegramAuthService) Configured() bool {
@@ -180,9 +182,19 @@ func (s *fakeTelegramAuthService) Configured() bool {
 }
 
 func (s *fakeTelegramAuthService) SendCode(
-	_ context.Context,
+	ctx context.Context,
 	_ string,
 ) (telegramauth.Challenge, error) {
+	if s.sendStarted != nil {
+		s.sendStarted <- struct{}{}
+	}
+	if s.sendRelease != nil {
+		select {
+		case <-ctx.Done():
+			return telegramauth.Challenge{}, ctx.Err()
+		case <-s.sendRelease:
+		}
+	}
 	return s.challenge, s.sendErr
 }
 
@@ -637,6 +649,134 @@ func TestSendTelegramCodeRequiresJSON(t *testing.T) {
 
 	if recorder.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnsupportedMediaType)
+	}
+}
+
+func TestTelegramAuthRateLimitRejectsRepeatedRequests(t *testing.T) {
+	telegram := &fakeTelegramAuthService{
+		configured: true,
+		challenge:  telegramauth.Challenge{LoginID: "login-id"},
+	}
+	handler := newTestHandlerWithTelegram(&fakeAccountService{}, telegram)
+	for index := 0; index < telegramAuthAttemptLimit; index++ {
+		request := httptest.NewRequest(
+			http.MethodPost,
+			"/api/v1/telegram/auth/send-code",
+			strings.NewReader(`{"phone_number":"+15550001001"}`),
+		)
+		request.Header.Set("Content-Type", "application/json")
+		request.RemoteAddr = "203.0.113.10:50000"
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusCreated {
+			t.Fatalf("request %d status = %d, want %d; body: %s",
+				index+1, recorder.Code, http.StatusCreated, recorder.Body.String())
+		}
+	}
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/telegram/auth/send-code",
+		strings.NewReader(`{"phone_number":"+15550001001"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.RemoteAddr = "203.0.113.10:50000"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d; body: %s",
+			recorder.Code, http.StatusTooManyRequests, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"telegram_auth_rate_limited"`) {
+		t.Fatalf("body = %s, want telegram_auth_rate_limited", recorder.Body.String())
+	}
+}
+
+func TestTelegramAuthConcurrencyLimit(t *testing.T) {
+	started := make(chan struct{}, telegramAuthConcurrency)
+	release := make(chan struct{})
+	telegram := &fakeTelegramAuthService{
+		configured:  true,
+		challenge:   telegramauth.Challenge{LoginID: "login-id"},
+		sendStarted: started,
+		sendRelease: release,
+	}
+	handler := newTestHandlerWithTelegram(&fakeAccountService{}, telegram)
+	responses := make(chan int, telegramAuthConcurrency)
+	for index := 0; index < telegramAuthConcurrency; index++ {
+		go func() {
+			request := httptest.NewRequest(
+				http.MethodPost,
+				"/api/v1/telegram/auth/send-code",
+				strings.NewReader(`{"phone_number":"+15550001001"}`),
+			)
+			request.Header.Set("Content-Type", "application/json")
+			request.RemoteAddr = "203.0.113.11:50000"
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			responses <- recorder.Code
+		}()
+	}
+	for index := 0; index < telegramAuthConcurrency; index++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for Telegram authentication to start")
+		}
+	}
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/telegram/auth/send-code",
+		strings.NewReader(`{"phone_number":"+15550001001"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.RemoteAddr = "203.0.113.11:50000"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d; body: %s",
+			recorder.Code, http.StatusTooManyRequests, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"telegram_auth_busy"`) {
+		t.Fatalf("body = %s, want telegram_auth_busy", recorder.Body.String())
+	}
+
+	close(release)
+	for index := 0; index < telegramAuthConcurrency; index++ {
+		select {
+		case status := <-responses:
+			if status != http.StatusCreated {
+				t.Fatalf("concurrent status = %d, want %d", status, http.StatusCreated)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for concurrent authentication")
+		}
+	}
+}
+
+func TestTelegramAuthTimeoutHasDistinctResponse(t *testing.T) {
+	telegram := &fakeTelegramAuthService{
+		configured: true,
+		sendErr:    context.DeadlineExceeded,
+	}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/telegram/auth/send-code",
+		strings.NewReader(`{"phone_number":"+15550001001"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithTelegram(&fakeAccountService{}, telegram).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want %d; body: %s",
+			recorder.Code, http.StatusGatewayTimeout, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"telegram_timeout"`) {
+		t.Fatalf("body = %s, want telegram_timeout", recorder.Body.String())
 	}
 }
 

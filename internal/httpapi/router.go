@@ -28,7 +28,12 @@ import (
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramchat"
 )
 
-const maxRequestBody = 1 << 20
+const (
+	maxRequestBody           = 1 << 20
+	telegramAuthWindow       = time.Minute
+	telegramAuthAttemptLimit = 12
+	telegramAuthConcurrency  = 3
+)
 
 type AccountService interface {
 	Create(ctx context.Context, input account.CreateInput) (account.Account, error)
@@ -168,6 +173,9 @@ type API struct {
 	logger     *slog.Logger
 	loginMu    sync.Mutex
 	attempts   map[string]loginAttempt
+	authOpsMu  sync.Mutex
+	authOps    map[string]loginAttempt
+	authSlots  chan struct{}
 }
 
 func New(
@@ -194,6 +202,8 @@ func New(
 		web:        webHandler,
 		logger:     logger,
 		attempts:   make(map[string]loginAttempt),
+		authOps:    make(map[string]loginAttempt),
+		authSlots:  make(chan struct{}, telegramAuthConcurrency),
 	}
 }
 
@@ -1622,6 +1632,11 @@ func (a *API) sendTelegramCode(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, &input) {
 		return
 	}
+	release, ok := a.beginTelegramAuth(w, r)
+	if !ok {
+		return
+	}
+	defer release()
 	challenge, err := a.telegram.SendCode(r.Context(), input.PhoneNumber)
 	if err != nil {
 		a.writeTelegramError(w, err)
@@ -1640,6 +1655,11 @@ func (a *API) startTelegramQR(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "cross_site_request", "cross-site requests are not allowed")
 		return
 	}
+	release, ok := a.beginTelegramAuth(w, r)
+	if !ok {
+		return
+	}
+	defer release()
 	challenge, err := a.telegram.StartQR(r.Context())
 	if err != nil {
 		a.writeTelegramError(w, err)
@@ -1685,6 +1705,11 @@ func (a *API) submitTelegramCode(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, &input) {
 		return
 	}
+	release, ok := a.beginTelegramAuth(w, r)
+	if !ok {
+		return
+	}
+	defer release()
 	result, err := a.telegram.SubmitCode(r.Context(), r.PathValue("loginID"), input.Code)
 	if err != nil {
 		a.writeTelegramError(w, err)
@@ -1703,6 +1728,11 @@ func (a *API) submitTelegramPassword(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, &input) {
 		return
 	}
+	release, ok := a.beginTelegramAuth(w, r)
+	if !ok {
+		return
+	}
+	defer release()
 	result, err := a.telegram.SubmitPassword(r.Context(), r.PathValue("loginID"), input.Password)
 	if err != nil {
 		a.writeTelegramError(w, err)
@@ -1804,6 +1834,9 @@ func (a *API) writeTelegramError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "login_not_found", "登录会话不存在或已过期")
 	case errors.Is(err, telegramauth.ErrLoginStage):
 		writeError(w, http.StatusConflict, "invalid_login_step", "当前登录步骤不允许此操作")
+	case errors.Is(err, context.DeadlineExceeded):
+		writeError(w, http.StatusGatewayTimeout, "telegram_timeout",
+			"Telegram 响应超时，请稍后重试")
 	case errors.Is(err, telegramauth.ErrTelegram):
 		a.logger.Warn("Telegram authentication failed", "error", err)
 		writeError(w, http.StatusBadGateway, "telegram_error", "Telegram 登录失败，请稍后重试")
@@ -1811,6 +1844,43 @@ func (a *API) writeTelegramError(w http.ResponseWriter, err error) {
 		a.logger.Error("telegram authentication error", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "登录服务暂时不可用")
 	}
+}
+
+func (a *API) beginTelegramAuth(w http.ResponseWriter, r *http.Request) (func(), bool) {
+	if retryAfter := a.reserveTelegramAuthAttempt(clientAddress(r)); retryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retryAfter.Seconds()))))
+		writeError(w, http.StatusTooManyRequests, "telegram_auth_rate_limited",
+			"Telegram 登录请求过于频繁，请稍后再试")
+		return nil, false
+	}
+	select {
+	case a.authSlots <- struct{}{}:
+		return func() { <-a.authSlots }, true
+	default:
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusTooManyRequests, "telegram_auth_busy",
+			"Telegram 登录请求较多，请稍后重试")
+		return nil, false
+	}
+}
+
+func (a *API) reserveTelegramAuthAttempt(key string) time.Duration {
+	now := time.Now()
+	a.authOpsMu.Lock()
+	defer a.authOpsMu.Unlock()
+	if a.authOps == nil {
+		a.authOps = make(map[string]loginAttempt)
+	}
+	attempt := a.authOps[key]
+	if attempt.windowStart.IsZero() || now.Sub(attempt.windowStart) >= telegramAuthWindow {
+		attempt = loginAttempt{windowStart: now}
+	}
+	attempt.count++
+	a.authOps[key] = attempt
+	if attempt.count <= telegramAuthAttemptLimit {
+		return 0
+	}
+	return telegramAuthWindow - now.Sub(attempt.windowStart)
 }
 
 func (a *API) prepareAuthRequest(w http.ResponseWriter, r *http.Request) bool {
