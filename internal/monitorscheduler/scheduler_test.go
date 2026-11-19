@@ -458,9 +458,11 @@ func TestFloodWaitOnlyBlocksAffectedAccountForCurrentRun(t *testing.T) {
 		}
 	}
 	reader := &recordingChatReader{errByAccount: map[int64]error{
-		7: fmt.Errorf("%w: retry after 30s", telegramchat.ErrFloodWait),
+		7: &telegramchat.FloodWaitError{Wait: 5 * time.Minute},
 	}}
 	scheduler := New(service, fakeAccountLookup{}, reader, time.Minute, testLogger())
+	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.UTC)
+	scheduler.now = func() time.Time { return now }
 	if err := scheduler.RunOnce(ctx); !errors.Is(err, telegramchat.ErrFloodWait) {
 		t.Fatalf("RunOnce() error = %v, want FloodWait", err)
 	}
@@ -475,7 +477,10 @@ func TestFloodWaitOnlyBlocksAffectedAccountForCurrentRun(t *testing.T) {
 	for _, target := range targets {
 		switch target.AccountID {
 		case 7:
-			if target.ConsecutiveFailures != 1 || !target.FloodWait {
+			if target.ConsecutiveFailures != 1 ||
+				!target.FloodWait ||
+				target.NextCollectionAt == nil ||
+				!target.NextCollectionAt.Equal(now.Add(5*time.Minute)) {
 				t.Fatalf("flooded target = %+v", target)
 			}
 		case 8, 9:
@@ -483,6 +488,25 @@ func TestFloodWaitOnlyBlocksAffectedAccountForCurrentRun(t *testing.T) {
 				t.Fatalf("healthy target = %+v", target)
 			}
 		}
+	}
+	reader.calls = nil
+	scheduler = New(service, fakeAccountLookup{}, reader, time.Minute, testLogger())
+	scheduler.now = func() time.Time { return now }
+	if err := scheduler.RunOnce(ctx); err != nil {
+		t.Fatalf("cooldown RunOnce() error = %v", err)
+	}
+	if len(reader.calls) != 2 || reader.calls[0] != 8 || reader.calls[1] != 9 {
+		t.Fatalf("cooldown collection calls = %+v", reader.calls)
+	}
+	now = now.Add(6 * time.Minute)
+	reader.calls = nil
+	scheduler = New(service, fakeAccountLookup{}, reader, time.Minute, testLogger())
+	scheduler.now = func() time.Time { return now }
+	if err := scheduler.RunOnce(ctx); !errors.Is(err, telegramchat.ErrFloodWait) {
+		t.Fatalf("retry RunOnce() error = %v, want FloodWait", err)
+	}
+	if len(reader.calls) != 3 || reader.calls[0] != 7 {
+		t.Fatalf("retry collection calls = %+v", reader.calls)
 	}
 }
 

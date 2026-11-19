@@ -27,6 +27,7 @@ type CollectionTarget struct {
 	LastError              string     `json:"last_error,omitempty"`
 	BacklogDetected        bool       `json:"backlog_detected"`
 	FloodWait              bool       `json:"flood_wait"`
+	NextCollectionAt       *time.Time `json:"next_collection_at,omitempty"`
 	LastSuccessfulAt       *time.Time `json:"last_successful_at,omitempty"`
 	CheckpointDelaySeconds int64      `json:"checkpoint_delay_seconds"`
 	LastBatchFetched       int        `json:"last_batch_fetched"`
@@ -96,6 +97,7 @@ SELECT r.account_id, r.peer_type, r.peer_id, MAX(r.peer_title),
 	COALESCE(c.consecutive_failures, 0),
 	COALESCE(c.last_error, ''),
 	COALESCE(c.backlog_detected, 0),
+	COALESCE(st.next_collection_at, ''),
 	COALESCE(c.last_success_at, ''),
 	COALESCE(b.fetched_count, 0),
 	COALESCE(b.finished_at, '')
@@ -104,6 +106,7 @@ LEFT JOIN monitor_checkpoints c
 	ON c.account_id = r.account_id
 	AND c.peer_type = r.peer_type
 	AND c.peer_id = r.peer_id
+LEFT JOIN monitor_account_states st ON st.account_id = r.account_id
 LEFT JOIN ingestion_batches b ON b.batch_id = (
 	SELECT latest.batch_id
 	FROM ingestion_batches latest
@@ -125,6 +128,7 @@ ORDER BY r.account_id, r.peer_type, r.peer_id`)
 		var (
 			target                    CollectionTarget
 			backlog                   int
+			nextCollection            string
 			lastSuccessful, lastBatch string
 		)
 		if err := rows.Scan(
@@ -136,6 +140,7 @@ ORDER BY r.account_id, r.peer_type, r.peer_id`)
 			&target.ConsecutiveFailures,
 			&target.LastError,
 			&backlog,
+			&nextCollection,
 			&lastSuccessful,
 			&target.LastBatchFetched,
 			&lastBatch,
@@ -143,6 +148,13 @@ ORDER BY r.account_id, r.peer_type, r.peer_id`)
 			return nil, fmt.Errorf("scan collection target: %w", err)
 		}
 		target.BacklogDetected = backlog != 0
+		if nextCollection != "" {
+			value, err := time.Parse(time.RFC3339Nano, nextCollection)
+			if err != nil {
+				return nil, fmt.Errorf("parse account collection cooldown: %w", err)
+			}
+			target.NextCollectionAt = &value
+		}
 		if lastSuccessful != "" {
 			value, err := time.Parse(time.RFC3339Nano, lastSuccessful)
 			if err != nil {
@@ -155,6 +167,9 @@ ORDER BY r.account_id, r.peer_type, r.peer_id`)
 			)
 		}
 		target.FloodWait = strings.Contains(strings.ToLower(target.LastError), "rate limited")
+		if target.NextCollectionAt != nil && target.NextCollectionAt.After(s.now().UTC()) {
+			target.FloodWait = true
+		}
 		if lastBatch != "" {
 			value, err := time.Parse(time.RFC3339Nano, lastBatch)
 			if err != nil {
@@ -953,6 +968,52 @@ FROM notification_deliveries`).Scan(
 		summary.OldestQueuedAt = &value
 	}
 	return summary, nil
+}
+
+func (s *Service) DeferAccountCollection(
+	ctx context.Context,
+	accountID int64,
+	nextAttempt time.Time,
+	reason string,
+) error {
+	if accountID <= 0 {
+		return errors.New("account ID must be positive")
+	}
+	if nextAttempt.IsZero() {
+		return errors.New("next collection time must be provided")
+	}
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	if _, err := s.db.ExecContext(ctx, `
+INSERT INTO monitor_account_states (
+	account_id, next_collection_at, consecutive_failures, last_error, updated_at
+) VALUES (?, ?, 1, ?, ?)
+ON CONFLICT(account_id) DO UPDATE SET
+	next_collection_at = excluded.next_collection_at,
+	consecutive_failures = monitor_account_states.consecutive_failures + 1,
+	last_error = excluded.last_error,
+	updated_at = excluded.updated_at`,
+		accountID,
+		nextAttempt.UTC().Format(time.RFC3339Nano),
+		truncate(reason, 500),
+		now,
+	); err != nil {
+		return fmt.Errorf("defer account collection: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) ClearAccountCollectionDeferral(
+	ctx context.Context,
+	accountID int64,
+) error {
+	if accountID <= 0 {
+		return errors.New("account ID must be positive")
+	}
+	if _, err := s.db.ExecContext(ctx, `
+DELETE FROM monitor_account_states WHERE account_id = ?`, accountID); err != nil {
+		return fmt.Errorf("clear account collection deferral: %w", err)
+	}
+	return nil
 }
 
 func normalizeBatchInput(input IngestBatchInput) (IngestBatchInput, error) {

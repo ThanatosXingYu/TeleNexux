@@ -44,12 +44,13 @@ type Status struct {
 }
 
 type accountTargetGroup struct {
-	accountID int64
-	targets   []operations.CollectionTarget
-	next      int
-	blocked   bool
-	active    bool
-	checked   bool
+	accountID        int64
+	targets          []operations.CollectionTarget
+	next             int
+	nextCollectionAt time.Time
+	blocked          bool
+	active           bool
+	checked          bool
 }
 
 type Scheduler struct {
@@ -58,6 +59,7 @@ type Scheduler struct {
 	chats      ChatReader
 	interval   time.Duration
 	logger     *slog.Logger
+	now        func() time.Time
 	mu         sync.Mutex
 	runMu      sync.Mutex
 	status     Status
@@ -79,6 +81,7 @@ func New(
 		chats:      chats,
 		interval:   interval,
 		logger:     logger,
+		now:        time.Now,
 	}
 }
 
@@ -114,7 +117,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 
-	started := time.Now().UTC()
+	started := s.now().UTC()
 	s.setRunning(true, started)
 	targets, err := s.operations.ListCollectionTargets(ctx)
 	if err != nil {
@@ -127,7 +130,10 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 		processed := false
 		for index := range groups {
 			group := &groups[index]
-			if group.next >= len(group.targets) || group.blocked {
+			if group.next >= len(group.targets) ||
+				group.blocked ||
+				(!group.nextCollectionAt.IsZero() &&
+					s.now().Before(group.nextCollectionAt)) {
 				continue
 			}
 			if err := ctx.Err(); err != nil {
@@ -183,6 +189,25 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 				}
 				runErr = errors.Join(runErr, err)
 				if errors.Is(err, telegramchat.ErrFloodWait) {
+					wait := s.interval
+					var floodWait *telegramchat.FloodWaitError
+					if errors.As(err, &floodWait) && floodWait.Wait > 0 {
+						wait = floodWait.Wait
+					}
+					if wait <= 0 {
+						wait = time.Minute
+					}
+					group.nextCollectionAt = s.now().UTC().Add(wait)
+					if deferErr := s.operations.DeferAccountCollection(
+						context.WithoutCancel(ctx),
+						group.accountID,
+						group.nextCollectionAt,
+						err.Error(),
+					); deferErr != nil {
+						s.logger.Warn("defer account collection",
+							"account_id", group.accountID,
+							"error", deferErr)
+					}
 					group.blocked = true
 				}
 				continue
@@ -191,6 +216,13 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 				runErr = errors.Join(runErr, err)
 				continue
 			}
+			if err := s.operations.ClearAccountCollectionDeferral(
+				context.WithoutCancel(ctx),
+				group.accountID,
+			); err != nil {
+				runErr = errors.Join(runErr, err)
+			}
+			group.nextCollectionAt = time.Time{}
 			if collection.Backlog {
 				s.logger.Warn(
 					"monitor collection remains backlogged",
@@ -223,6 +255,10 @@ func groupTargetsByAccount(
 			groups = append(groups, accountTargetGroup{accountID: target.AccountID})
 		}
 		groups[index].targets = append(groups[index].targets, target)
+		if target.NextCollectionAt != nil &&
+			target.NextCollectionAt.After(groups[index].nextCollectionAt) {
+			groups[index].nextCollectionAt = target.NextCollectionAt.UTC()
+		}
 	}
 	return groups
 }

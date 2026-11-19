@@ -375,6 +375,13 @@ CREATE TABLE IF NOT EXISTS monitor_checkpoints (
 	updated_at TEXT NOT NULL,
 	PRIMARY KEY (account_id, peer_type, peer_id)
 );
+CREATE TABLE IF NOT EXISTS monitor_account_states (
+	account_id INTEGER PRIMARY KEY,
+	next_collection_at TEXT NOT NULL DEFAULT '',
+	consecutive_failures INTEGER NOT NULL DEFAULT 0,
+	last_error TEXT NOT NULL DEFAULT '',
+	updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS ingestion_batches (
 	batch_id TEXT PRIMARY KEY,
 	source TEXT NOT NULL,
@@ -1763,6 +1770,7 @@ LIMIT 1`, accountID).Scan(&heldAccountID); err == nil {
 		`DELETE FROM monitor_rules WHERE account_id = ?`,
 		`DELETE FROM indexed_messages WHERE account_id = ?`,
 		`DELETE FROM monitor_checkpoints WHERE account_id = ?`,
+		`DELETE FROM monitor_account_states WHERE account_id = ?`,
 		`DELETE FROM ingestion_batches WHERE account_id = ?`,
 		`DELETE FROM evidence_events WHERE account_id = ?`,
 	} {

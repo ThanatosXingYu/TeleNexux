@@ -29,6 +29,7 @@ func TestBusinessScriptUsesAuthenticatedAPIs(t *testing.T) {
 		`data-monitor-delivery-queued`,
 		`data-monitor-delay`,
 		`data-monitor-flood`,
+		`next_collection_at`,
 		`formatDuration`,
 		`checkpoint_delay_seconds`,
 		`last_batch_fetched`,
