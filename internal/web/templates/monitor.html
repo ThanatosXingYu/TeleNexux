@@ -48,6 +48,24 @@
 
 <section class="card">
   <div class="card-header">
+    <h2>采集目标健康</h2>
+    <span class="badge badge-neutral" data-monitor-health-state>读取中</span>
+  </div>
+  <div class="business-table-wrap" data-monitor-health-wrap hidden>
+    <table class="business-table">
+      <thead><tr><th>账号与目标</th><th>最近成功</th><th>Checkpoint 延迟</th><th>连续失败</th><th>积压与批次</th><th>最近错误</th></tr></thead>
+      <tbody data-monitor-health-body></tbody>
+    </table>
+  </div>
+  <div class="empty-state compact" data-monitor-health-empty hidden>
+    <span class="empty-icon"><span class="icon icon-radio-tower" aria-hidden="true"></span></span>
+    <h2>没有启用的采集目标</h2>
+    <p>启用监控规则后，这里会显示每个账号与会话的真实采集健康状态。</p>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-header">
     <h2>运行中的规则</h2>
     <a class="text-link" href="/monitor/tasks">管理监控任务</a>
   </div>

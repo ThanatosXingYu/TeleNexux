@@ -597,6 +597,10 @@
     }
     const wrap = document.querySelector("[data-monitor-rules-wrap]");
     const empty = document.querySelector("[data-monitor-rules-empty]");
+    const healthBody = document.querySelector("[data-monitor-health-body]");
+    const healthWrap = document.querySelector("[data-monitor-health-wrap]");
+    const healthEmpty = document.querySelector("[data-monitor-health-empty]");
+    const healthState = document.querySelector("[data-monitor-health-state]");
     const alertList = document.querySelector("[data-monitor-alerts]");
     const notice = document.querySelector("[data-monitor-notice]");
     let accounts = [];
@@ -621,13 +625,54 @@
       empty?.toggleAttribute("hidden", rules.length > 0);
     };
 
+    const renderHealth = (targets) => {
+      const accountMap = accountMapFrom(accounts);
+      healthBody.replaceChildren();
+      targets.forEach((target) => {
+        const account = accountMap.get(Number(target.account_id));
+        const row = document.createElement("tr");
+        appendCell(row, `${account ? accountLabel(account) : `账号 ${target.account_id}`} · ${target.peer_title || peerLabels[target.peer_type] || target.peer_type}`);
+        appendCell(row, target.last_successful_at
+          ? formatDate(target.last_successful_at)
+          : element("span", "badge badge-red", "从未成功"));
+        appendCell(row, target.last_successful_at
+          ? formatDuration(target.checkpoint_delay_seconds)
+          : "—");
+        appendCell(row, target.consecutive_failures
+          ? element("span", "badge badge-red", String(target.consecutive_failures))
+          : element("span", "badge badge-blue", "0"));
+        const batch = element("span", "", target.backlog_detected ? "积压" : "已追平");
+        if (target.flood_wait) {
+          batch.append(" · FloodWait");
+        }
+        batch.append(` · 上批 ${Number(target.last_batch_fetched) || 0} 条`);
+        if (target.last_batch_at) {
+          batch.append(` · ${formatDate(target.last_batch_at)}`);
+        }
+        appendCell(row, batch);
+        appendCell(row, target.last_error
+          ? element("span", "badge badge-red", target.last_error)
+          : "—");
+        healthBody.append(row);
+      });
+      healthWrap?.toggleAttribute("hidden", targets.length === 0);
+      healthEmpty?.toggleAttribute("hidden", targets.length > 0);
+      const attention = targets.some((target) =>
+        target.consecutive_failures > 0 || target.backlog_detected || target.flood_wait);
+      if (healthState) {
+        healthState.className = attention ? "badge badge-red" : "badge badge-blue";
+        healthState.textContent = attention ? "需关注" : targets.length ? "正常" : "无目标";
+      }
+    };
+
     const load = async () => {
       showNotice(notice);
       try {
-        const [rulesResult, alertsResult, statusResult, accountsResult] = await Promise.allSettled([
+        const [rulesResult, alertsResult, statusResult, targetsResult, accountsResult] = await Promise.allSettled([
           api("/api/v1/monitor/rules?enabled=true"),
           api("/api/v1/monitor/alerts?state=pending&limit=5"),
           api("/api/v1/monitor/status"),
+          api("/api/v1/monitor/targets"),
           loadAccounts(),
         ]);
         accounts = accountsResult.status === "fulfilled" ? accountsResult.value : [];
@@ -635,7 +680,10 @@
           Array.isArray(rulesResult.value?.items) ? rulesResult.value.items : [];
         const alerts = alertsResult.status === "fulfilled" &&
           Array.isArray(alertsResult.value?.items) ? alertsResult.value.items : [];
+        const targets = targetsResult.status === "fulfilled" &&
+          Array.isArray(targetsResult.value?.items) ? targetsResult.value.items : [];
         renderRules(rules);
+        renderHealth(targets);
         setText("[data-monitor-rule-count]", rules.length);
         setText("[data-monitor-pending-count]", alerts.length);
         if (statusResult.status === "fulfilled") {
@@ -657,6 +705,9 @@
         }
         if (alertsResult.status === "rejected") {
           showNotice(notice, alertsResult.reason.message, true);
+        }
+        if (targetsResult.status === "rejected") {
+          showNotice(notice, targetsResult.reason.message, true);
         }
       } catch (requestError) {
         showNotice(notice, requestError.message, true);

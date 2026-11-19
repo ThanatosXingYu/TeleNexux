@@ -60,7 +60,7 @@ func TestBusinessPagesExposeRealDataControls(t *testing.T) {
 	handler := newTestHandler(t)
 	tests := map[string][]string{
 		"/accounts/groups": {"data-groups-grid", "data-group-form"},
-		"/monitor":         {"data-monitor-rules-body", "data-monitor-run"},
+		"/monitor":         {"data-monitor-rules-body", "data-monitor-health-body", "data-monitor-run"},
 		"/monitor/tasks":   {"data-tasks-body", "data-monitor-rule-form", "data-monitor-channel"},
 		"/monitor/alerts":  {"data-alerts-list", "data-alert-state", "data-alert-action-form"},
 		"/messages":        {"data-message-filter", "data-messages-body"},

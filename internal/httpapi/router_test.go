@@ -1299,6 +1299,16 @@ func TestMonitorNotificationChannelAPI(t *testing.T) {
 		t.Fatalf("create rule response = %d %s",
 			ruleRecorder.Code, ruleRecorder.Body.String())
 	}
+
+	targetsRequest := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/targets", nil)
+	targetsRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(targetsRecorder, targetsRequest)
+	if targetsRecorder.Code != http.StatusOK ||
+		!strings.Contains(targetsRecorder.Body.String(), `"account_id":7`) ||
+		!strings.Contains(targetsRecorder.Body.String(), `"checkpoint_delay_seconds":0`) {
+		t.Fatalf("targets response = %d %s",
+			targetsRecorder.Code, targetsRecorder.Body.String())
+	}
 }
 
 func TestMonitorAlertUpdateUsesAuthenticatedActor(t *testing.T) {

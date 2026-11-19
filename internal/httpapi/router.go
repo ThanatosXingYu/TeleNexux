@@ -156,6 +156,7 @@ type OperationsService interface {
 	UpdateAlert(ctx context.Context, id int64, input operations.AlertUpdateInput) (operations.Alert, error)
 	IngestMessages(ctx context.Context, messages []operations.MessageRecord) (int, []operations.Alert, error)
 	MonitorSummary(ctx context.Context) (operations.MonitorSummary, error)
+	ListCollectionTargets(ctx context.Context) ([]operations.CollectionTarget, error)
 	SearchMessages(ctx context.Context, filter operations.MessageQuery) (operations.MessagePage, error)
 	BuildReport(ctx context.Context, days int) (operations.Report, error)
 	Dashboard(ctx context.Context, telegramReady bool) (operations.Dashboard, error)
@@ -244,6 +245,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/monitor/channels", a.requireAPI(a.listNotificationChannels))
 	mux.HandleFunc("POST /api/v1/monitor/run", a.requireAPI(a.runMonitor))
 	mux.HandleFunc("GET /api/v1/monitor/status", a.requireAPI(a.monitorStatus))
+	mux.HandleFunc("GET /api/v1/monitor/targets", a.requireAPI(a.listMonitorTargets))
 	mux.HandleFunc("GET /api/v1/monitor/alerts", a.requireAPI(a.listMonitorAlerts))
 	mux.HandleFunc(
 		"POST /api/v1/monitor/alerts/{id}/resolve",
@@ -605,6 +607,20 @@ func (a *API) monitorStatus(w http.ResponseWriter, r *http.Request) {
 		Status:     a.monitor.Status(),
 		Collection: summary,
 	})
+}
+
+func (a *API) listMonitorTargets(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	items, err := a.operations.ListCollectionTargets(r.Context())
+	if err != nil {
+		a.logger.Error("list monitor collection targets", "error", err)
+		writeError(w, http.StatusInternalServerError, "monitor_targets_failed",
+			"无法读取采集目标状态")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (a *API) listMonitorAlerts(w http.ResponseWriter, r *http.Request) {

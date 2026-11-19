@@ -18,15 +18,19 @@ const EvidenceSchemaVersion = 1
 var ErrBatchConflict = errors.New("ingestion batch ID conflicts with different content")
 
 type CollectionTarget struct {
-	AccountID           int64
-	PeerType            string
-	PeerID              int64
-	PeerTitle           string
-	LastMessageID       int
-	ConsecutiveFailures int
-	LastError           string
-	BacklogDetected     bool
-	LastSuccessfulAt    *time.Time
+	AccountID              int64      `json:"account_id"`
+	PeerType               string     `json:"peer_type"`
+	PeerID                 int64      `json:"peer_id"`
+	PeerTitle              string     `json:"peer_title"`
+	LastMessageID          int        `json:"last_message_id"`
+	ConsecutiveFailures    int        `json:"consecutive_failures"`
+	LastError              string     `json:"last_error,omitempty"`
+	BacklogDetected        bool       `json:"backlog_detected"`
+	FloodWait              bool       `json:"flood_wait"`
+	LastSuccessfulAt       *time.Time `json:"last_successful_at,omitempty"`
+	CheckpointDelaySeconds int64      `json:"checkpoint_delay_seconds"`
+	LastBatchFetched       int        `json:"last_batch_fetched"`
+	LastBatchAt            *time.Time `json:"last_batch_at,omitempty"`
 }
 
 type IngestBatchInput struct {
@@ -89,12 +93,23 @@ SELECT r.account_id, r.peer_type, r.peer_id, MAX(r.peer_title),
 	COALESCE(c.consecutive_failures, 0),
 	COALESCE(c.last_error, ''),
 	COALESCE(c.backlog_detected, 0),
-	COALESCE(c.last_success_at, '')
+	COALESCE(c.last_success_at, ''),
+	COALESCE(b.fetched_count, 0),
+	COALESCE(b.finished_at, '')
 FROM monitor_rules r
 LEFT JOIN monitor_checkpoints c
 	ON c.account_id = r.account_id
 	AND c.peer_type = r.peer_type
 	AND c.peer_id = r.peer_id
+LEFT JOIN ingestion_batches b ON b.batch_id = (
+	SELECT latest.batch_id
+	FROM ingestion_batches latest
+	WHERE latest.account_id = r.account_id
+		AND latest.peer_type = r.peer_type
+		AND latest.peer_id = r.peer_id
+	ORDER BY latest.finished_at DESC
+	LIMIT 1
+)
 WHERE r.enabled = 1
 GROUP BY r.account_id, r.peer_type, r.peer_id
 ORDER BY r.account_id, r.peer_type, r.peer_id`)
@@ -105,9 +120,9 @@ ORDER BY r.account_id, r.peer_type, r.peer_id`)
 	targets := make([]CollectionTarget, 0)
 	for rows.Next() {
 		var (
-			target         CollectionTarget
-			backlog        int
-			lastSuccessful string
+			target                    CollectionTarget
+			backlog                   int
+			lastSuccessful, lastBatch string
 		)
 		if err := rows.Scan(
 			&target.AccountID,
@@ -119,6 +134,8 @@ ORDER BY r.account_id, r.peer_type, r.peer_id`)
 			&target.LastError,
 			&backlog,
 			&lastSuccessful,
+			&target.LastBatchFetched,
+			&lastBatch,
 		); err != nil {
 			return nil, fmt.Errorf("scan collection target: %w", err)
 		}
@@ -129,6 +146,18 @@ ORDER BY r.account_id, r.peer_type, r.peer_id`)
 				return nil, fmt.Errorf("parse collection success time: %w", err)
 			}
 			target.LastSuccessfulAt = &value
+			target.CheckpointDelaySeconds = max(
+				0,
+				int64(s.now().UTC().Sub(value).Seconds()),
+			)
+		}
+		target.FloodWait = strings.Contains(strings.ToLower(target.LastError), "rate limited")
+		if lastBatch != "" {
+			value, err := time.Parse(time.RFC3339Nano, lastBatch)
+			if err != nil {
+				return nil, fmt.Errorf("parse collection batch time: %w", err)
+			}
+			target.LastBatchAt = &value
 		}
 		targets = append(targets, target)
 	}

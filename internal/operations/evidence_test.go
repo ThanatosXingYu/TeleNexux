@@ -61,7 +61,10 @@ func TestIngestBatchTracksMessageVersionsAndDeletion(t *testing.T) {
 		t.Fatalf("ListCollectionTargets() error = %v", err)
 	}
 	if len(targets) != 1 || targets[0].LastMessageID != 101 ||
-		targets[0].LastSuccessfulAt == nil {
+		targets[0].LastSuccessfulAt == nil ||
+		targets[0].CheckpointDelaySeconds != 0 ||
+		targets[0].LastBatchFetched != 1 ||
+		targets[0].LastBatchAt == nil {
 		t.Fatalf("ListCollectionTargets() = %+v", targets)
 	}
 
