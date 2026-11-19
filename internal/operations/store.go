@@ -43,16 +43,93 @@ type Rule struct {
 	PeerID                  int64      `json:"peer_id"`
 	PeerTitle               string     `json:"peer_title"`
 	Keywords                []string   `json:"keywords"`
+	ExcludeKeywords         []string   `json:"exclude_keywords"`
 	CooldownSeconds         int        `json:"cooldown_seconds"`
 	NotificationChannelID   int64      `json:"notification_channel_id"`
 	NotificationChannelName string     `json:"notification_channel_name"`
 	NotificationChannelKind string     `json:"notification_channel_kind"`
+	Owner                   string     `json:"owner"`
+	Version                 int        `json:"version"`
+	CreatedBy               string     `json:"created_by"`
 	Enabled                 bool       `json:"enabled"`
 	LastMessageID           int        `json:"last_message_id"`
 	LastRunAt               *time.Time `json:"last_run_at,omitempty"`
 	LastError               string     `json:"last_error,omitempty"`
 	CreatedAt               time.Time  `json:"created_at"`
 	UpdatedAt               time.Time  `json:"updated_at"`
+}
+
+type RuleCreateInput struct {
+	Name                  string
+	AccountID             int64
+	PeerType              string
+	PeerID                int64
+	PeerTitle             string
+	NotificationChannelID int64
+	Keywords              []string
+	ExcludeKeywords       []string
+	CooldownSeconds       int
+	Owner                 string
+	Actor                 string
+}
+
+type RuleUpdateInput struct {
+	Name                  *string
+	AccountID             *int64
+	PeerType              *string
+	PeerID                *int64
+	PeerTitle             *string
+	NotificationChannelID *int64
+	Keywords              *[]string
+	ExcludeKeywords       *[]string
+	CooldownSeconds       *int
+	Owner                 *string
+	Enabled               *bool
+	Actor                 string
+}
+
+type RuleVersion struct {
+	RuleID                int64     `json:"rule_id"`
+	Version               int       `json:"version"`
+	Name                  string    `json:"name"`
+	AccountID             int64     `json:"account_id"`
+	PeerType              string    `json:"peer_type"`
+	PeerID                int64     `json:"peer_id"`
+	PeerTitle             string    `json:"peer_title"`
+	Keywords              []string  `json:"keywords"`
+	ExcludeKeywords       []string  `json:"exclude_keywords"`
+	CooldownSeconds       int       `json:"cooldown_seconds"`
+	NotificationChannelID int64     `json:"notification_channel_id"`
+	Owner                 string    `json:"owner"`
+	Enabled               bool      `json:"enabled"`
+	Actor                 string    `json:"actor"`
+	CreatedAt             time.Time `json:"created_at"`
+}
+
+type RulePreviewInput struct {
+	AccountID       int64
+	PeerType        string
+	PeerID          int64
+	Keywords        []string
+	ExcludeKeywords []string
+	Limit           int
+}
+
+type RulePreviewSample struct {
+	MessageID      int       `json:"message_id"`
+	Sender         string    `json:"sender"`
+	Text           string    `json:"text"`
+	MatchedKeyword string    `json:"matched_keyword,omitempty"`
+	ExcludedBy     string    `json:"excluded_by,omitempty"`
+	SentAt         time.Time `json:"sent_at"`
+}
+
+type RulePreview struct {
+	Scanned       int                 `json:"scanned"`
+	Matched       int                 `json:"matched"`
+	Excluded      int                 `json:"excluded"`
+	Samples       []RulePreviewSample `json:"samples"`
+	ExcludedItems []RulePreviewSample `json:"excluded_items"`
 }
 
 type NotificationChannel struct {
@@ -69,6 +146,7 @@ type Alert struct {
 	ID             int64      `json:"id"`
 	RuleID         int64      `json:"rule_id"`
 	RuleName       string     `json:"rule_name"`
+	RuleVersion    int        `json:"rule_version"`
 	AccountID      int64      `json:"account_id"`
 	PeerType       string     `json:"peer_type"`
 	PeerID         int64      `json:"peer_id"`
@@ -249,8 +327,12 @@ CREATE TABLE IF NOT EXISTS monitor_rules (
 	peer_id INTEGER NOT NULL,
 	peer_title TEXT NOT NULL DEFAULT '',
 	keywords_json TEXT NOT NULL DEFAULT '[]',
+	exclude_keywords_json TEXT NOT NULL DEFAULT '[]',
 	cooldown_seconds INTEGER NOT NULL DEFAULT 0,
 	notification_channel_id INTEGER NOT NULL DEFAULT 1,
+	owner TEXT NOT NULL DEFAULT '',
+	version INTEGER NOT NULL DEFAULT 1,
+	created_by TEXT NOT NULL DEFAULT '',
 	enabled INTEGER NOT NULL DEFAULT 1,
 	last_message_id INTEGER NOT NULL DEFAULT 0,
 	last_run_at TEXT NOT NULL DEFAULT '',
@@ -260,9 +342,40 @@ CREATE TABLE IF NOT EXISTS monitor_rules (
 );
 CREATE INDEX IF NOT EXISTS monitor_rules_enabled_idx
 	ON monitor_rules(enabled, account_id, id);
+CREATE TABLE IF NOT EXISTS monitor_rule_versions (
+	rule_id INTEGER NOT NULL,
+	version INTEGER NOT NULL,
+	name TEXT NOT NULL,
+	account_id INTEGER NOT NULL,
+	peer_type TEXT NOT NULL,
+	peer_id INTEGER NOT NULL,
+	peer_title TEXT NOT NULL DEFAULT '',
+	keywords_json TEXT NOT NULL DEFAULT '[]',
+	exclude_keywords_json TEXT NOT NULL DEFAULT '[]',
+	cooldown_seconds INTEGER NOT NULL DEFAULT 0,
+	notification_channel_id INTEGER NOT NULL DEFAULT 1,
+	owner TEXT NOT NULL DEFAULT '',
+	enabled INTEGER NOT NULL DEFAULT 1,
+	actor TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (rule_id, version)
+);
+CREATE INDEX IF NOT EXISTS monitor_rule_versions_rule_idx
+	ON monitor_rule_versions(rule_id, version DESC);
+CREATE TRIGGER IF NOT EXISTS monitor_rule_versions_no_update
+BEFORE UPDATE ON monitor_rule_versions
+BEGIN
+	SELECT RAISE(ABORT, 'monitor rule versions are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS monitor_rule_versions_no_delete
+BEFORE DELETE ON monitor_rule_versions
+BEGIN
+	SELECT RAISE(ABORT, 'monitor rule versions are append-only');
+END;
 CREATE TABLE IF NOT EXISTS monitor_alerts (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	rule_id INTEGER NOT NULL,
+	rule_version INTEGER NOT NULL DEFAULT 1,
 	account_id INTEGER NOT NULL,
 	peer_type TEXT NOT NULL,
 	peer_id INTEGER NOT NULL,
@@ -579,6 +692,39 @@ INSERT OR IGNORE INTO notification_channels (
 		name       string
 		definition string
 	}{
+		{name: "exclude_keywords_json", definition: "exclude_keywords_json TEXT NOT NULL DEFAULT '[]'"},
+		{name: "owner", definition: "owner TEXT NOT NULL DEFAULT ''"},
+		{name: "version", definition: "version INTEGER NOT NULL DEFAULT 1"},
+		{name: "created_by", definition: "created_by TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := s.ensureColumn(ctx, "monitor_rules", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `
+UPDATE monitor_rules
+SET owner = CASE WHEN owner = '' THEN 'system' ELSE owner END,
+	created_by = CASE WHEN created_by = '' THEN 'system' ELSE created_by END
+WHERE owner = '' OR created_by = ''`); err != nil {
+		return fmt.Errorf("backfill monitor rule ownership: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+INSERT OR IGNORE INTO monitor_rule_versions (
+	rule_id, version, name, account_id, peer_type, peer_id, peer_title,
+	keywords_json, exclude_keywords_json, cooldown_seconds,
+	notification_channel_id, owner, enabled, actor, created_at
+)
+SELECT id, version, name, account_id, peer_type, peer_id, peer_title,
+	keywords_json, exclude_keywords_json, cooldown_seconds,
+	notification_channel_id, owner, enabled, created_by, updated_at
+FROM monitor_rules`); err != nil {
+		return fmt.Errorf("backfill monitor rule versions: %w", err)
+	}
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{name: "rule_version", definition: "rule_version INTEGER NOT NULL DEFAULT 1"},
 		{name: "severity", definition: "severity TEXT NOT NULL DEFAULT 'medium'"},
 		{name: "assigned_to", definition: "assigned_to TEXT NOT NULL DEFAULT ''"},
 		{name: "acknowledged_by", definition: "acknowledged_by TEXT NOT NULL DEFAULT ''"},
@@ -888,68 +1034,105 @@ func (s *Service) CreateRuleWithOptions(
 	keywords []string,
 	cooldownSeconds int,
 ) (Rule, error) {
-	name = strings.TrimSpace(name)
-	peerTitle = strings.TrimSpace(peerTitle)
-	peerType = strings.ToLower(strings.TrimSpace(peerType))
-	keywords = normalizeKeywords(keywords)
-	if utf8.RuneCountInString(name) < 1 || utf8.RuneCountInString(name) > 60 {
+	return s.CreateRuleWithInput(ctx, RuleCreateInput{
+		Name:                  name,
+		AccountID:             accountID,
+		PeerType:              peerType,
+		PeerID:                peerID,
+		PeerTitle:             peerTitle,
+		NotificationChannelID: notificationChannelID,
+		Keywords:              keywords,
+		CooldownSeconds:       cooldownSeconds,
+		Actor:                 "system",
+	})
+}
+
+func (s *Service) CreateRuleWithInput(
+	ctx context.Context,
+	input RuleCreateInput,
+) (Rule, error) {
+	input.Name = strings.TrimSpace(input.Name)
+	input.PeerTitle = strings.TrimSpace(input.PeerTitle)
+	input.PeerType = strings.ToLower(strings.TrimSpace(input.PeerType))
+	input.Owner = strings.TrimSpace(input.Owner)
+	input.Actor = strings.TrimSpace(input.Actor)
+	if input.Actor == "" {
+		input.Actor = "system"
+	}
+	if input.Owner == "" {
+		input.Owner = input.Actor
+	}
+	if utf8.RuneCountInString(input.Actor) > 64 || utf8.RuneCountInString(input.Owner) > 64 {
+		return Rule{}, errors.New("rule owner and actor must contain at most 64 characters")
+	}
+	if utf8.RuneCountInString(input.Name) < 1 || utf8.RuneCountInString(input.Name) > 60 {
 		return Rule{}, errors.New("rule name must contain 1 to 60 characters")
 	}
-	if accountID <= 0 || peerID <= 0 {
+	if input.AccountID <= 0 || input.PeerID <= 0 {
 		return Rule{}, errors.New("account ID and chat ID must be positive")
 	}
-	if peerType != "user" && peerType != "chat" && peerType != "channel" {
+	if input.PeerType != "user" && input.PeerType != "chat" && input.PeerType != "channel" {
 		return Rule{}, errors.New("peer type must be user, chat, or channel")
 	}
-	if utf8.RuneCountInString(peerTitle) > 120 {
+	if utf8.RuneCountInString(input.PeerTitle) > 120 {
 		return Rule{}, errors.New("peer title must contain at most 120 characters")
 	}
-	if cooldownSeconds < 0 || cooldownSeconds > 86400 {
+	if input.CooldownSeconds < 0 || input.CooldownSeconds > 86400 {
 		return Rule{}, errors.New("rule cooldown must be between 0 and 86400 seconds")
 	}
-	if notificationChannelID <= 0 {
-		notificationChannelID = 1
+	var err error
+	input.Keywords, err = normalizeRuleTerms(input.Keywords, "keyword")
+	if err != nil {
+		return Rule{}, err
 	}
-	var (
-		channelEnabled int
-		channelKind    string
-	)
-	if err := s.db.QueryRowContext(
-		ctx,
-		`SELECT enabled, kind FROM notification_channels WHERE id = ?`,
-		notificationChannelID,
-	).Scan(&channelEnabled, &channelKind); errors.Is(err, sql.ErrNoRows) {
-		return Rule{}, errors.New("notification channel was not found")
-	} else if err != nil {
-		return Rule{}, fmt.Errorf("read notification channel: %w", err)
+	input.ExcludeKeywords, err = normalizeRuleTerms(input.ExcludeKeywords, "exclude keyword")
+	if err != nil {
+		return Rule{}, err
 	}
-	if channelEnabled == 0 {
-		return Rule{}, errors.New("notification channel is disabled")
+	if err := validateRuleTermsDoNotOverlap(input.Keywords, input.ExcludeKeywords); err != nil {
+		return Rule{}, err
 	}
-	if channelKind != NotificationKindInApp && channelKind != NotificationKindWebhook {
-		return Rule{}, errors.New("notification channel kind is not supported")
+	if input.NotificationChannelID <= 0 {
+		input.NotificationChannelID = 1
 	}
-	encoded, err := json.Marshal(keywords)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Rule{}, fmt.Errorf("begin create monitor rule: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := validateRuleChannel(ctx, tx, input.NotificationChannelID); err != nil {
+		return Rule{}, err
+	}
+	keywords, err := json.Marshal(input.Keywords)
 	if err != nil {
 		return Rule{}, fmt.Errorf("encode monitor keywords: %w", err)
 	}
+	excludes, err := json.Marshal(input.ExcludeKeywords)
+	if err != nil {
+		return Rule{}, fmt.Errorf("encode monitor exclude keywords: %w", err)
+	}
 	now := s.now().UTC()
-	result, err := s.db.ExecContext(ctx, `
+	timestamp := now.Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(ctx, `
 INSERT INTO monitor_rules (
-	name, account_id, peer_type, peer_id, peer_title, keywords_json,
-	cooldown_seconds, notification_channel_id, enabled, last_message_id, last_run_at, last_error,
+	name, account_id, peer_type, peer_id, peer_title, keywords_json, exclude_keywords_json,
+	cooldown_seconds, notification_channel_id, owner, version, created_by,
+	enabled, last_message_id, last_run_at, last_error,
 	created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, '', '', ?, ?)`,
-		name,
-		accountID,
-		peerType,
-		peerID,
-		peerTitle,
-		string(encoded),
-		cooldownSeconds,
-		notificationChannelID,
-		now.Format(time.RFC3339Nano),
-		now.Format(time.RFC3339Nano),
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, 0, '', '', ?, ?)`,
+		input.Name,
+		input.AccountID,
+		input.PeerType,
+		input.PeerID,
+		input.PeerTitle,
+		string(keywords),
+		string(excludes),
+		input.CooldownSeconds,
+		input.NotificationChannelID,
+		input.Owner,
+		input.Actor,
+		timestamp,
+		timestamp,
 	)
 	if err != nil {
 		return Rule{}, fmt.Errorf("create monitor rule: %w", err)
@@ -957,6 +1140,26 @@ INSERT INTO monitor_rules (
 	id, err := result.LastInsertId()
 	if err != nil {
 		return Rule{}, fmt.Errorf("read monitor rule ID: %w", err)
+	}
+	if err := insertRuleVersionTx(ctx, tx, Rule{
+		ID:                    id,
+		Name:                  input.Name,
+		AccountID:             input.AccountID,
+		PeerType:              input.PeerType,
+		PeerID:                input.PeerID,
+		PeerTitle:             input.PeerTitle,
+		Keywords:              input.Keywords,
+		ExcludeKeywords:       input.ExcludeKeywords,
+		CooldownSeconds:       input.CooldownSeconds,
+		NotificationChannelID: input.NotificationChannelID,
+		Owner:                 input.Owner,
+		Version:               1,
+		Enabled:               true,
+	}, input.Actor, now); err != nil {
+		return Rule{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Rule{}, fmt.Errorf("commit monitor rule: %w", err)
 	}
 	return s.GetRule(ctx, id)
 }
@@ -1010,7 +1213,8 @@ ORDER BY id`)
 func (s *Service) GetRule(ctx context.Context, id int64) (Rule, error) {
 	rule, err := scanRule(s.db.QueryRowContext(ctx, `
 SELECT r.id, r.name, r.account_id, r.peer_type, r.peer_id, r.peer_title,
-	r.keywords_json, r.cooldown_seconds, r.notification_channel_id,
+	r.keywords_json, r.exclude_keywords_json, r.owner, r.version, r.created_by,
+	r.cooldown_seconds, r.notification_channel_id,
 	COALESCE(nc.name, ''), COALESCE(nc.kind, ''),
 	r.enabled, r.last_message_id, r.last_run_at, r.last_error,
 	r.created_at, r.updated_at
@@ -1026,7 +1230,8 @@ WHERE r.id = ?`, id))
 func (s *Service) ListRules(ctx context.Context, enabledOnly bool) ([]Rule, error) {
 	query := `
 SELECT r.id, r.name, r.account_id, r.peer_type, r.peer_id, r.peer_title,
-	r.keywords_json, r.cooldown_seconds, r.notification_channel_id,
+	r.keywords_json, r.exclude_keywords_json, r.owner, r.version, r.created_by,
+	r.cooldown_seconds, r.notification_channel_id,
 	COALESCE(nc.name, ''), COALESCE(nc.kind, ''),
 	r.enabled, r.last_message_id, r.last_run_at, r.last_error,
 	r.created_at, r.updated_at
@@ -1055,24 +1260,320 @@ LEFT JOIN notification_channels nc ON nc.id = r.notification_channel_id`
 	return items, nil
 }
 
-func (s *Service) SetRuleEnabled(ctx context.Context, id int64, enabled bool) error {
-	result, err := s.db.ExecContext(ctx,
-		`UPDATE monitor_rules SET enabled = ?, updated_at = ? WHERE id = ?`,
-		boolInt(enabled),
-		s.now().UTC().Format(time.RFC3339Nano),
+func (s *Service) SetRuleEnabled(
+	ctx context.Context,
+	id int64,
+	enabled bool,
+	actor string,
+) error {
+	_, err := s.UpdateRule(ctx, id, RuleUpdateInput{
+		Enabled: &enabled,
+		Actor:   actor,
+	})
+	return err
+}
+
+func (s *Service) UpdateRule(
+	ctx context.Context,
+	id int64,
+	input RuleUpdateInput,
+) (Rule, error) {
+	if id <= 0 {
+		return Rule{}, errors.New("rule ID must be positive")
+	}
+	input.Actor = strings.TrimSpace(input.Actor)
+	if input.Actor == "" {
+		input.Actor = "system"
+	}
+	if utf8.RuneCountInString(input.Actor) > 64 {
+		return Rule{}, errors.New("rule actor must contain at most 64 characters")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Rule{}, fmt.Errorf("begin update monitor rule: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	current, err := scanRule(tx.QueryRowContext(ctx, `
+SELECT r.id, r.name, r.account_id, r.peer_type, r.peer_id, r.peer_title,
+	r.keywords_json, r.exclude_keywords_json, r.owner, r.version, r.created_by,
+	r.cooldown_seconds, r.notification_channel_id,
+	COALESCE(nc.name, ''), COALESCE(nc.kind, ''),
+	r.enabled, r.last_message_id, r.last_run_at, r.last_error,
+	r.created_at, r.updated_at
+FROM monitor_rules r
+LEFT JOIN notification_channels nc ON nc.id = r.notification_channel_id
+WHERE r.id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Rule{}, ErrNotFound
+	}
+	if err != nil {
+		return Rule{}, fmt.Errorf("load monitor rule for update: %w", err)
+	}
+	if input.Name != nil {
+		current.Name = strings.TrimSpace(*input.Name)
+	}
+	if input.AccountID != nil {
+		current.AccountID = *input.AccountID
+	}
+	if input.PeerType != nil {
+		current.PeerType = strings.ToLower(strings.TrimSpace(*input.PeerType))
+	}
+	if input.PeerID != nil {
+		current.PeerID = *input.PeerID
+	}
+	if input.PeerTitle != nil {
+		current.PeerTitle = strings.TrimSpace(*input.PeerTitle)
+	}
+	if input.NotificationChannelID != nil {
+		current.NotificationChannelID = *input.NotificationChannelID
+	}
+	if input.Keywords != nil {
+		current.Keywords = append([]string(nil), (*input.Keywords)...)
+	}
+	if input.ExcludeKeywords != nil {
+		current.ExcludeKeywords = append([]string(nil), (*input.ExcludeKeywords)...)
+	}
+	if input.CooldownSeconds != nil {
+		current.CooldownSeconds = *input.CooldownSeconds
+	}
+	if input.Owner != nil {
+		current.Owner = strings.TrimSpace(*input.Owner)
+	}
+	if input.Enabled != nil {
+		current.Enabled = *input.Enabled
+	}
+	if current.Name == "" || utf8.RuneCountInString(current.Name) > 60 {
+		return Rule{}, errors.New("rule name must contain 1 to 60 characters")
+	}
+	if current.AccountID <= 0 || current.PeerID <= 0 {
+		return Rule{}, errors.New("account ID and chat ID must be positive")
+	}
+	if current.PeerType != "user" && current.PeerType != "chat" && current.PeerType != "channel" {
+		return Rule{}, errors.New("peer type must be user, chat, or channel")
+	}
+	if utf8.RuneCountInString(current.PeerTitle) > 120 {
+		return Rule{}, errors.New("peer title must contain at most 120 characters")
+	}
+	if current.CooldownSeconds < 0 || current.CooldownSeconds > 86400 {
+		return Rule{}, errors.New("rule cooldown must be between 0 and 86400 seconds")
+	}
+	if current.Owner == "" {
+		current.Owner = input.Actor
+	}
+	if utf8.RuneCountInString(current.Owner) > 64 {
+		return Rule{}, errors.New("rule owner must contain at most 64 characters")
+	}
+	current.Keywords, err = normalizeRuleTerms(current.Keywords, "keyword")
+	if err != nil {
+		return Rule{}, err
+	}
+	current.ExcludeKeywords, err = normalizeRuleTerms(current.ExcludeKeywords, "exclude keyword")
+	if err != nil {
+		return Rule{}, err
+	}
+	if err := validateRuleTermsDoNotOverlap(current.Keywords, current.ExcludeKeywords); err != nil {
+		return Rule{}, err
+	}
+	if current.NotificationChannelID <= 0 {
+		current.NotificationChannelID = 1
+	}
+	if err := validateRuleChannel(ctx, tx, current.NotificationChannelID); err != nil {
+		return Rule{}, err
+	}
+	keywords, err := json.Marshal(current.Keywords)
+	if err != nil {
+		return Rule{}, fmt.Errorf("encode monitor keywords: %w", err)
+	}
+	excludes, err := json.Marshal(current.ExcludeKeywords)
+	if err != nil {
+		return Rule{}, fmt.Errorf("encode monitor exclude keywords: %w", err)
+	}
+	nextVersion := current.Version + 1
+	now := s.now().UTC()
+	result, err := tx.ExecContext(ctx, `
+UPDATE monitor_rules
+SET name = ?, account_id = ?, peer_type = ?, peer_id = ?, peer_title = ?,
+	keywords_json = ?, exclude_keywords_json = ?,
+	cooldown_seconds = ?, notification_channel_id = ?, owner = ?,
+	version = ?, enabled = ?, updated_at = ?
+WHERE id = ? AND version = ?`,
+		current.Name,
+		current.AccountID,
+		current.PeerType,
+		current.PeerID,
+		current.PeerTitle,
+		string(keywords),
+		string(excludes),
+		current.CooldownSeconds,
+		current.NotificationChannelID,
+		current.Owner,
+		nextVersion,
+		boolInt(current.Enabled),
+		now.Format(time.RFC3339Nano),
 		id,
+		current.Version,
 	)
 	if err != nil {
-		return fmt.Errorf("update monitor rule: %w", err)
+		return Rule{}, fmt.Errorf("update monitor rule: %w", err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("check updated monitor rule: %w", err)
+		return Rule{}, fmt.Errorf("check updated monitor rule: %w", err)
 	}
 	if affected == 0 {
-		return ErrNotFound
+		return Rule{}, errors.New("monitor rule was changed concurrently")
 	}
-	return nil
+	current.Version = nextVersion
+	current.UpdatedAt = now
+	if err := insertRuleVersionTx(ctx, tx, current, input.Actor, now); err != nil {
+		return Rule{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Rule{}, fmt.Errorf("commit monitor rule update: %w", err)
+	}
+	return s.GetRule(ctx, id)
+}
+
+func (s *Service) ListRuleVersions(ctx context.Context, id int64) ([]RuleVersion, error) {
+	if id <= 0 {
+		return nil, errors.New("rule ID must be positive")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT rule_id, version, name, account_id, peer_type, peer_id, peer_title,
+	keywords_json, exclude_keywords_json, cooldown_seconds,
+	notification_channel_id, owner, enabled, actor, created_at
+FROM monitor_rule_versions
+WHERE rule_id = ?
+ORDER BY version DESC`, id)
+	if err != nil {
+		return nil, fmt.Errorf("list monitor rule versions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	items := make([]RuleVersion, 0)
+	for rows.Next() {
+		var (
+			item                      RuleVersion
+			keywordsJSON, excludeJSON string
+			enabled                   int
+			createdAt                 string
+		)
+		if err := rows.Scan(
+			&item.RuleID,
+			&item.Version,
+			&item.Name,
+			&item.AccountID,
+			&item.PeerType,
+			&item.PeerID,
+			&item.PeerTitle,
+			&keywordsJSON,
+			&excludeJSON,
+			&item.CooldownSeconds,
+			&item.NotificationChannelID,
+			&item.Owner,
+			&enabled,
+			&item.Actor,
+			&createdAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan monitor rule version: %w", err)
+		}
+		item.Enabled = enabled != 0
+		if err := json.Unmarshal([]byte(keywordsJSON), &item.Keywords); err != nil {
+			return nil, fmt.Errorf("decode monitor rule version keywords: %w", err)
+		}
+		if err := json.Unmarshal([]byte(excludeJSON), &item.ExcludeKeywords); err != nil {
+			return nil, fmt.Errorf("decode monitor rule version exclude keywords: %w", err)
+		}
+		item.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse monitor rule version time: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate monitor rule versions: %w", err)
+	}
+	return items, nil
+}
+
+func (s *Service) PreviewRule(
+	ctx context.Context,
+	input RulePreviewInput,
+) (RulePreview, error) {
+	input.PeerType = strings.ToLower(strings.TrimSpace(input.PeerType))
+	if input.AccountID <= 0 || input.PeerID <= 0 {
+		return RulePreview{}, errors.New("account ID and chat ID must be positive")
+	}
+	if input.PeerType != "user" && input.PeerType != "chat" && input.PeerType != "channel" {
+		return RulePreview{}, errors.New("peer type must be user, chat, or channel")
+	}
+	var err error
+	input.Keywords, err = normalizeRuleTerms(input.Keywords, "keyword")
+	if err != nil {
+		return RulePreview{}, err
+	}
+	input.ExcludeKeywords, err = normalizeRuleTerms(input.ExcludeKeywords, "exclude keyword")
+	if err != nil {
+		return RulePreview{}, err
+	}
+	if err := validateRuleTermsDoNotOverlap(input.Keywords, input.ExcludeKeywords); err != nil {
+		return RulePreview{}, err
+	}
+	input.Limit = normalizeLimit(input.Limit, 10, 20)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT message_id, sender, text, sent_at
+FROM indexed_messages
+WHERE account_id = ? AND peer_type = ? AND peer_id = ? AND deleted_at = ''
+ORDER BY message_id DESC
+LIMIT 500`,
+		input.AccountID,
+		input.PeerType,
+		input.PeerID,
+	)
+	if err != nil {
+		return RulePreview{}, fmt.Errorf("preview monitor rule: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	preview := RulePreview{
+		Samples:       make([]RulePreviewSample, 0, input.Limit),
+		ExcludedItems: make([]RulePreviewSample, 0, input.Limit),
+	}
+	for rows.Next() {
+		var (
+			sample RulePreviewSample
+			sentAt string
+		)
+		if err := rows.Scan(&sample.MessageID, &sample.Sender, &sample.Text, &sentAt); err != nil {
+			return RulePreview{}, fmt.Errorf("scan monitor rule preview: %w", err)
+		}
+		sample.SentAt, err = time.Parse(time.RFC3339Nano, sentAt)
+		if err != nil {
+			return RulePreview{}, fmt.Errorf("parse monitor rule preview time: %w", err)
+		}
+		preview.Scanned++
+		keyword := matchedKeyword(input.Keywords, sample.Text)
+		if len(input.Keywords) > 0 && keyword == "" {
+			continue
+		}
+		sample.MatchedKeyword = keyword
+		if exclusion := matchedKeyword(input.ExcludeKeywords, sample.Text); exclusion != "" {
+			preview.Excluded++
+			sample.ExcludedBy = exclusion
+			sample.Text = truncate(strings.TrimSpace(sample.Text), 280)
+			if len(preview.ExcludedItems) < input.Limit {
+				preview.ExcludedItems = append(preview.ExcludedItems, sample)
+			}
+			continue
+		}
+		preview.Matched++
+		sample.Text = truncate(strings.TrimSpace(sample.Text), 280)
+		if len(preview.Samples) < input.Limit {
+			preview.Samples = append(preview.Samples, sample)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return RulePreview{}, fmt.Errorf("iterate monitor rule preview: %w", err)
+	}
+	return preview, nil
 }
 
 func (s *Service) DeleteRule(ctx context.Context, id int64) error {
@@ -1191,10 +1692,11 @@ LIMIT 1`, rule.ID).Scan(&lastAlertAt)
 	}
 	result, err := tx.ExecContext(ctx, `
 INSERT OR IGNORE INTO monitor_alerts (
-	rule_id, account_id, peer_type, peer_id, peer_title, message_id,
+	rule_id, rule_version, account_id, peer_type, peer_id, peer_title, message_id,
 	matched_keyword, message_preview, state, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
 		rule.ID,
+		rule.Version,
 		rule.AccountID,
 		rule.PeerType,
 		rule.PeerID,
@@ -1226,6 +1728,7 @@ INSERT OR IGNORE INTO monitor_alerts (
 		ID:             id,
 		RuleID:         rule.ID,
 		RuleName:       rule.Name,
+		RuleVersion:    rule.Version,
 		AccountID:      rule.AccountID,
 		PeerType:       rule.PeerType,
 		PeerID:         rule.PeerID,
@@ -1295,7 +1798,7 @@ INSERT INTO monitor_alert_events (
 
 const selectAlertQuery = `
 SELECT a.id, a.rule_id, COALESCE(r.name, ''), a.account_id, a.peer_type, a.peer_id,
-	a.peer_title, a.message_id, a.matched_keyword, a.message_preview, a.state,
+	a.rule_version, a.peer_title, a.message_id, a.matched_keyword, a.message_preview, a.state,
 	COALESCE(r.notification_channel_id, 0), COALESCE(nc.name, ''), a.created_at,
 	COALESCE(d.id, 0), COALESCE(d.state, ''), COALESCE(d.attempt_count, 0),
 	COALESCE(d.last_attempt_at, ''), COALESCE(d.delivered_at, ''),
@@ -1871,6 +2374,7 @@ func scanRule(row scanner) (Rule, error) {
 	var (
 		item                 Rule
 		keywordsJSON         string
+		excludeKeywordsJSON  string
 		enabled              int
 		lastRunAt            string
 		createdAt, updatedAt string
@@ -1883,6 +2387,10 @@ func scanRule(row scanner) (Rule, error) {
 		&item.PeerID,
 		&item.PeerTitle,
 		&keywordsJSON,
+		&excludeKeywordsJSON,
+		&item.Owner,
+		&item.Version,
+		&item.CreatedBy,
 		&item.CooldownSeconds,
 		&item.NotificationChannelID,
 		&item.NotificationChannelName,
@@ -1899,6 +2407,9 @@ func scanRule(row scanner) (Rule, error) {
 	item.Enabled = enabled != 0
 	if err := json.Unmarshal([]byte(keywordsJSON), &item.Keywords); err != nil {
 		return Rule{}, fmt.Errorf("decode monitor rule keywords: %w", err)
+	}
+	if err := json.Unmarshal([]byte(excludeKeywordsJSON), &item.ExcludeKeywords); err != nil {
+		return Rule{}, fmt.Errorf("decode monitor rule exclude keywords: %w", err)
 	}
 	if lastRunAt != "" {
 		value, err := time.Parse(time.RFC3339Nano, lastRunAt)
@@ -1932,6 +2443,7 @@ func scanAlert(row scanner) (Alert, error) {
 		&item.AccountID,
 		&item.PeerType,
 		&item.PeerID,
+		&item.RuleVersion,
 		&item.PeerTitle,
 		&item.MessageID,
 		&item.MatchedKeyword,
@@ -2033,24 +2545,113 @@ func scanIndexedMessage(row scanner) (IndexedMessage, error) {
 	return item, nil
 }
 
-func normalizeKeywords(keywords []string) []string {
-	seen := make(map[string]struct{}, len(keywords))
-	normalized := make([]string, 0, len(keywords))
-	for _, keyword := range keywords {
-		keyword = strings.TrimSpace(keyword)
-		if keyword == "" {
+type ruleQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func validateRuleChannel(ctx context.Context, queryer ruleQueryer, id int64) error {
+	var (
+		enabled int
+		kind    string
+	)
+	err := queryer.QueryRowContext(
+		ctx,
+		`SELECT enabled, kind FROM notification_channels WHERE id = ?`,
+		id,
+	).Scan(&enabled, &kind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("notification channel was not found")
+	}
+	if err != nil {
+		return fmt.Errorf("read notification channel: %w", err)
+	}
+	if enabled == 0 {
+		return errors.New("notification channel is disabled")
+	}
+	if kind != NotificationKindInApp && kind != NotificationKindWebhook {
+		return errors.New("notification channel kind is not supported")
+	}
+	return nil
+}
+
+func insertRuleVersionTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	rule Rule,
+	actor string,
+	now time.Time,
+) error {
+	keywords, err := json.Marshal(rule.Keywords)
+	if err != nil {
+		return fmt.Errorf("encode monitor rule version keywords: %w", err)
+	}
+	excludes, err := json.Marshal(rule.ExcludeKeywords)
+	if err != nil {
+		return fmt.Errorf("encode monitor rule version exclude keywords: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO monitor_rule_versions (
+	rule_id, version, name, account_id, peer_type, peer_id, peer_title,
+	keywords_json, exclude_keywords_json, cooldown_seconds,
+	notification_channel_id, owner, enabled, actor, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rule.ID,
+		rule.Version,
+		rule.Name,
+		rule.AccountID,
+		rule.PeerType,
+		rule.PeerID,
+		rule.PeerTitle,
+		string(keywords),
+		string(excludes),
+		rule.CooldownSeconds,
+		rule.NotificationChannelID,
+		rule.Owner,
+		boolInt(rule.Enabled),
+		truncate(actor, 64),
+		now.UTC().Format(time.RFC3339Nano),
+	); err != nil {
+		return fmt.Errorf("record monitor rule version: %w", err)
+	}
+	return nil
+}
+
+func normalizeRuleTerms(terms []string, label string) ([]string, error) {
+	if len(terms) > 50 {
+		return nil, fmt.Errorf("rule %s list must contain at most 50 items", label)
+	}
+	seen := make(map[string]struct{}, len(terms))
+	normalized := make([]string, 0, len(terms))
+	for _, term := range terms {
+		term = strings.TrimSpace(term)
+		if term == "" {
 			continue
 		}
-		keyword = truncate(keyword, 80)
-		key := strings.ToLower(keyword)
+		if utf8.RuneCountInString(term) > 80 {
+			return nil, fmt.Errorf("rule %s must contain at most 80 characters", label)
+		}
+		key := strings.ToLower(term)
 		if _, exists := seen[key]; exists {
 			continue
 		}
 		seen[key] = struct{}{}
-		normalized = append(normalized, keyword)
+		normalized = append(normalized, term)
 	}
 	sort.Strings(normalized)
-	return normalized
+	return normalized, nil
+}
+
+func validateRuleTermsDoNotOverlap(keywords, excludes []string) error {
+	excluded := make(map[string]struct{}, len(excludes))
+	for _, term := range excludes {
+		excluded[strings.ToLower(term)] = struct{}{}
+	}
+	for _, keyword := range keywords {
+		if _, exists := excluded[strings.ToLower(keyword)]; exists {
+			return fmt.Errorf("keyword %q cannot also be an exclude keyword", keyword)
+		}
+	}
+	return nil
 }
 
 func matchedKeyword(keywords []string, text string) string {
@@ -2064,6 +2665,17 @@ func matchedKeyword(keywords []string, text string) string {
 		}
 	}
 	return ""
+}
+
+func matchesRule(rule Rule, text string) (string, bool) {
+	keyword := matchedKeyword(rule.Keywords, text)
+	if len(rule.Keywords) > 0 && keyword == "" {
+		return "", false
+	}
+	if matchedKeyword(rule.ExcludeKeywords, text) != "" {
+		return "", false
+	}
+	return keyword, true
 }
 
 func normalizeColor(color string) string {

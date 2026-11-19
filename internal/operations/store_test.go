@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -218,6 +219,161 @@ func TestRuleCooldownSuppressesOnlyRepeatedAlerts(t *testing.T) {
 		-1,
 	); err == nil {
 		t.Fatal("CreateRuleWithOptions() accepted a negative cooldown")
+	}
+}
+
+func TestRuleVersionsExclusionsAndPreview(t *testing.T) {
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "rule-versions.db")
+	service, err := Open(ctx, databasePath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+
+	rule, err := service.CreateRuleWithInput(ctx, RuleCreateInput{
+		Name:                  "Production deploys",
+		AccountID:             7,
+		PeerType:              "chat",
+		PeerID:                42,
+		PeerTitle:             "Operations",
+		NotificationChannelID: 1,
+		Keywords:              []string{"deploy", "urgent"},
+		ExcludeKeywords:       []string{"test"},
+		CooldownSeconds:       30,
+		Owner:                 "alice",
+		Actor:                 "alice",
+	})
+	if err != nil {
+		t.Fatalf("CreateRuleWithInput() error = %v", err)
+	}
+	if rule.Version != 1 || rule.Owner != "alice" || rule.CreatedBy != "alice" ||
+		len(rule.ExcludeKeywords) != 1 || rule.ExcludeKeywords[0] != "test" {
+		t.Fatalf("created rule = %+v", rule)
+	}
+
+	for _, message := range []struct {
+		id   int
+		text string
+	}{
+		{id: 601, text: "urgent production deploy"},
+		{id: 602, text: "urgent test deploy"},
+		{id: 603, text: "routine update"},
+	} {
+		if _, _, err := service.IngestMessages(ctx, []MessageRecord{{
+			AccountID: 7,
+			PeerType:  "chat",
+			PeerID:    42,
+			PeerTitle: "Operations",
+			MessageID: message.id,
+			Sender:    "Alice",
+			Text:      message.text,
+			SentAt:    now,
+		}}); err != nil {
+			t.Fatalf("IngestMessages(%d) error = %v", message.id, err)
+		}
+	}
+	alerts, err := service.ListAlerts(ctx, "", 20)
+	if err != nil {
+		t.Fatalf("ListAlerts() error = %v", err)
+	}
+	if len(alerts) != 1 || alerts[0].MessageID != 601 || alerts[0].RuleVersion != 1 {
+		t.Fatalf("alerts = %+v, want only production match", alerts)
+	}
+
+	preview, err := service.PreviewRule(ctx, RulePreviewInput{
+		AccountID:       7,
+		PeerType:        "chat",
+		PeerID:          42,
+		Keywords:        []string{"deploy", "urgent"},
+		ExcludeKeywords: []string{"test"},
+		Limit:           10,
+	})
+	if err != nil {
+		t.Fatalf("PreviewRule() error = %v", err)
+	}
+	if preview.Scanned != 3 || preview.Matched != 1 || preview.Excluded != 1 ||
+		len(preview.Samples) != 1 || len(preview.ExcludedItems) != 1 ||
+		preview.ExcludedItems[0].ExcludedBy != "test" {
+		t.Fatalf("PreviewRule() = %+v", preview)
+	}
+
+	now = now.Add(time.Minute)
+	enabled := false
+	newOwner := "bob"
+	updated, err := service.UpdateRule(ctx, rule.ID, RuleUpdateInput{
+		Owner:   &newOwner,
+		Enabled: &enabled,
+		Actor:   "bob",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRule() error = %v", err)
+	}
+	if updated.Version != 2 || updated.Owner != "bob" || updated.Enabled {
+		t.Fatalf("updated rule = %+v", updated)
+	}
+	versions, err := service.ListRuleVersions(ctx, rule.ID)
+	if err != nil {
+		t.Fatalf("ListRuleVersions() error = %v", err)
+	}
+	if len(versions) != 2 || versions[0].Version != 2 || versions[0].Actor != "bob" ||
+		versions[0].Enabled || versions[1].Version != 1 {
+		t.Fatalf("rule versions = %+v", versions)
+	}
+
+	if err := service.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	service, err = Open(ctx, databasePath)
+	if err != nil {
+		t.Fatalf("reopen operations database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	persisted, err := service.GetRule(ctx, rule.ID)
+	if err != nil {
+		t.Fatalf("GetRule() after reopen error = %v", err)
+	}
+	if persisted.Version != 2 || persisted.Owner != "bob" || persisted.Enabled {
+		t.Fatalf("persisted rule = %+v", persisted)
+	}
+}
+
+func TestRuleRejectsOverlappingAndOversizedTerms(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	_, err := service.CreateRuleWithInput(ctx, RuleCreateInput{
+		Name:                  "Invalid terms",
+		AccountID:             7,
+		PeerType:              "chat",
+		PeerID:                42,
+		NotificationChannelID: 1,
+		Keywords:              []string{"Deploy"},
+		ExcludeKeywords:       []string{"deploy"},
+		Actor:                 "tester",
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot also be an exclude keyword") {
+		t.Fatalf("overlapping terms error = %v", err)
+	}
+	oversized := make([]string, 51)
+	for index := range oversized {
+		oversized[index] = fmt.Sprintf("term-%d", index)
+	}
+	_, err = service.CreateRuleWithInput(ctx, RuleCreateInput{
+		Name:                  "Too many terms",
+		AccountID:             7,
+		PeerType:              "chat",
+		PeerID:                42,
+		NotificationChannelID: 1,
+		Keywords:              oversized,
+		Actor:                 "tester",
+	})
+	if err == nil || !strings.Contains(err.Error(), "at most 50") {
+		t.Fatalf("oversized terms error = %v", err)
 	}
 }
 

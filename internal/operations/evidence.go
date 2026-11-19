@@ -270,8 +270,8 @@ func (s *Service) ingestBatchTx(
 			if input.CheckpointBefore > 0 && message.MessageID <= input.CheckpointBefore {
 				continue
 			}
-			keyword := matchedKeyword(rule.Keywords, message.Text)
-			if len(rule.Keywords) > 0 && keyword == "" {
+			keyword, matched := matchesRule(rule, message.Text)
+			if !matched {
 				continue
 			}
 			alert, err := s.insertAlert(ctx, tx, rule, message, keyword, now)

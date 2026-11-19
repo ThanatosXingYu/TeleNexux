@@ -1432,6 +1432,8 @@ func TestMonitorNotificationChannelAPI(t *testing.T) {
 			"peer_title":"Ops",
 			"notification_channel_id":1,
 			"keywords":["deploy"],
+			"exclude_keywords":["test"],
+			"owner":"alice",
 			"cooldown_seconds":120
 		}`),
 	)
@@ -1440,9 +1442,96 @@ func TestMonitorNotificationChannelAPI(t *testing.T) {
 	handler.ServeHTTP(ruleRecorder, ruleRequest)
 	if ruleRecorder.Code != http.StatusCreated ||
 		!strings.Contains(ruleRecorder.Body.String(), `"cooldown_seconds":120`) ||
+		!strings.Contains(ruleRecorder.Body.String(), `"owner":"alice"`) ||
+		!strings.Contains(ruleRecorder.Body.String(), `"version":1`) ||
 		!strings.Contains(ruleRecorder.Body.String(), `"notification_channel_name":"站内通知"`) {
 		t.Fatalf("create rule response = %d %s",
 			ruleRecorder.Code, ruleRecorder.Body.String())
+	}
+	var createdRule operations.Rule
+	if err := json.NewDecoder(ruleRecorder.Body).Decode(&createdRule); err != nil {
+		t.Fatalf("decode created rule: %v", err)
+	}
+	now := time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC)
+	if _, _, err := operationsService.IngestMessages(ctx, []operations.MessageRecord{
+		{
+			AccountID: 7, PeerType: "chat", PeerID: 42, PeerTitle: "Ops",
+			MessageID: 701, Sender: "Alice", Text: "deploy production", SentAt: now,
+		},
+		{
+			AccountID: 7, PeerType: "chat", PeerID: 42, PeerTitle: "Ops",
+			MessageID: 702, Sender: "Alice", Text: "deploy test", SentAt: now,
+		},
+	}); err != nil {
+		t.Fatalf("seed preview messages: %v", err)
+	}
+	previewRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/monitor/rules/preview",
+		strings.NewReader(`{
+			"account_id":7,
+			"peer_type":"chat",
+			"peer_id":42,
+			"keywords":["deploy"],
+			"exclude_keywords":["test"],
+			"limit":5
+		}`),
+	)
+	previewRequest.Header.Set("Content-Type", "application/json")
+	previewRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(previewRecorder, previewRequest)
+	if previewRecorder.Code != http.StatusOK {
+		t.Fatalf("preview rule response = %d %s",
+			previewRecorder.Code, previewRecorder.Body.String())
+	}
+	var preview operations.RulePreview
+	if err := json.NewDecoder(previewRecorder.Body).Decode(&preview); err != nil {
+		t.Fatalf("decode rule preview: %v", err)
+	}
+	if preview.Matched != 1 || preview.Excluded != 1 ||
+		len(preview.Samples) != 1 || len(preview.ExcludedItems) != 1 {
+		t.Fatalf("rule preview = %+v", preview)
+	}
+
+	updateRuleRequest := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/monitor/rules/"+strconv.FormatInt(createdRule.ID, 10),
+		strings.NewReader(`{"enabled":false,"owner":"bob"}`),
+	)
+	updateRuleRequest.Header.Set("Content-Type", "application/json")
+	updateRuleRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(updateRuleRecorder, updateRuleRequest)
+	if updateRuleRecorder.Code != http.StatusOK ||
+		!strings.Contains(updateRuleRecorder.Body.String(), `"version":2`) ||
+		!strings.Contains(updateRuleRecorder.Body.String(), `"owner":"bob"`) {
+		t.Fatalf("update rule response = %d %s",
+			updateRuleRecorder.Code, updateRuleRecorder.Body.String())
+	}
+	versionsRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/monitor/rules/"+strconv.FormatInt(createdRule.ID, 10)+"/versions",
+		nil,
+	)
+	versionsRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(versionsRecorder, versionsRequest)
+	if versionsRecorder.Code != http.StatusOK ||
+		!strings.Contains(versionsRecorder.Body.String(), `"version":2`) ||
+		!strings.Contains(versionsRecorder.Body.String(), `"actor":"admin"`) {
+		t.Fatalf("rule versions response = %d %s",
+			versionsRecorder.Code, versionsRecorder.Body.String())
+	}
+	reenableRequest := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/monitor/rules/"+strconv.FormatInt(createdRule.ID, 10),
+		strings.NewReader(`{"enabled":true}`),
+	)
+	reenableRequest.Header.Set("Content-Type", "application/json")
+	reenableRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(reenableRecorder, reenableRequest)
+	if reenableRecorder.Code != http.StatusOK ||
+		!strings.Contains(reenableRecorder.Body.String(), `"version":3`) {
+		t.Fatalf("reenable rule response = %d %s",
+			reenableRecorder.Code, reenableRecorder.Body.String())
 	}
 
 	targetsRequest := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/targets", nil)

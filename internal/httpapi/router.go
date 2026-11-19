@@ -161,7 +161,11 @@ type OperationsService interface {
 		keywords []string,
 		cooldownSeconds int,
 	) (operations.Rule, error)
+	CreateRuleWithInput(ctx context.Context, input operations.RuleCreateInput) (operations.Rule, error)
+	UpdateRule(ctx context.Context, id int64, input operations.RuleUpdateInput) (operations.Rule, error)
 	ListRules(ctx context.Context, enabledOnly bool) ([]operations.Rule, error)
+	ListRuleVersions(ctx context.Context, id int64) ([]operations.RuleVersion, error)
+	PreviewRule(ctx context.Context, input operations.RulePreviewInput) (operations.RulePreview, error)
 	ListNotificationChannels(ctx context.Context) ([]operations.NotificationChannel, error)
 	CreateWebhookChannel(
 		ctx context.Context,
@@ -170,7 +174,7 @@ type OperationsService interface {
 		secret string,
 	) (operations.NotificationChannel, error)
 	DeleteNotificationChannel(ctx context.Context, id int64) error
-	SetRuleEnabled(ctx context.Context, id int64, enabled bool) error
+	SetRuleEnabled(ctx context.Context, id int64, enabled bool, actor string) error
 	DeleteRule(ctx context.Context, id int64) error
 	ListAlerts(ctx context.Context, state string, limit int) ([]operations.Alert, error)
 	UpdateAlert(ctx context.Context, id int64, input operations.AlertUpdateInput) (operations.Alert, error)
@@ -270,6 +274,10 @@ func (a *API) Handler() http.Handler {
 		a.requireAPIPermission(auth.PermissionMonitorRead, a.listMonitorRules))
 	mux.HandleFunc("POST /api/v1/monitor/rules",
 		a.requireAPIPermission(auth.PermissionMonitorWrite, a.createMonitorRule))
+	mux.HandleFunc("POST /api/v1/monitor/rules/preview",
+		a.requireAPIPermission(auth.PermissionMonitorRead, a.previewMonitorRule))
+	mux.HandleFunc("GET /api/v1/monitor/rules/{id}/versions",
+		a.requireAPIPermission(auth.PermissionMonitorRead, a.listMonitorRuleVersions))
 	mux.HandleFunc("PUT /api/v1/monitor/rules/{id}",
 		a.requireAPIPermission(auth.PermissionMonitorWrite, a.updateMonitorRule))
 	mux.HandleFunc("DELETE /api/v1/monitor/rules/{id}",
@@ -612,29 +620,33 @@ func (a *API) createMonitorRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Name      string   `json:"name"`
-		AccountID int64    `json:"account_id"`
-		PeerType  string   `json:"peer_type"`
-		PeerID    int64    `json:"peer_id"`
-		PeerTitle string   `json:"peer_title"`
-		ChannelID int64    `json:"notification_channel_id"`
-		Keywords  []string `json:"keywords"`
-		Cooldown  int      `json:"cooldown_seconds"`
+		Name            string   `json:"name"`
+		AccountID       int64    `json:"account_id"`
+		PeerType        string   `json:"peer_type"`
+		PeerID          int64    `json:"peer_id"`
+		PeerTitle       string   `json:"peer_title"`
+		ChannelID       int64    `json:"notification_channel_id"`
+		Keywords        []string `json:"keywords"`
+		ExcludeKeywords []string `json:"exclude_keywords"`
+		Cooldown        int      `json:"cooldown_seconds"`
+		Owner           string   `json:"owner"`
 	}
 	if !decodeJSONBody(w, r, &input) {
 		return
 	}
-	item, err := a.operations.CreateRuleWithOptions(
-		r.Context(),
-		input.Name,
-		input.AccountID,
-		input.PeerType,
-		input.PeerID,
-		input.PeerTitle,
-		input.ChannelID,
-		input.Keywords,
-		input.Cooldown,
-	)
+	item, err := a.operations.CreateRuleWithInput(r.Context(), operations.RuleCreateInput{
+		Name:                  input.Name,
+		AccountID:             input.AccountID,
+		PeerType:              input.PeerType,
+		PeerID:                input.PeerID,
+		PeerTitle:             input.PeerTitle,
+		NotificationChannelID: input.ChannelID,
+		Keywords:              input.Keywords,
+		ExcludeKeywords:       input.ExcludeKeywords,
+		CooldownSeconds:       input.Cooldown,
+		Owner:                 input.Owner,
+		Actor:                 currentActor(r),
+	})
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_monitor_rule", err.Error())
 		return
@@ -651,20 +663,94 @@ func (a *API) updateMonitorRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Enabled *bool `json:"enabled"`
+		Name            *string   `json:"name"`
+		AccountID       *int64    `json:"account_id"`
+		PeerType        *string   `json:"peer_type"`
+		PeerID          *int64    `json:"peer_id"`
+		PeerTitle       *string   `json:"peer_title"`
+		ChannelID       *int64    `json:"notification_channel_id"`
+		Keywords        *[]string `json:"keywords"`
+		ExcludeKeywords *[]string `json:"exclude_keywords"`
+		Cooldown        *int      `json:"cooldown_seconds"`
+		Owner           *string   `json:"owner"`
+		Enabled         *bool     `json:"enabled"`
 	}
 	if !decodeJSONBody(w, r, &input) {
 		return
 	}
-	if input.Enabled == nil {
-		writeError(w, http.StatusUnprocessableEntity, "invalid_monitor_rule", "enabled is required")
+	if input.Name == nil && input.AccountID == nil && input.PeerType == nil &&
+		input.PeerID == nil && input.PeerTitle == nil && input.ChannelID == nil && input.Keywords == nil &&
+		input.ExcludeKeywords == nil && input.Cooldown == nil && input.Owner == nil &&
+		input.Enabled == nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_monitor_rule",
+			"至少需要修改一个规则字段")
 		return
 	}
-	if err := a.operations.SetRuleEnabled(r.Context(), id, *input.Enabled); err != nil {
+	item, err := a.operations.UpdateRule(r.Context(), id, operations.RuleUpdateInput{
+		Name:                  input.Name,
+		AccountID:             input.AccountID,
+		PeerType:              input.PeerType,
+		PeerID:                input.PeerID,
+		PeerTitle:             input.PeerTitle,
+		NotificationChannelID: input.ChannelID,
+		Keywords:              input.Keywords,
+		ExcludeKeywords:       input.ExcludeKeywords,
+		CooldownSeconds:       input.Cooldown,
+		Owner:                 input.Owner,
+		Enabled:               input.Enabled,
+		Actor:                 currentActor(r),
+	})
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_monitor_rule", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (a *API) previewMonitorRule(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	var input struct {
+		AccountID       int64    `json:"account_id"`
+		PeerType        string   `json:"peer_type"`
+		PeerID          int64    `json:"peer_id"`
+		Keywords        []string `json:"keywords"`
+		ExcludeKeywords []string `json:"exclude_keywords"`
+		Limit           int      `json:"limit"`
+	}
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	preview, err := a.operations.PreviewRule(r.Context(), operations.RulePreviewInput{
+		AccountID:       input.AccountID,
+		PeerType:        input.PeerType,
+		PeerID:          input.PeerID,
+		Keywords:        input.Keywords,
+		ExcludeKeywords: input.ExcludeKeywords,
+		Limit:           input.Limit,
+	})
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_monitor_rule", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, preview)
+}
+
+func (a *API) listMonitorRuleVersions(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	items, err := a.operations.ListRuleVersions(r.Context(), id)
+	if err != nil {
 		a.writeOperationsError(w, err, "monitor rule")
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (a *API) deleteMonitorRule(w http.ResponseWriter, r *http.Request) {
