@@ -84,6 +84,9 @@ type MonitorSummary struct {
 	NeverSuccessfulTargets int        `json:"never_successful_targets"`
 	MaxCheckpointDelay     int64      `json:"max_checkpoint_delay_seconds"`
 	LastSuccessfulAt       *time.Time `json:"last_successful_at,omitempty"`
+	QueuedDeliveries       int        `json:"queued_deliveries"`
+	FailedDeliveries       int        `json:"failed_deliveries"`
+	OldestQueuedAt         *time.Time `json:"oldest_queued_at,omitempty"`
 }
 
 func (s *Service) ListCollectionTargets(ctx context.Context) ([]CollectionTarget, error) {
@@ -928,6 +931,26 @@ LEFT JOIN monitor_checkpoints AS c
 			return MonitorSummary{}, fmt.Errorf("parse oldest monitor success time: %w", err)
 		}
 		summary.MaxCheckpointDelay = max(0, int64(s.now().UTC().Sub(value).Seconds()))
+	}
+	var oldestQueued string
+	if err := s.db.QueryRowContext(ctx, `
+SELECT
+	COALESCE(SUM(CASE WHEN state = 'queued' THEN 1 ELSE 0 END), 0),
+	COALESCE(SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END), 0),
+	COALESCE(MIN(CASE WHEN state = 'queued' THEN created_at END), '')
+FROM notification_deliveries`).Scan(
+		&summary.QueuedDeliveries,
+		&summary.FailedDeliveries,
+		&oldestQueued,
+	); err != nil {
+		return MonitorSummary{}, fmt.Errorf("summarize notification deliveries: %w", err)
+	}
+	if oldestQueued != "" {
+		value, err := time.Parse(time.RFC3339Nano, oldestQueued)
+		if err != nil {
+			return MonitorSummary{}, fmt.Errorf("parse queued notification time: %w", err)
+		}
+		summary.OldestQueuedAt = &value
 	}
 	return summary, nil
 }

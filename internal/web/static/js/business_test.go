@@ -25,6 +25,7 @@ func TestBusinessScriptUsesAuthenticatedAPIs(t *testing.T) {
 		`/api/v1/monitor/targets`,
 		`data-monitor-backlog`,
 		`data-monitor-health-body`,
+		`data-monitor-delivery-queued`,
 		`data-monitor-delay`,
 		`data-monitor-flood`,
 		`formatDuration`,

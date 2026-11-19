@@ -206,6 +206,78 @@ func TestNotificationClaimUsesLeaseToAvoidConcurrentDelivery(t *testing.T) {
 	}
 }
 
+func TestMonitorSummaryReportsNotificationDeliveryBacklog(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	channel, err := service.CreateWebhookChannel(
+		ctx,
+		"Observed webhook",
+		"https://hooks.example.test/observed",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("CreateWebhookChannel() error = %v", err)
+	}
+	if _, err := service.CreateRuleWithChannel(
+		ctx,
+		"Observed alerts",
+		7,
+		"chat",
+		42,
+		"Ops",
+		channel.ID,
+		nil,
+	); err != nil {
+		t.Fatalf("CreateRuleWithChannel() error = %v", err)
+	}
+	_, alerts, err := service.IngestMessages(ctx, []MessageRecord{
+		{AccountID: 7, PeerType: "chat", PeerID: 42, MessageID: 401, Text: "one", SentAt: now},
+		{AccountID: 7, PeerType: "chat", PeerID: 42, MessageID: 402, Text: "two", SentAt: now},
+		{AccountID: 7, PeerType: "chat", PeerID: 42, MessageID: 403, Text: "three", SentAt: now},
+	})
+	if err != nil || len(alerts) != 3 {
+		t.Fatalf("IngestMessages() alerts = %+v, error = %v", alerts, err)
+	}
+	first, found, err := service.ClaimNotificationDelivery(ctx)
+	if err != nil || !found {
+		t.Fatalf("ClaimNotificationDelivery(first) = %+v, %v, %v", first, found, err)
+	}
+	if err := service.CompleteNotificationDelivery(ctx, first.ID); err != nil {
+		t.Fatalf("CompleteNotificationDelivery() error = %v", err)
+	}
+	second, found, err := service.ClaimNotificationDelivery(ctx)
+	if err != nil || !found {
+		t.Fatalf("ClaimNotificationDelivery(second) = %+v, %v, %v", second, found, err)
+	}
+	if _, err := service.db.ExecContext(
+		ctx,
+		`UPDATE notification_deliveries SET attempt_count = ? WHERE id = ?`,
+		notificationMaxAttempts,
+		second.ID,
+	); err != nil {
+		t.Fatalf("set final attempt count: %v", err)
+	}
+	if state, _, err := service.RetryNotificationDelivery(
+		ctx,
+		second.ID,
+		"final failure",
+	); err != nil || state != "failed" {
+		t.Fatalf("RetryNotificationDelivery() state = %q, error = %v", state, err)
+	}
+	summary, err := service.MonitorSummary(ctx)
+	if err != nil {
+		t.Fatalf("MonitorSummary() error = %v", err)
+	}
+	if summary.QueuedDeliveries != 1 ||
+		summary.FailedDeliveries != 1 ||
+		summary.OldestQueuedAt == nil ||
+		!summary.OldestQueuedAt.Equal(now) {
+		t.Fatalf("MonitorSummary() = %+v", summary)
+	}
+}
+
 func TestWebhookChannelRejectsUnsafeInput(t *testing.T) {
 	service := newTestService(t)
 	if _, err := service.CreateWebhookChannel(

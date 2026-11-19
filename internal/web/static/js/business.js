@@ -580,6 +580,9 @@
     setText("[data-monitor-failures]", collection.consecutive_failures ?? "0");
     setText("[data-monitor-flood]", collection.flood_wait_target_count ?? "0");
     setText("[data-monitor-success]", formatDate(collection.last_successful_at));
+    setText("[data-monitor-delivery-queued]", collection.queued_deliveries ?? "0");
+    setText("[data-monitor-delivery-failed]", collection.failed_deliveries ?? "0");
+    setText("[data-monitor-delivery-oldest]", formatDate(collection.oldest_queued_at));
     setText("[data-monitor-error]", status?.last_error || "—");
     if (status?.last_error) {
       showNotice(notice, status.last_error, true);
@@ -587,6 +590,8 @@
       showNotice(notice, "部分监控目标仍有历史消息积压，checkpoint 暂未推进。", true);
     } else if (Number(collection.flood_wait_target_count) > 0) {
       showNotice(notice, "部分目标受到 Telegram FloodWait 限制，将按周期重试。", true);
+    } else if (Number(collection.failed_deliveries) > 0) {
+      showNotice(notice, "存在最终失败的通知投递，请检查通知渠道和告警详情。", true);
     }
   };
 
