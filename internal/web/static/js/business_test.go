@@ -40,6 +40,8 @@ func TestBusinessScriptUsesAuthenticatedAPIs(t *testing.T) {
 		`formatDuration`,
 		`checkpoint_delay_seconds`,
 		`last_batch_fetched`,
+		`最近批次 ${Number(target.last_batch_fetched) || 0} 条`,
+		`尚无批次`,
 		`notification_channel_name`,
 		`notification_channel_id`,
 		`delivery_state`,

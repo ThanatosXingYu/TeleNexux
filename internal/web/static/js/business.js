@@ -692,10 +692,11 @@
         if (target.next_collection_at) {
           batch.append(` · 冷却至 ${formatDate(target.next_collection_at)}`);
         }
-        batch.append(` · 上批 ${Number(target.last_batch_fetched) || 0} 条`);
-        if (target.last_batch_at) {
-          batch.append(` · ${formatDate(target.last_batch_at)}`);
-        }
+        batch.append(
+          target.last_batch_at
+            ? ` · 最近批次 ${Number(target.last_batch_fetched) || 0} 条 · ${formatDate(target.last_batch_at)}`
+            : " · 尚无批次",
+        );
         appendCell(row, batch);
         appendCell(row, target.last_error
           ? element("span", "badge badge-red", target.last_error)
