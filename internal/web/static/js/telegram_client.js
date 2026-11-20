@@ -219,9 +219,13 @@
   ];
 
   const formatPhone = (phone) => {
-    const digits = String(phone || "").replace(/\D/g, "");
+    const raw = String(phone || "").trim();
+    const digits = raw.replace(/\D/g, "");
     if (!digits) {
       return "未设置";
+    }
+    if (/^\+\d+\s+\d+$/.test(raw)) {
+      return raw;
     }
     const normalized = `+${digits}`;
     const countryCode = countryCodes.find((code) => normalized.startsWith(code)) || "";

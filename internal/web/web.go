@@ -286,17 +286,27 @@ func navigation(activePath string) []navGroup {
 	}
 
 	for i := range groups {
-		if groups[i].Path == activePath {
+		if menuPathMatches(activePath, groups[i].Path) {
 			groups[i].Active = true
 		}
 		for _, item := range groups[i].Items {
-			if item.Path == activePath {
+			if menuPathMatches(activePath, item.Path) {
 				groups[i].Active = true
 				break
 			}
 		}
 	}
 	return groups
+}
+
+func menuPathMatches(activePath, menuPath string) bool {
+	if activePath == menuPath {
+		return true
+	}
+	if menuPath == "/" || menuPath == "/accounts" || menuPath == "/system" {
+		return false
+	}
+	return strings.HasPrefix(activePath, menuPath+"/")
 }
 
 func groupLabelForPath(path string) string {

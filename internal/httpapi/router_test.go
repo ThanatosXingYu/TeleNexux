@@ -1565,6 +1565,12 @@ func TestRefreshAccountUsesTelegramInspection(t *testing.T) {
 		t.Fatalf("inspect calls = %d, validate calls = %d, want a real Telegram inspection",
 			chats.inspectCalls, chats.validateCalls)
 	}
+	if !strings.Contains(recorder.Body.String(), `"outcomes":[{"account_id":42,"status":"online"}]`) {
+		t.Fatalf("response = %s, want a successful refresh outcome", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"verified_at":`) {
+		t.Fatalf("response = %s, want a server verification timestamp", recorder.Body.String())
+	}
 }
 
 func TestRefreshAccountRejectsMismatchedTelegramIdentity(t *testing.T) {

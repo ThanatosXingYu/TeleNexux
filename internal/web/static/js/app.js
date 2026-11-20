@@ -561,9 +561,13 @@
   ];
 
   const formatPhone = (phone) => {
-    const digits = String(phone || "").replace(/\D/g, "");
+    const raw = String(phone || "").trim();
+    const digits = raw.replace(/\D/g, "");
     if (!digits) {
       return "未设置";
+    }
+    if (/^\+\d+\s+\d+$/.test(raw)) {
+      return raw;
     }
     const normalized = `+${digits}`;
     const countryCode = countryCodes.find((code) => normalized.startsWith(code)) || "";
@@ -1455,6 +1459,9 @@
       return true;
     } catch (error) {
       accountsLoading?.setAttribute("hidden", "");
+      if (verifySessions) {
+        renderAccounts(filteredAccounts());
+      }
       showNotice(accountsError, error.message, true);
       return false;
     }
@@ -1534,7 +1541,7 @@
         if (!outcome.deferred && !outcome.skipped) {
           refreshed.last_verified_at = updated.verified_at
             ? new Date(updated.verified_at).toISOString()
-            : new Date().toISOString();
+            : refreshed.last_verified_at;
         }
       }
       allAccounts = allAccounts.map((item) => (
@@ -2173,19 +2180,20 @@
   document.querySelectorAll("[data-open-relogin]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.preventDefault();
-      const candidates = allAccounts.filter((account) =>
-        !isDeletedAccount(account) &&
-        accountStatus(account).key !== "online");
+      const candidates = allAccounts.filter((account) => !isDeletedAccount(account));
       if (candidates.length === 1) {
         openLoginDialog(candidates[0]);
         return;
       }
       if (candidates.length > 1) {
-        showNotice(accountsError, "请在账号列表中点击对应账号的“重新登录”。");
+        const offline = candidates.filter((account) => accountStatus(account).key !== "online");
+        showNotice(accountsError, offline.length > 0
+          ? "请在账号列表中点击对应账号的“重新登录”；带红色标识的账号需要优先处理。"
+          : "请在账号列表中点击需要重新授权的账号的“重新登录”。");
         accountSearch?.focus();
         return;
       }
-      showNotice(accountsError, "当前没有需要重新登录的账号。", true);
+      showNotice(accountsError, "还没有可重新登录的 Telegram 账号，请先添加账号。", true);
       accountSearch?.focus();
     });
   });
@@ -2386,16 +2394,6 @@
   authDialog?.addEventListener("close", () => {
     if (!authCompleted) {
       cancelLogin();
-    }
-  });
-
-  const loginForm = document.querySelector("[data-login-form]");
-  const loginNotice = document.querySelector("[data-login-notice]");
-  loginForm?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    if (loginNotice) {
-      loginNotice.textContent = "登录服务将在下一阶段接入。当前可先直接查看管理台。";
-      loginNotice.hidden = false;
     }
   });
 

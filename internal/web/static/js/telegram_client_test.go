@@ -49,6 +49,8 @@ func TestTelegramClientScriptBehaviors(t *testing.T) {
 		`elements.accountProfile?.addEventListener`,
 		`/profile`,
 		`formatPhone`,
+		`if (/^\+\d+\s+\d+$/.test(raw)) {`,
+		`return raw;`,
 		`avatarObserver`,
 		`createAvatarObserver(elements.chatList)`,
 		`createAvatarObserver(elements.messageScroll)`,

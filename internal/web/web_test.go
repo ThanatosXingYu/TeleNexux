@@ -341,6 +341,20 @@ func TestSystemHealthOpensServiceStatus(t *testing.T) {
 	}
 }
 
+func TestNestedRoutesKeepTheirParentMenuExpanded(t *testing.T) {
+	groups := navigation("/system/health")
+	for _, group := range groups {
+		if group.ID != "system" {
+			continue
+		}
+		if !group.Active {
+			t.Fatal("system menu group must be active on /system/health")
+		}
+		return
+	}
+	t.Fatal("system menu group was not found")
+}
+
 func TestAccountDetailRendersChatViewer(t *testing.T) {
 	handler := newTestHandler(t)
 	request := httptest.NewRequest(http.MethodGet, "/accounts/42", nil)

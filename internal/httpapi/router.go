@@ -1976,7 +1976,16 @@ func (a *API) refreshAccount(w http.ResponseWriter, r *http.Request) {
 			"账号状态校验已完成，但结果未能保存，请重试")
 		return
 	}
-	writeJSON(w, http.StatusOK, updated)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"item": updated,
+		"outcomes": []accountRefreshOutcome{{
+			AccountID: updated.ID,
+			Status:    updated.Status,
+			Reason:    updated.StatusReason,
+		}},
+		"warnings":    []accountRefreshWarning{},
+		"verified_at": time.Now().UTC(),
+	})
 }
 
 type accountProxyInput struct {
