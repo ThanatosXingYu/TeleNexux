@@ -31,8 +31,13 @@ const (
 
 type DeliveryStore interface {
 	ClaimNotificationDelivery(context.Context) (operations.NotificationDelivery, bool, error)
-	CompleteNotificationDelivery(context.Context, int64) error
-	RetryNotificationDelivery(context.Context, int64, string) (string, *time.Time, error)
+	CompleteNotificationDelivery(context.Context, int64, int) error
+	RetryNotificationDelivery(
+		context.Context,
+		int64,
+		int,
+		string,
+	) (string, *time.Time, error)
 }
 
 type Options struct {
@@ -124,6 +129,7 @@ func (s *Service) RunOnce(ctx context.Context) error {
 			state, nextAttempt, retryErr := s.store.RetryNotificationDelivery(
 				context.WithoutCancel(ctx),
 				delivery.ID,
+				delivery.AttemptCount,
 				err.Error(),
 			)
 			if retryErr != nil {
@@ -143,6 +149,7 @@ func (s *Service) RunOnce(ctx context.Context) error {
 		if err := s.store.CompleteNotificationDelivery(
 			context.WithoutCancel(ctx),
 			delivery.ID,
+			delivery.AttemptCount,
 		); err != nil {
 			runErr = errors.Join(runErr, err)
 		}

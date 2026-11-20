@@ -19,6 +19,8 @@ const (
 	notificationClaimLease  = 2 * time.Minute
 )
 
+var ErrNotificationClaimLost = errors.New("notification delivery claim was lost")
+
 type WebhookChannelConfig struct {
 	URL    string `json:"url"`
 	Secret string `json:"secret,omitempty"`
@@ -266,8 +268,12 @@ WHERE id = ? AND state = 'queued' AND attempt_count = ?`,
 	return item, true, nil
 }
 
-func (s *Service) CompleteNotificationDelivery(ctx context.Context, id int64) error {
-	if id <= 0 {
+func (s *Service) CompleteNotificationDelivery(
+	ctx context.Context,
+	id int64,
+	attemptCount int,
+) error {
+	if id <= 0 || attemptCount <= 0 {
 		return errors.New("notification delivery ID must be positive")
 	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
@@ -275,10 +281,11 @@ func (s *Service) CompleteNotificationDelivery(ctx context.Context, id int64) er
 UPDATE notification_deliveries
 SET state = 'delivered', delivered_at = ?, next_attempt_at = '',
 	error_text = '', updated_at = ?
-WHERE id = ? AND state = 'queued'`,
+WHERE id = ? AND state = 'queued' AND attempt_count = ?`,
 		now,
 		now,
 		id,
+		attemptCount,
 	)
 	if err != nil {
 		return fmt.Errorf("complete notification delivery: %w", err)
@@ -288,7 +295,7 @@ WHERE id = ? AND state = 'queued'`,
 		return fmt.Errorf("check completed notification delivery: %w", err)
 	}
 	if affected == 0 {
-		return ErrNotFound
+		return s.notificationClaimLost(ctx, id)
 	}
 	return nil
 }
@@ -296,24 +303,25 @@ WHERE id = ? AND state = 'queued'`,
 func (s *Service) RetryNotificationDelivery(
 	ctx context.Context,
 	id int64,
+	attemptCount int,
 	errorText string,
 ) (string, *time.Time, error) {
-	if id <= 0 {
+	if id <= 0 || attemptCount <= 0 {
 		return "", nil, errors.New("notification delivery ID must be positive")
 	}
-	var attemptCount int
+	var currentAttemptCount int
 	var state string
 	err := s.db.QueryRowContext(ctx, `
 SELECT attempt_count, state FROM notification_deliveries WHERE id = ?`, id,
-	).Scan(&attemptCount, &state)
+	).Scan(&currentAttemptCount, &state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil, ErrNotFound
 	}
 	if err != nil {
 		return "", nil, fmt.Errorf("read notification delivery retry state: %w", err)
 	}
-	if state != "queued" {
-		return state, nil, nil
+	if currentAttemptCount != attemptCount || state != "queued" {
+		return "", nil, s.notificationClaimLost(ctx, id)
 	}
 	now := s.now().UTC()
 	nextState := "queued"
@@ -344,12 +352,28 @@ WHERE id = ? AND state = 'queued' AND attempt_count = ?`,
 		return "", nil, fmt.Errorf("check notification retry: %w", err)
 	}
 	if affected == 0 {
-		return "", nil, ErrNotFound
+		return "", nil, ErrNotificationClaimLost
 	}
 	if nextState == "failed" {
 		return nextState, nil, nil
 	}
 	return nextState, &nextAttempt, nil
+}
+
+func (s *Service) notificationClaimLost(
+	ctx context.Context,
+	id int64,
+) error {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `
+SELECT 1 FROM notification_deliveries WHERE id = ?`, id).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("read notification delivery claim state: %w", err)
+	}
+	return ErrNotificationClaimLost
 }
 
 func notificationRetryDelay(attemptCount int) time.Duration {

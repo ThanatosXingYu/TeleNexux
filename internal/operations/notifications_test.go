@@ -66,7 +66,11 @@ func TestWebhookNotificationQueuesAndCompletesDelivery(t *testing.T) {
 		delivery.ChannelKind != NotificationKindWebhook {
 		t.Fatalf("ClaimNotificationDelivery() = %+v, %v", delivery, found)
 	}
-	if err := service.CompleteNotificationDelivery(ctx, delivery.ID); err != nil {
+	if err := service.CompleteNotificationDelivery(
+		ctx,
+		delivery.ID,
+		delivery.AttemptCount,
+	); err != nil {
 		t.Fatalf("CompleteNotificationDelivery() error = %v", err)
 	}
 	listed, err := service.ListAlerts(ctx, "pending", 20)
@@ -124,6 +128,7 @@ func TestWebhookNotificationRetriesWithBackoffAndStops(t *testing.T) {
 	state, nextAttempt, err := service.RetryNotificationDelivery(
 		ctx,
 		delivery.ID,
+		delivery.AttemptCount,
 		"temporary failure",
 	)
 	if err != nil {
@@ -144,6 +149,7 @@ func TestWebhookNotificationRetriesWithBackoffAndStops(t *testing.T) {
 	state, nextAttempt, err = service.RetryNotificationDelivery(
 		ctx,
 		delivery.ID,
+		notificationMaxAttempts,
 		"final failure",
 	)
 	if err != nil {
@@ -204,6 +210,39 @@ func TestNotificationClaimUsesLeaseToAvoidConcurrentDelivery(t *testing.T) {
 		t.Fatalf("expired lease ClaimNotificationDelivery() = %+v, %v, %v",
 			reclaimed, found, err)
 	}
+	if err := service.CompleteNotificationDelivery(
+		ctx,
+		first.ID,
+		first.AttemptCount,
+	); !errors.Is(err, ErrNotificationClaimLost) {
+		t.Fatalf("stale CompleteNotificationDelivery() error = %v", err)
+	}
+	if _, _, err := service.RetryNotificationDelivery(
+		ctx,
+		first.ID,
+		first.AttemptCount,
+		"stale failure",
+	); !errors.Is(err, ErrNotificationClaimLost) {
+		t.Fatalf("stale RetryNotificationDelivery() error = %v", err)
+	}
+	var state string
+	var attempts int
+	if err := service.db.QueryRowContext(ctx, `
+SELECT state, attempt_count FROM notification_deliveries WHERE id = ?`,
+		first.ID,
+	).Scan(&state, &attempts); err != nil {
+		t.Fatalf("read delivery after stale completion: %v", err)
+	}
+	if state != "queued" || attempts != reclaimed.AttemptCount {
+		t.Fatalf("delivery after stale completion = %q/%d", state, attempts)
+	}
+	if err := service.CompleteNotificationDelivery(
+		ctx,
+		reclaimed.ID,
+		reclaimed.AttemptCount,
+	); err != nil {
+		t.Fatalf("current CompleteNotificationDelivery() error = %v", err)
+	}
 }
 
 func TestMonitorSummaryReportsNotificationDeliveryBacklog(t *testing.T) {
@@ -244,7 +283,11 @@ func TestMonitorSummaryReportsNotificationDeliveryBacklog(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("ClaimNotificationDelivery(first) = %+v, %v, %v", first, found, err)
 	}
-	if err := service.CompleteNotificationDelivery(ctx, first.ID); err != nil {
+	if err := service.CompleteNotificationDelivery(
+		ctx,
+		first.ID,
+		first.AttemptCount,
+	); err != nil {
 		t.Fatalf("CompleteNotificationDelivery() error = %v", err)
 	}
 	second, found, err := service.ClaimNotificationDelivery(ctx)
@@ -262,6 +305,7 @@ func TestMonitorSummaryReportsNotificationDeliveryBacklog(t *testing.T) {
 	if state, _, err := service.RetryNotificationDelivery(
 		ctx,
 		second.ID,
+		notificationMaxAttempts,
 		"final failure",
 	); err != nil || state != "failed" {
 		t.Fatalf("RetryNotificationDelivery() state = %q, error = %v", state, err)

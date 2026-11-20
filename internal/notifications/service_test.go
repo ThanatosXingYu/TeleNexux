@@ -37,7 +37,11 @@ func (s *fakeDeliveryStore) ClaimNotificationDelivery(
 	return item, true, nil
 }
 
-func (s *fakeDeliveryStore) CompleteNotificationDelivery(_ context.Context, id int64) error {
+func (s *fakeDeliveryStore) CompleteNotificationDelivery(
+	_ context.Context,
+	id int64,
+	_ int,
+) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.completedIDs = append(s.completedIDs, id)
@@ -47,6 +51,7 @@ func (s *fakeDeliveryStore) CompleteNotificationDelivery(_ context.Context, id i
 func (s *fakeDeliveryStore) RetryNotificationDelivery(
 	_ context.Context,
 	id int64,
+	_ int,
 	_ string,
 ) (string, *time.Time, error) {
 	s.mu.Lock()
