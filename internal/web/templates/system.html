@@ -174,7 +174,7 @@
       </div>
     </section>
 
-    <div class="settings-actions" data-settings-actions>
+    <div class="settings-actions" data-settings-actions {{if or (eq .SettingsTab "page") (eq .SettingsTab "display") (eq .SettingsTab "device") (eq .SettingsTab "security") (eq .SettingsTab "status")}}hidden{{end}}>
       <button class="button button-primary" type="submit">
         <span class="icon icon-circle-check" aria-hidden="true"></span>
         保存设置

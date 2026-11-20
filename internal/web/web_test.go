@@ -299,7 +299,7 @@ func TestSystemPageRendersEditableSettings(t *testing.T) {
 		`data-settings-tab="display">内容显示</button>`,
 		`data-settings-panel="display"`,
 		`data-page-setting="footer"`,
-		`data-settings-actions`,
+		`data-settings-actions >`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("system page missing %q", expected)
@@ -330,6 +330,7 @@ func TestSystemHealthOpensServiceStatus(t *testing.T) {
 		`data-settings-tab="status">服务状态</button>`,
 		`data-health-checks`,
 		`class="submenu-item active" href="/system/health"`,
+		`data-settings-actions hidden>`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("health settings page missing %q", expected)
