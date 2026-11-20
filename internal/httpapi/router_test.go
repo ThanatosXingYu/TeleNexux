@@ -1245,6 +1245,9 @@ func TestRefreshAccountsPersistsExpiredSession(t *testing.T) {
 	if !strings.Contains(recorder.Body.String(), "重新登录") {
 		t.Fatalf("response = %s, want actionable refresh reason", recorder.Body.String())
 	}
+	if !strings.Contains(recorder.Body.String(), `"outcomes":[{"account_id":42,"status":"error","reason":"Telegram 授权已失效，请重新登录"}]`) {
+		t.Fatalf("response = %s, want explicit refresh outcome", recorder.Body.String())
+	}
 }
 
 func TestSetAccountProxyStoresCredentialsWithoutEchoingPassword(t *testing.T) {
@@ -1402,6 +1405,9 @@ func TestRefreshAccountsKeepsStatusForTransientTelegramFailure(t *testing.T) {
 		!strings.Contains(recorder.Body.String(), "已保留原状态") {
 		t.Fatalf("response = %s, want transient validation warning", recorder.Body.String())
 	}
+	if !strings.Contains(recorder.Body.String(), `"deferred":true`) {
+		t.Fatalf("response = %s, want deferred refresh outcome", recorder.Body.String())
+	}
 }
 
 func TestRefreshAccountDefersTransientTelegramFailure(t *testing.T) {
@@ -1422,11 +1428,12 @@ func TestRefreshAccountDefersTransientTelegramFailure(t *testing.T) {
 		nil,
 	).ServeHTTP(recorder, request)
 
-	if recorder.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503; body: %s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), `"code":"account_validation_deferred"`) {
-		t.Fatalf("response = %s, want deferred validation code", recorder.Body.String())
+	if !strings.Contains(recorder.Body.String(), `"deferred":true`) ||
+		!strings.Contains(recorder.Body.String(), `"status":"online"`) {
+		t.Fatalf("response = %s, want preserved status with deferred outcome", recorder.Body.String())
 	}
 	if accounts.verifyCalls != 0 {
 		t.Fatalf("RecordVerification() calls = %d, want 0", accounts.verifyCalls)
@@ -1494,6 +1501,32 @@ func TestRefreshAccountUsesTelegramInspection(t *testing.T) {
 	if chats.inspectCalls != 1 || chats.validateCalls != 0 {
 		t.Fatalf("inspect calls = %d, validate calls = %d, want a real Telegram inspection",
 			chats.inspectCalls, chats.validateCalls)
+	}
+}
+
+func TestRefreshAccountRejectsMismatchedTelegramIdentity(t *testing.T) {
+	accounts := &fakeAccountService{
+		created: account.Account{ID: 42, Status: account.StatusOnline},
+	}
+	chats := &fakeTelegramChatService{
+		profile: telegramchat.Profile{ID: 99, Username: "other_user"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/42/refresh", strings.NewReader(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithDependencies(accounts, &fakeTelegramAuthService{}, chats, nil).
+		ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if accounts.created.Status != account.StatusError ||
+		!strings.Contains(accounts.created.StatusReason, "不一致") {
+		t.Fatalf("account = %+v, want mismatched identity persisted as offline", accounts.created)
+	}
+	if !strings.Contains(recorder.Body.String(), `"status":"error"`) {
+		t.Fatalf("response = %s, want corrected offline account", recorder.Body.String())
 	}
 }
 

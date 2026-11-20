@@ -1340,6 +1340,13 @@ type accountRefreshResult struct {
 	err  error
 }
 
+type accountRefreshOutcome struct {
+	AccountID int64  `json:"account_id"`
+	Status    string `json:"status"`
+	Reason    string `json:"reason,omitempty"`
+	Deferred  bool   `json:"deferred,omitempty"`
+}
+
 type accountRefreshWarning struct {
 	AccountID int64  `json:"account_id"`
 	Message   string `json:"message"`
@@ -1799,10 +1806,6 @@ func (a *API) refreshAccounts(w http.ResponseWriter, r *http.Request) {
 	semaphore := make(chan struct{}, telegramAuthConcurrency)
 	results := make([]accountRefreshResult, len(items))
 	for i := range items {
-		if items[i].Status != account.StatusOnline && items[i].Status != account.StatusError {
-			results[i].item = items[i]
-			continue
-		}
 		wait.Add(1)
 		go func(index int) {
 			defer wait.Done()
@@ -1813,15 +1816,27 @@ func (a *API) refreshAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	wait.Wait()
 	warnings := make([]accountRefreshWarning, 0)
+	outcomes := make([]accountRefreshOutcome, 0, len(items))
 	for i, result := range results {
 		items[i] = result.item
 		if result.err == nil {
+			outcomes = append(outcomes, accountRefreshOutcome{
+				AccountID: items[i].ID,
+				Status:    items[i].Status,
+				Reason:    items[i].StatusReason,
+			})
 			continue
 		}
 		if errors.Is(result.err, errAccountValidationDeferred) {
 			warnings = append(warnings, accountRefreshWarning{
 				AccountID: items[i].ID,
 				Message:   "Telegram 暂时不可达或请求受限，已保留原状态，请稍后重试",
+			})
+			outcomes = append(outcomes, accountRefreshOutcome{
+				AccountID: items[i].ID,
+				Status:    items[i].Status,
+				Reason:    items[i].StatusReason,
+				Deferred:  true,
 			})
 			continue
 		}
@@ -1837,10 +1852,12 @@ func (a *API) refreshAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items":    items,
-		"warnings": warnings,
-		"limit":    len(items),
-		"offset":   0,
+		"items":       items,
+		"outcomes":    outcomes,
+		"warnings":    warnings,
+		"verified_at": time.Now().UTC(),
+		"limit":       len(items),
+		"offset":      0,
 	})
 }
 
@@ -1869,8 +1886,20 @@ func (a *API) refreshAccount(w http.ResponseWriter, r *http.Request) {
 	updated, err := a.refreshAccountStatus(r.Context(), item)
 	if err != nil {
 		if errors.Is(err, errAccountValidationDeferred) {
-			writeError(w, http.StatusServiceUnavailable, "account_validation_deferred",
-				"Telegram 暂时不可达或请求受限，账号状态未变更，请稍后重试")
+			writeJSON(w, http.StatusOK, map[string]any{
+				"item": updated,
+				"outcomes": []accountRefreshOutcome{{
+					AccountID: updated.ID,
+					Status:    updated.Status,
+					Reason:    updated.StatusReason,
+					Deferred:  true,
+				}},
+				"warnings": []accountRefreshWarning{{
+					AccountID: updated.ID,
+					Message:   "Telegram 暂时不可达或请求受限，已保留原状态，请稍后重试",
+				}},
+				"verified_at": time.Now().UTC(),
+			})
 			return
 		}
 		a.logger.Error("persist refreshed Telegram account status", "account_id", id, "error", err)
@@ -2115,17 +2144,19 @@ func (a *API) refreshAccountStatus(
 		return updated, nil
 	}
 	if profile.ID != item.ID {
+		reason := "Telegram 授权账号与本地账号不一致，请重新登录"
 		updateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		if _, err := a.accounts.RecordVerification(
+		updated, err := a.accounts.RecordVerification(
 			updateCtx,
 			item.ID,
 			account.StatusError,
-			"Telegram 授权账号与本地账号不一致，请重新登录",
-		); err != nil {
+			reason,
+		)
+		if err != nil {
 			return item, fmt.Errorf("record account %d mismatch: %w", item.ID, err)
 		}
-		return item, nil
+		return updated, nil
 	}
 	updateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
