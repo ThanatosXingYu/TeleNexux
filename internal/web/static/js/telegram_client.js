@@ -260,9 +260,18 @@
   };
 
   const currentAvatarURL = () => (
-    `/api/v1/accounts/${encodeURIComponent(accountID)}/chats/user/` +
-    `${encodeURIComponent(accountID)}/avatar`
+    `/api/v1/accounts/${encodeURIComponent(accountID)}/avatar`
   );
+
+  const unavailableAccountCodes = new Set([
+    "account_not_online",
+    "session_invalid",
+    "session_not_found",
+  ]);
+
+  const isUnavailableAccountError = (error) => unavailableAccountCodes.has(error?.code);
+
+  const accountAvailable = () => state.account?.status === "online";
 
   const avatarLoadConcurrency = 1;
   const avatarLoadTimeout = 12000;
@@ -600,6 +609,11 @@
       renderChats();
       return;
     }
+    if (!accountAvailable()) {
+      showToast("账号已掉线，请重新登录后再搜索");
+      showReloginAction();
+      return;
+    }
     try {
       const params = new URLSearchParams({q: query, limit: "30"});
       const payload = await requestJSON(
@@ -613,6 +627,10 @@
       renderChats();
     } catch (error) {
       if (requestID !== state.searchRequest) {
+        return;
+      }
+      if (isUnavailableAccountError(error)) {
+        markAccountUnavailable(error.message);
         return;
       }
       state.searchResults = state.chats.filter((chat) => chatMatchesQuery(chat));
@@ -739,6 +757,11 @@
     if (!url) {
       return;
     }
+    if (!accountAvailable()) {
+      showToast("账号已掉线，请重新登录后再查看资料");
+      showReloginAction();
+      return;
+    }
     setProfileOpen(true);
     if (elements.profileNote) {
       elements.profileNote.textContent = "正在从 Telegram 读取资料...";
@@ -747,6 +770,10 @@
       const profile = await requestJSON(url);
       renderProfile(profile, target);
     } catch (error) {
+      if (isUnavailableAccountError(error)) {
+        markAccountUnavailable(error.message);
+        return;
+      }
       showToast(error.message);
     }
   };
@@ -772,6 +799,11 @@
   };
 
   const selectChat = (chat) => {
+    if (!accountAvailable()) {
+      showToast("账号已掉线，请重新登录后再查看会话");
+      showReloginAction();
+      return;
+    }
     state.selectedChat = chat;
     state.messages = [];
     state.nextBeforeID = 0;
@@ -1053,6 +1085,11 @@
   };
 
   const openForwardDialog = (messageIDs) => {
+    if (!accountAvailable()) {
+      showToast("账号已掉线，请重新登录后再转发");
+      showReloginAction();
+      return;
+    }
     if (!hasPermission("chat:operate")) {
       showToast("当前账号没有转发消息权限");
       return;
@@ -1133,6 +1170,11 @@
       renderForwardTargets();
       return;
     }
+    if (!accountAvailable()) {
+      showNotice(elements.forwardError, "账号已掉线，请重新登录后再搜索联系人");
+      showReloginAction();
+      return;
+    }
     try {
       const params = new URLSearchParams({q: query, limit: "30"});
       const payload = await requestJSON(
@@ -1152,6 +1194,10 @@
       renderForwardTargets();
     } catch (error) {
       if (requestID === state.forwardSearchRequest) {
+        if (isUnavailableAccountError(error)) {
+          markAccountUnavailable(error.message);
+          return;
+        }
         renderForwardTargets();
         showNotice(elements.forwardError, `联系人搜索失败：${error.message}`);
       }
@@ -1165,6 +1211,11 @@
   });
 
   const openDeleteDialog = (messageIDs) => {
+    if (!accountAvailable()) {
+      showToast("账号已掉线，请重新登录后再删除消息");
+      showReloginAction();
+      return;
+    }
     if (!hasPermission("chat:operate")) {
       showToast("当前账号没有删除消息权限");
       return;
@@ -1235,6 +1286,11 @@
     if (!chat) {
       return;
     }
+    if (!accountAvailable()) {
+      showNotice(elements.messagesError, "账号已掉线，请重新登录后再读取消息");
+      showReloginAction();
+      return;
+    }
     const requestID = ++state.messagesRequest;
     const previousHeight = elements.messageScroll?.scrollHeight || 0;
     const previousTop = elements.messageScroll?.scrollTop || 0;
@@ -1273,6 +1329,10 @@
       scheduleStickyDate();
     } catch (error) {
       if (requestID === state.messagesRequest) {
+        if (isUnavailableAccountError(error)) {
+          markAccountUnavailable(error.message);
+          return;
+        }
         showNotice(elements.messagesError, error.message);
         showToast(error.message);
       }
@@ -1287,6 +1347,12 @@
   }
 
   const loadChats = async (notify = false) => {
+    if (state.account && !accountAvailable()) {
+      markAccountUnavailable(
+        state.account.status_reason || "该账号当前不可用，请重新登录后再查看会话",
+      );
+      return;
+    }
     elements.chatsLoading?.removeAttribute("hidden");
     elements.chatsEmpty?.setAttribute("hidden", "");
     elements.refreshChats?.setAttribute("disabled", "");
@@ -1316,19 +1382,19 @@
       renderChats();
       elements.chatList?.setAttribute("hidden", "");
       elements.chatsEmpty?.setAttribute("hidden", "");
-      if (error.code === "session_invalid" || error.code === "session_not_found") {
-        elements.accountStatusDot?.classList.add("is-offline");
-        if (elements.accountMeta) {
-          elements.accountMeta.textContent = "Telegram 授权已失效";
-        }
-        showReloginAction();
-        loadAccount();
+      if (isUnavailableAccountError(error)) {
+        markAccountUnavailable(error.message);
+        return;
       }
       showNotice(elements.chatsError, error.message);
       showToast(error.message);
     } finally {
       elements.chatsLoading?.setAttribute("hidden", "");
-      elements.refreshChats?.removeAttribute("disabled");
+      if (accountAvailable()) {
+        elements.refreshChats?.removeAttribute("disabled");
+      } else {
+        elements.refreshChats?.setAttribute("disabled", "");
+      }
     }
   };
 
@@ -1397,6 +1463,56 @@
       showNotice(elements.chatsError, error.message);
       return false;
     }
+  };
+
+  const markAccountUnavailable = (reason) => {
+    const message = String(reason || "该账号当前不可用，请重新登录后再查看会话");
+    state.account = {
+      ...(state.account || {id: accountID}),
+      status: "error",
+      status_reason: message,
+    };
+    state.chats = [];
+    state.filteredChats = [];
+    state.messages = [];
+    state.nextBeforeID = 0;
+    state.selectedChat = null;
+    state.searchResults = null;
+    state.messagesRequest += 1;
+    state.searchRequest += 1;
+    state.forwardSearchRequest += 1;
+    window.clearTimeout(state.searchTimer);
+    window.clearTimeout(state.forwardSearchTimer);
+    elements.chatList?.setAttribute("hidden", "");
+    elements.chatsEmpty?.removeAttribute("hidden");
+    elements.chatsLoading?.setAttribute("hidden", "");
+    elements.chatList?.replaceChildren();
+    if (elements.chatsEmptyTitle) {
+      elements.chatsEmptyTitle.textContent = "账号已掉线";
+    }
+    if (elements.chatsEmptyCopy) {
+      elements.chatsEmptyCopy.textContent = "请重新登录该账号后再查看会话。";
+    }
+    elements.refreshChats?.setAttribute("disabled", "");
+    elements.accountStatusDot?.classList.add("is-offline");
+    if (elements.accountMeta) {
+      elements.accountMeta.textContent = "Telegram 授权已失效";
+    }
+    elements.conversation?.setAttribute("hidden", "");
+    elements.threadEmpty?.removeAttribute("hidden");
+    elements.profilePanel?.setAttribute("hidden", "");
+    elements.selectionBar?.setAttribute("hidden", "");
+    elements.messageList?.replaceChildren();
+    elements.messagesLoading?.setAttribute("hidden", "");
+    if (elements.forwardDialog?.open) {
+      elements.forwardDialog.close();
+    }
+    if (elements.deleteDialog?.open) {
+      elements.deleteDialog.close();
+    }
+    root.dataset.mobileView = "list";
+    showReloginAction();
+    showNotice(elements.chatsError, `该账号当前不可用：${message}`);
   };
 
   const setProfileOpen = (open) => {

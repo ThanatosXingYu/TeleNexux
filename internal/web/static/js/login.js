@@ -23,12 +23,12 @@
   const setMode = (setup) => {
     setupRequired = setup;
     if (heading) {
-      heading.textContent = setup ? "初始化管理员" : "登录 TeleNexus";
+      heading.textContent = setup ? "初始化本地账号" : "登录 TeleNexus";
     }
     if (description) {
       description.textContent = setup
-        ? "首次使用仅允许从本机设置管理员账号和密码。"
-        : "使用本机管理员账号进入多账号控制台。";
+        ? "首次使用仅允许从本机创建第一个系统管理员。"
+        : "使用本地账号进入多账号控制台。";
     }
     if (setupHint) {
       setupHint.hidden = !setup;
@@ -38,7 +38,7 @@
       setup ? "new-password" : "current-password",
     );
     if (submit) {
-      submit.textContent = setup ? "创建管理员并登录" : "登录";
+      submit.textContent = setup ? "创建账号并登录" : "登录";
       submit.disabled = false;
     }
   };

@@ -896,9 +896,7 @@
 
   const accountAvatarURL = (account) => (
     accountStatus(account).key === "online"
-      ? `/api/v1/accounts/${encodeURIComponent(account.id)}/chats/user/${
-        encodeURIComponent(account.id)
-      }/avatar`
+      ? `/api/v1/accounts/${encodeURIComponent(account.id)}/avatar`
       : ""
   );
 
@@ -1141,7 +1139,7 @@
     profileForm.elements.namedItem("display_name").value = account.display_name || "";
     const phoneNumber = String(account.phone_number || "");
     profileForm.elements.namedItem("phone_number").value = phoneNumber
-      ? `+${phoneNumber.replace(/\D/g, "")}`
+      ? formatPhone(phoneNumber)
       : "";
     profileForm.elements.namedItem("username").value = account.username ? `@${account.username}` : "";
     profileWebLink?.toggleAttribute("hidden", accountStatus(account).key !== "online");
@@ -1379,7 +1377,7 @@
           method: "PUT",
           body: JSON.stringify({
             display_name: String(data.get("display_name") || "").trim(),
-            phone_number: String(data.get("phone_number") || "").trim(),
+            phone_number: `+${String(data.get("phone_number") || "").replace(/\D/g, "")}`,
             username: String(data.get("username") || "").trim(),
           }),
         },
@@ -2205,13 +2203,19 @@
     button.addEventListener("click", (event) => {
       event.preventDefault();
       const candidates = allAccounts.filter((account) => !isDeletedAccount(account));
+      const unavailable = candidates.filter(
+        (account) => accountStatus(account).key !== "online",
+      );
+      if (unavailable.length === 1) {
+        openLoginDialog(unavailable[0]);
+        return;
+      }
       if (candidates.length === 1) {
         openLoginDialog(candidates[0]);
         return;
       }
       if (candidates.length > 1) {
-        const offline = candidates.filter((account) => accountStatus(account).key !== "online");
-        showNotice(accountsError, offline.length > 0
+        showNotice(accountsError, unavailable.length > 0
           ? "请在账号列表中点击对应账号的“重新登录”；带红色标识的账号需要优先处理。"
           : "请在账号列表中点击需要重新授权的账号的“重新登录”。");
         accountSearch?.focus();

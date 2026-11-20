@@ -282,13 +282,13 @@
       </button>
     </div>
     <p class="account-dialog-copy">
-      输入需要恢复的 Telegram 手机号。系统只在当前登录流程中使用该号码，不会保存到账号列表或浏览器。
+      输入需要恢复的 Telegram 手机号。系统使用完整号码核对已有账号，不会写入浏览器。
     </p>
     <label class="field">
       <span>完整手机号</span>
       <input name="phone_number" type="tel" inputmode="tel" autocomplete="off"
-        placeholder="+8613800000000" pattern="\\+[0-9]{8,15}" required>
-      <small class="field-hint">包含国家区号，例如 +86 13800000000。</small>
+        placeholder="+86 13800000000" pattern="\\+[0-9 ]{9,19}" required>
+      <small class="field-hint">按“国家区号 + 完整号码”填写，例如 +86 13800000000。</small>
     </label>
     <p class="form-notice form-notice-error" data-account-relogin-notice hidden></p>
     <div class="dialog-actions">
