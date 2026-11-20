@@ -39,6 +39,8 @@ func TestScriptUsesOnlyReferencedControls(t *testing.T) {
 		`setAuthMode`,
 		`data-auth-step`,
 		`requestJSON`,
+		`const element = (tag, className = "", text = "") => {`,
+		`node.textContent = text`,
 		`passwordForm?.addEventListener`,
 		`data-login-view-chat`,
 		`loadMessages(items[0])`,

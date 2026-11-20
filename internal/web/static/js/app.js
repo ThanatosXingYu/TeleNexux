@@ -503,6 +503,17 @@
     element.classList.toggle("form-notice-error", isError);
   };
 
+  const element = (tag, className = "", text = "") => {
+    const node = document.createElement(tag);
+    if (className) {
+      node.className = className;
+    }
+    if (text) {
+      node.textContent = text;
+    }
+    return node;
+  };
+
   const requestJSON = async (path, options = {}) => {
     const headers = new Headers(options.headers || {});
     headers.set("Accept", "application/json");
