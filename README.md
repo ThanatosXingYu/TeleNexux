@@ -87,7 +87,9 @@ go run ./cmd/telenexus-backup restore \
 
 恢复命令不会覆盖已有文件。确认恢复库与清单一致后，再将服务切换到该文件；
 回滚时停止服务并切回原数据库及对应备份。授权会话目录不属于 SQLite 快照，
-必须按同等敏感级别单独备份。备份、清单、恢复库和会话均不得提交到 Git。
+必须按同等敏感级别单独备份。账号代理凭据文件及其密钥也不属于 SQLite 快照，
+必须成对单独备份；缺失密钥时加密凭据无法恢复。备份、清单、恢复库、密钥、
+代理凭据和会话均不得提交到 Git。
 
 ## 账号登录
 
@@ -114,6 +116,9 @@ sidecar；后续连接沿用同一资料，不会使用项目名称作为设备�
 在线账号也可主动重新授权；从账号 Web 发现会话失效时会直接打开该账号的
 二维码登录流程。删除操作进入 24 小时待删除状态，账号页可切换“待删除”
 视图并恢复；到期后的清理会遵守活动法律保留，并写入不可修改的销毁记录。
+账号列表的“配置代理”可为单个账号绑定 SOCKS5 代理，保存后只重连该账号，
+不会影响其他账号。代理密码只写入加密存储，不会在页面、API 响应或日志中
+回显；代理连接异常不会自动把 Telegram 账号标记为掉线。
 
 ## 配置
 
@@ -132,6 +137,7 @@ sidecar；后续连接沿用同一资料，不会使用项目名称作为设备�
 | `DATABASE_PATH` | `./data/telenexus.db` | SQLite 数据文件 |
 | `SETTINGS_PATH` | `./data/settings.json` | 系统设置本地文件 |
 | `AUTH_PATH` | `./data/auth.json` | 管理员凭据文件，权限 `0600` |
+| `ACCOUNT_PROXIES_PATH` | `./data/account-proxies.json` | 加密的账号代理凭据文件 |
 | `SHUTDOWN_TIMEOUT` | `10s` | HTTP 启动检查与关闭超时 |
 | `TELEGRAM_API_ID` | 空 | Telegram 应用 ID |
 | `TELEGRAM_API_HASH` | 空 | Telegram 应用 Hash |
@@ -186,6 +192,9 @@ GET    /api/v1/settings
 PUT    /api/v1/settings
 POST   /api/v1/accounts/refresh
 POST   /api/v1/accounts/{id}/refresh
+PUT    /api/v1/accounts/{id}/proxy
+DELETE /api/v1/accounts/{id}/proxy
+POST   /api/v1/accounts/{id}/proxy/check
 POST   /api/v1/accounts/{id}/restore
 GET    /api/v1/accounts/{id}/chats
 GET    /api/v1/accounts/{id}/search?q={username}
