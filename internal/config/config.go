@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ type Config struct {
 	TelegramAPIID      int
 	TelegramAPIHash    string
 	TelegramSessionDir string
+	TrustedProxyCIDRs  []netip.Prefix
 }
 
 func Load() (Config, error) {
@@ -65,6 +67,10 @@ func Load() (Config, error) {
 		ShutdownTimeout:    10 * time.Second,
 		TelegramAPIHash:    strings.TrimSpace(lookup("TELEGRAM_API_HASH")),
 		TelegramSessionDir: valueOrDefault(lookup("TELEGRAM_SESSION_DIR"), "./data/telegram-sessions"),
+	}
+	cfg.TrustedProxyCIDRs, err = parseTrustedProxyCIDRs(lookup("TRUSTED_PROXY_CIDRS"))
+	if err != nil {
+		return Config{}, err
 	}
 
 	if raw := strings.TrimSpace(lookup("TELEGRAM_API_ID")); raw != "" {
@@ -124,4 +130,29 @@ func valueOrDefault(value, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func parseTrustedProxyCIDRs(raw string) ([]netip.Prefix, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	prefixes := make([]netip.Prefix, 0)
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if address, err := netip.ParseAddr(item); err == nil {
+			address = address.Unmap()
+			prefixes = append(prefixes, netip.PrefixFrom(address, address.BitLen()))
+			continue
+		}
+		prefix, err := netip.ParsePrefix(item)
+		if err != nil {
+			return nil, fmt.Errorf("invalid TRUSTED_PROXY_CIDRS entry %q: %w", item, err)
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	return prefixes, nil
 }

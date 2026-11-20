@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -732,6 +734,32 @@ func TestAdministratorLoginCreatesSession(t *testing.T) {
 	cookies := recorder.Result().Cookies()
 	if len(cookies) == 0 {
 		t.Fatal("login did not set a session cookie")
+	}
+}
+
+func TestRequestIsHTTPSRequiresTrustedProxy(t *testing.T) {
+	untrusted := httptest.NewRequest(http.MethodGet, "/", nil)
+	untrusted.RemoteAddr = "192.0.2.10:5000"
+	untrusted.Header.Set("X-Forwarded-Proto", "https")
+	if requestIsHTTPSFrom(untrusted, nil) {
+		t.Fatal("requestIsHTTPSFrom() trusted a client-supplied proxy header")
+	}
+	trusted := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
+	untrustedAddress := httptest.NewRequest(http.MethodGet, "/", nil)
+	untrustedAddress.RemoteAddr = net.JoinHostPort("192.0.2.10", "5000")
+	untrustedAddress.Header.Set("X-Forwarded-Proto", "https")
+	if requestIsHTTPSFrom(untrustedAddress, trusted) {
+		t.Fatal("requestIsHTTPSFrom() trusted a header from an outside proxy")
+	}
+	trustedAddress := httptest.NewRequest(http.MethodGet, "/", nil)
+	trustedAddress.RemoteAddr = net.JoinHostPort("10.1.2.3", "5000")
+	trustedAddress.Header.Set("X-Forwarded-Proto", "https")
+	if !requestIsHTTPSFrom(trustedAddress, trusted) {
+		t.Fatal("requestIsHTTPSFrom() rejected a trusted HTTPS proxy")
+	}
+	trustedAddress.Header.Set("X-Forwarded-Proto", "http")
+	if requestIsHTTPSFrom(trustedAddress, trusted) {
+		t.Fatal("requestIsHTTPSFrom() accepted a non-HTTPS forwarded scheme")
 	}
 }
 

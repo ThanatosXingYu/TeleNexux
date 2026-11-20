@@ -14,6 +14,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -233,23 +234,24 @@ type MonitorRunner interface {
 }
 
 type API struct {
-	accounts   AccountService
-	telegram   TelegramAuthService
-	chats      TelegramChatService
-	proxies    AccountProxyStore
-	proxyCheck ProxyChecker
-	settings   SettingsService
-	auth       *auth.Manager
-	healthSvc  HealthService
-	operations OperationsService
-	monitor    MonitorRunner
-	web        http.Handler
-	logger     *slog.Logger
-	loginMu    sync.Mutex
-	attempts   map[string]loginAttempt
-	authOpsMu  sync.Mutex
-	authOps    map[string]loginAttempt
-	authSlots  chan struct{}
+	accounts       AccountService
+	telegram       TelegramAuthService
+	chats          TelegramChatService
+	proxies        AccountProxyStore
+	proxyCheck     ProxyChecker
+	settings       SettingsService
+	auth           *auth.Manager
+	healthSvc      HealthService
+	operations     OperationsService
+	monitor        MonitorRunner
+	web            http.Handler
+	logger         *slog.Logger
+	loginMu        sync.Mutex
+	attempts       map[string]loginAttempt
+	authOpsMu      sync.Mutex
+	authOps        map[string]loginAttempt
+	authSlots      chan struct{}
+	trustedProxies []netip.Prefix
 }
 
 type Option func(*API)
@@ -265,6 +267,12 @@ func WithProxyChecker(checker ProxyChecker) Option {
 		if checker != nil {
 			api.proxyCheck = checker
 		}
+	}
+}
+
+func WithTrustedProxies(prefixes []netip.Prefix) Option {
+	return func(api *API) {
+		api.trustedProxies = append([]netip.Prefix(nil), prefixes...)
 	}
 }
 
@@ -1615,7 +1623,7 @@ func (a *API) startUserSession(
 	if err != nil {
 		return err
 	}
-	secure := requestIsHTTPS(r)
+	secure := a.requestIsHTTPS(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     auth.CookieName,
 		Value:    token,
@@ -1735,7 +1743,7 @@ func sessionCookie(r *http.Request) (string, bool) {
 }
 
 func (a *API) clearAuthCookies(w http.ResponseWriter, r *http.Request) {
-	secure := requestIsHTTPS(r)
+	secure := a.requestIsHTTPS(r)
 	for _, name := range []string{auth.CookieName, auth.CSRFCookie} {
 		http.SetCookie(w, &http.Cookie{
 			Name:     name,
@@ -1750,7 +1758,31 @@ func (a *API) clearAuthCookies(w http.ResponseWriter, r *http.Request) {
 }
 
 func requestIsHTTPS(r *http.Request) bool {
-	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	return requestIsHTTPSFrom(r, nil)
+}
+
+func (a *API) requestIsHTTPS(r *http.Request) bool {
+	return requestIsHTTPSFrom(r, a.trustedProxies)
+}
+
+func requestIsHTTPSFrom(r *http.Request, trusted []netip.Prefix) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if len(trusted) == 0 ||
+		!strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
+		return false
+	}
+	address, err := netip.ParseAddr(clientAddress(r))
+	if err != nil {
+		return false
+	}
+	for _, prefix := range trusted {
+		if prefix.Contains(address.Unmap()) {
+			return true
+		}
+	}
+	return false
 }
 
 func isUnsafeMethod(method string) bool {

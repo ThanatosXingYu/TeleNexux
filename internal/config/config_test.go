@@ -18,6 +18,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("TELEGRAM_API_ID", "")
 	t.Setenv("TELEGRAM_API_HASH", "")
 	t.Setenv("TELEGRAM_SESSION_DIR", "")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -34,6 +35,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.SettingsPath == "" {
 		t.Error("SettingsPath must not be empty")
+	}
+	if len(cfg.TrustedProxyCIDRs) != 0 {
+		t.Errorf("TrustedProxyCIDRs = %v, want secure empty default", cfg.TrustedProxyCIDRs)
 	}
 }
 
@@ -74,6 +78,30 @@ func TestLoadTelegramConfiguration(t *testing.T) {
 	}
 	if cfg.TelegramAPIID != 12345 || cfg.TelegramAPIHash != "test-hash" {
 		t.Fatalf("Telegram credentials = %d/%q, want configured values", cfg.TelegramAPIID, cfg.TelegramAPIHash)
+	}
+}
+
+func TestLoadTrustedProxyCIDRs(t *testing.T) {
+	t.Setenv("SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
+	t.Setenv("TRUSTED_PROXY_CIDRS", "127.0.0.1, 10.0.0.0/8, 2001:db8::/32")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.TrustedProxyCIDRs) != 3 {
+		t.Fatalf("TrustedProxyCIDRs = %v, want three prefixes", cfg.TrustedProxyCIDRs)
+	}
+	if cfg.TrustedProxyCIDRs[0].String() != "127.0.0.1/32" ||
+		cfg.TrustedProxyCIDRs[1].String() != "10.0.0.0/8" {
+		t.Fatalf("TrustedProxyCIDRs = %v", cfg.TrustedProxyCIDRs)
+	}
+}
+
+func TestLoadRejectsInvalidTrustedProxyCIDR(t *testing.T) {
+	t.Setenv("SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
+	t.Setenv("TRUSTED_PROXY_CIDRS", "not-a-network")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "TRUSTED_PROXY_CIDRS") {
+		t.Fatalf("Load() error = %v, want TRUSTED_PROXY_CIDRS validation", err)
 	}
 }
 

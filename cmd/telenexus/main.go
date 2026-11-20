@@ -203,6 +203,7 @@ func run() error {
 			operationsStore,
 			monitorRunner,
 			httpapi.WithAccountProxyStore(proxyStore),
+			httpapi.WithTrustedProxies(cfg.TrustedProxyCIDRs),
 		).Handler(),
 	)
 	serverErrors := make(chan error, 1)
