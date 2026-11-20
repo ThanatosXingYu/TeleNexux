@@ -93,6 +93,7 @@
     toastTimer: 0,
     messagesRequest: 0,
     dateFrame: 0,
+    searchFallback: false,
   };
 
   const typeLabels = {
@@ -558,7 +559,9 @@
     if (!hasChats && elements.chatsEmptyTitle && elements.chatsEmptyCopy) {
       if (state.query) {
         elements.chatsEmptyTitle.textContent = "没有搜索结果";
-        elements.chatsEmptyCopy.textContent = "尝试其他关键词或清空搜索。";
+        elements.chatsEmptyCopy.textContent = state.searchFallback
+          ? "Telegram 联系人搜索暂时不可用，最近会话中也没有匹配项。"
+          : "已搜索最近会话和 Telegram 联系人，请输入用户名、姓名或会话名称。";
       } else {
         elements.chatsEmptyTitle.textContent = state.activeFolder === "all" ? "暂无会话" : "这个分类暂无会话";
         elements.chatsEmptyCopy.textContent = "Telegram 中没有符合当前筛选条件的聊天。";
@@ -583,14 +586,16 @@
         return;
       }
       state.searchResults = Array.isArray(payload?.items) ? payload.items : [];
+      state.searchFallback = false;
       renderChats();
     } catch (error) {
       if (requestID !== state.searchRequest) {
         return;
       }
-      state.searchResults = null;
+      state.searchResults = state.chats.filter((chat) => chatMatchesQuery(chat));
+      state.searchFallback = true;
       renderChats();
-      showToast(error.message);
+      showToast(`联系人搜索失败，已显示最近会话匹配：${error.message}`);
     }
   };
 
@@ -1222,7 +1227,15 @@
       const account = await requestJSON(`/api/v1/accounts/${encodeURIComponent(accountID)}`);
       state.account = account;
       const name = account.display_name || account.username || "Telegram 账号";
-      const online = account.status === "online";
+      const verifiedAt = account.last_verified_at
+        ? new Date(account.last_verified_at).getTime()
+        : Number.NaN;
+      const stale = account.status === "online" &&
+        (!Number.isFinite(verifiedAt) || Date.now() - verifiedAt > 10 * 60 * 1000);
+      const online = account.status === "online" && !stale;
+      const statusLabel = stale
+        ? "状态待复核"
+        : (statusLabels[account.status] || account.status);
       if (elements.accountName) {
         elements.accountName.textContent = name;
       }
@@ -1230,7 +1243,7 @@
         elements.accountMeta.textContent = [
           account.username ? `@${account.username}` : "",
           formatPhone(account.phone_number),
-          statusLabels[account.status] || account.status,
+          statusLabel,
         ].filter(Boolean).join(" · ");
       }
       applyAvatar(elements.accountAvatar, name, "tg-avatar-small", currentAvatarURL());
@@ -1244,13 +1257,20 @@
         elements.chatList?.setAttribute("hidden", "");
         elements.chatsEmpty?.removeAttribute("hidden");
         if (elements.chatsEmptyTitle) {
-          elements.chatsEmptyTitle.textContent = "账号已掉线";
+          elements.chatsEmptyTitle.textContent = stale ? "账号状态待复核" : "账号已掉线";
         }
         if (elements.chatsEmptyCopy) {
-          elements.chatsEmptyCopy.textContent = "请返回账号列表重新登录后再查看会话。";
+          elements.chatsEmptyCopy.textContent = stale
+            ? "最近一次真实校验已过期。请先在账号列表刷新状态，再打开账号 Web。"
+            : "请返回账号列表重新登录后再查看会话。";
         }
         showReloginAction();
-        showNotice(elements.chatsError, "该账号的 Telegram 授权已失效，未发送任何聊天请求。");
+        showNotice(
+          elements.chatsError,
+          stale
+            ? "在线状态超过校验有效期，未发送任何聊天、头像或资料请求。"
+            : "该账号的 Telegram 授权已失效，未发送任何聊天请求。",
+        );
       } else {
         hideReloginAction();
       }
@@ -1519,6 +1539,7 @@
     state.query = normalizeSearchQuery(elements.search.value);
     elements.clearSearch?.toggleAttribute("hidden", !elements.search.value);
     state.searchResults = null;
+    state.searchFallback = false;
     renderChats();
     window.clearTimeout(state.searchTimer);
     if (state.query) {
@@ -1535,6 +1556,7 @@
     elements.search.value = "";
     state.query = "";
     state.searchResults = null;
+    state.searchFallback = false;
     state.searchRequest += 1;
     window.clearTimeout(state.searchTimer);
     elements.clearSearch.hidden = true;

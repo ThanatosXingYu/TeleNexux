@@ -639,6 +639,7 @@
     error: "已掉线",
   };
   const automaticVerificationInterval = 60 * 1000;
+  const accountVerificationTTL = 10 * 60 * 1000;
   const verificationTimestampKey = "telenexus.account-verification-at";
   const isDeletedAccount = (account) => (
     Boolean(account?.purge_state) && account.purge_state !== "active"
@@ -684,11 +685,22 @@
         reason: "账号数据正在后台销毁",
       };
     }
+    const status = account?.status || "pending";
+    const verifiedAt = account?.last_verified_at
+      ? new Date(account.last_verified_at).getTime()
+      : Number.NaN;
+    const needsVerification = status === "online" &&
+      (!Number.isFinite(verifiedAt) ||
+        Date.now() - verifiedAt > accountVerificationTTL);
     return {
-      key: account?.status || "pending",
-      label: statusLabels[account?.status] || account?.status || "未知",
+      key: needsVerification ? "stale" : status,
+      label: needsVerification
+        ? "状态待复核"
+        : (statusLabels[status] || status || "未知"),
       reason: account?.refresh_deferred
         ? "Telegram 暂时不可达，已保留上次状态"
+        : needsVerification
+          ? "最近一次真实校验已过期，请刷新状态"
         : (account?.status_reason || ""),
     };
   };
@@ -837,15 +849,103 @@
     return cell;
   };
 
+  const accountAvatarURL = (account) => (
+    accountStatus(account).key === "online"
+      ? `/api/v1/accounts/${encodeURIComponent(account.id)}/chats/user/${
+        encodeURIComponent(account.id)
+      }/avatar`
+      : ""
+  );
+
+  const accountAvatarObserver = typeof IntersectionObserver === "function"
+    ? new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) {
+          return;
+        }
+        const image = entry.target;
+        accountAvatarObserver.unobserve(image);
+        if (image.dataset.avatarSrc) {
+          queueAccountAvatarLoad(image, image.dataset.avatarSrc);
+          delete image.dataset.avatarSrc;
+        }
+      });
+    }, {rootMargin: "120px"})
+    : null;
+  const accountAvatarQueue = [];
+  let accountAvatarActive = null;
+  const completeAccountAvatarLoad = (image) => {
+    if (accountAvatarActive !== image) {
+      return;
+    }
+    accountAvatarActive = null;
+    while (accountAvatarQueue.length > 0) {
+      const next = accountAvatarQueue.shift();
+      if (!next.image.isConnected) {
+        continue;
+      }
+      startAccountAvatarLoad(next.image, next.avatarURL);
+      break;
+    }
+  };
+  const startAccountAvatarLoad = (image, avatarURL) => {
+    if (!image.isConnected || accountAvatarActive) {
+      return;
+    }
+    accountAvatarActive = image;
+    image.src = avatarURL;
+  };
+  const queueAccountAvatarLoad = (image, avatarURL) => {
+    if (!accountAvatarActive) {
+      startAccountAvatarLoad(image, avatarURL);
+      return;
+    }
+    accountAvatarQueue.push({image, avatarURL});
+  };
+
+  const applyAccountAvatar = (avatar, account) => {
+    const label = account.display_name || account.username || "Telegram";
+    avatar.replaceChildren();
+    const fallback = document.createElement("span");
+    fallback.className = "account-avatar-fallback";
+    fallback.textContent = [...label][0] || "T";
+    avatar.append(fallback);
+    const avatarURL = accountAvatarURL(account);
+    if (!avatarURL) {
+      return;
+    }
+    const image = document.createElement("img");
+    image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.addEventListener("load", () => {
+      completeAccountAvatarLoad(image);
+      avatar.classList.add("has-image");
+      avatar.dataset.avatarLoaded = "true";
+    }, {once: true});
+    image.addEventListener("error", () => {
+      completeAccountAvatarLoad(image);
+      accountAvatarObserver?.unobserve(image);
+      avatar.classList.remove("has-image");
+      delete avatar.dataset.avatarLoaded;
+      image.remove();
+    }, {once: true});
+    avatar.append(image);
+    if (accountAvatarObserver) {
+      image.dataset.avatarSrc = avatarURL;
+      accountAvatarObserver.observe(image);
+    } else {
+      queueAccountAvatarLoad(image, avatarURL);
+    }
+  };
+
   const createAccountIdentity = (account) => {
     const identity = document.createElement("div");
     identity.className = "account-identity";
-    const monogram = document.createElement("span");
-    monogram.className = "account-monogram";
-    const monogramIcon = document.createElement("span");
-    monogramIcon.className = "icon icon-user-round";
-    monogramIcon.setAttribute("aria-hidden", "true");
-    monogram.append(monogramIcon);
+    const avatar = document.createElement("span");
+    avatar.className = "account-monogram";
+    avatar.setAttribute("aria-hidden", "true");
+    applyAccountAvatar(avatar, account);
     const identityCopy = document.createElement("span");
     identityCopy.className = "account-identity-copy";
     const name = document.createElement("strong");
@@ -853,7 +953,7 @@
     const telegramID = document.createElement("small");
     telegramID.textContent = `Telegram ID ${account.id}`;
     identityCopy.append(name, telegramID);
-    identity.append(monogram, identityCopy);
+    identity.append(avatar, identityCopy);
     return identity;
   };
 
@@ -895,7 +995,7 @@
     refreshAction.addEventListener("click", () => refreshSingleAccount(account, refreshAction));
 
     const relogin = document.createElement("button");
-    relogin.className = status.key === "error"
+    relogin.className = ["error", "stale"].includes(status.key)
       ? "button button-primary button-compact"
       : "button button-secondary button-compact";
     relogin.type = "button";
@@ -917,7 +1017,7 @@
     proxyAction.type = "button";
     proxyAction.textContent = account.proxy?.enabled ? "代理设置" : "配置代理";
     proxyAction.addEventListener("click", () => openProxyDialog(account));
-    if (status.key === "error") {
+    if (["error", "stale"].includes(status.key)) {
       actionGroup.append(relogin, refreshAction, profileAction, proxyAction, deleteAction);
     } else {
       actionGroup.append(refreshAction, relogin, profileAction, proxyAction, deleteAction);
@@ -1284,7 +1384,7 @@
     return accountGroups;
   };
 
-  const loadAccounts = async (verifySessions = false) => {
+  const loadAccounts = async (verifySessions = false, accountIDs = null) => {
     if (!accountBody) {
       return false;
     }
@@ -1297,7 +1397,9 @@
     showNotice(accountsError, "");
     try {
       const payload = verifySessions
-        ? await requestJSON("/api/v1/accounts/refresh", {method: "POST", body: "{}"})
+        ? (Array.isArray(accountIDs) && accountIDs.length > 0
+            ? await refreshSelectedAccounts(accountIDs)
+            : await requestJSON("/api/v1/accounts/refresh", {method: "POST", body: "{}"}))
         : await requestJSON("/api/v1/accounts?limit=100&include_deleted=true");
       if (verifySessions) {
         showDeletedAccounts = false;
@@ -1339,6 +1441,42 @@
     }
   };
 
+  const refreshSelectedAccounts = async (accountIDs) => {
+    const results = await Promise.allSettled(accountIDs.map(async (accountID) => {
+      const response = await requestJSON(
+        `/api/v1/accounts/${encodeURIComponent(accountID)}/refresh`,
+        {method: "POST", body: "{}"},
+      );
+      return response?.item || response;
+    }));
+    const items = [];
+    const outcomes = [];
+    const warnings = [];
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled") {
+        items.push(result.value);
+        outcomes.push({
+          account_id: Number(result.value.id),
+          status: result.value.status,
+          reason: result.value.status_reason || "",
+        });
+        return;
+      }
+      warnings.push({
+        account_id: Number(accountIDs[index]),
+        message: result.reason?.message || "账号状态暂时无法校验",
+      });
+    });
+    const current = new Map(allAccounts.map((account) => [Number(account.id), account]));
+    items.forEach((item) => current.set(Number(item.id), item));
+    return {
+      items: [...current.values()],
+      outcomes,
+      warnings,
+      verified_at: new Date().toISOString(),
+    };
+  };
+
   const setBatchButtonsDisabled = (disabled) => {
     [accountBatchAssign, accountBatchRefresh, accountBatchDelete].forEach((button) => {
       if (button) {
@@ -1376,6 +1514,8 @@
           ? `账号校验未完成：${state.reason}`
           : state.key === "error"
           ? `账号校验完成：${state.label}${state.reason ? ` · ${state.reason}` : ""}`
+          : state.key === "stale"
+          ? "状态校验结果缺少最新校验时间，请重试"
           : "账号状态已重新校验",
       );
     } catch (error) {
@@ -1662,7 +1802,7 @@
           return;
         }
       }
-      if (automaticStatusCheckNeeded() && automaticVerificationDue()) {
+      if (automaticVerificationDue()) {
         verifyAccountStatuses(true);
       }
     });
@@ -1990,11 +2130,22 @@
     button.addEventListener("click", () => openLoginDialog());
   });
   document.querySelectorAll("[data-open-relogin]").forEach((button) => {
-    button.addEventListener("click", () => {
-      reloginForm?.reset();
-      showNotice(reloginNotice, "");
-      reloginDialog?.showModal();
-      reloginForm?.elements.namedItem("phone_number")?.focus();
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      const candidates = allAccounts.filter((account) =>
+        !isDeletedAccount(account) &&
+        accountStatus(account).key !== "online");
+      if (candidates.length === 1) {
+        openLoginDialog(candidates[0]);
+        return;
+      }
+      if (candidates.length > 1) {
+        showNotice(accountsError, "请从账号列表选择需要重新登录的账号。");
+        accountSearch?.focus();
+        return;
+      }
+      showNotice(accountsError, "当前没有需要重新登录的账号。", true);
+      accountSearch?.focus();
     });
   });
   document.querySelectorAll("[data-account-relogin-close]").forEach((button) => {
