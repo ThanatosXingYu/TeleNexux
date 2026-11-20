@@ -16,6 +16,11 @@ func TestTelegramClientScriptBehaviors(t *testing.T) {
 
 	for _, behavior := range []string{
 		`/api/v1/accounts/${encodeURIComponent(accountID)}/chats?limit=100`,
+		`/api/v1/accounts/${encodeURIComponent(accountID)}/refresh`,
+		`const loadAccount = async (verify = false) => {`,
+		`const needsVerification = verify || (`,
+		`.then(() => loadAccount(true))`,
+		`account.refresh_deferred`,
 		`state.messages = [...byID.values()]`,
 		`root.dataset.mobileView = "chat"`,
 		`before_id`,
@@ -113,6 +118,36 @@ func TestTelegramClientAvatarObserverUsesOwnInstance(t *testing.T) {
 	}
 	if appendImage > requestFrame {
 		t.Fatal("avatar image must be mounted before scheduling observation")
+	}
+}
+
+func TestTelegramClientVerifiesAccountBeforeChatRequests(t *testing.T) {
+	content, err := os.ReadFile("telegram_client.js")
+	if err != nil {
+		t.Fatalf("read telegram_client.js: %v", err)
+	}
+	script := string(content)
+
+	start := strings.Index(script, "loadPermissions()")
+	if start < 0 {
+		t.Fatal("client initialization is missing")
+	}
+	initialization := script[start:]
+	verify := strings.Index(initialization, "loadAccount(true)")
+	loadChats := strings.Index(initialization, "loadChats()")
+	if verify < 0 || loadChats < 0 || verify > loadChats {
+		t.Fatal("account must be verified before the initial chat request")
+	}
+
+	bodyStart := strings.Index(script, "const loadAccount = async")
+	if bodyStart < 0 {
+		t.Fatal("loadAccount behavior is missing")
+	}
+	body := script[bodyStart:]
+	refresh := strings.Index(body, "/refresh`")
+	onlineCheck := strings.Index(body, "const online = account.status === \"online\" && fresh")
+	if refresh < 0 || onlineCheck < 0 || refresh > onlineCheck {
+		t.Fatal("loadAccount must persist a Telegram refresh before deciding online status")
 	}
 }
 

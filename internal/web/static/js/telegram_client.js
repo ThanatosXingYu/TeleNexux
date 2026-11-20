@@ -1405,20 +1405,42 @@
     }
   };
 
-  const loadAccount = async () => {
+  const loadAccount = async (verify = false) => {
     try {
-      const account = await requestJSON(`/api/v1/accounts/${encodeURIComponent(accountID)}`);
+      const accountURL = `/api/v1/accounts/${encodeURIComponent(accountID)}`;
+      let account = await requestJSON(accountURL);
       state.account = account;
-      const name = account.display_name || account.username || "Telegram 账号";
       const verifiedAt = account.last_verified_at
         ? new Date(account.last_verified_at).getTime()
         : Number.NaN;
-      const stale = ["online", "error"].includes(account.status) &&
-        (!Number.isFinite(verifiedAt) || Date.now() - verifiedAt > 10 * 60 * 1000);
-      const online = account.status === "online" && !stale;
+      const needsVerification = verify || (
+        ["online", "error"].includes(account.status) &&
+        (!Number.isFinite(verifiedAt) || Date.now() - verifiedAt > 10 * 60 * 1000)
+      );
+      if (needsVerification) {
+        const refreshed = await requestJSON(
+          `/api/v1/accounts/${encodeURIComponent(accountID)}/refresh`,
+          {method: "POST", body: "{}"},
+        );
+        account = refreshed?.item || refreshed || account;
+        const outcome = Array.isArray(refreshed?.outcomes) ? refreshed.outcomes[0] : null;
+        if (outcome?.deferred) {
+          account = {...account, status: "pending", refresh_deferred: true};
+        }
+        state.account = account;
+      }
+      const name = account.display_name || account.username || "Telegram 账号";
+      const checkedAt = account.last_verified_at
+        ? new Date(account.last_verified_at).getTime()
+        : Number.NaN;
+      const fresh = Number.isFinite(checkedAt) && Date.now() - checkedAt <= 10 * 60 * 1000;
+      const online = account.status === "online" && fresh;
+      const stale = !online && ["online", "error"].includes(account.status);
       const statusLabel = stale
         ? "状态待复核"
-        : (statusLabels[account.status] || account.status);
+        : (account.refresh_deferred
+          ? "暂时无法校验"
+          : (statusLabels[account.status] || account.status));
       if (elements.accountName) {
         elements.accountName.textContent = name;
       }
@@ -1440,19 +1462,27 @@
         elements.chatList?.setAttribute("hidden", "");
         elements.chatsEmpty?.removeAttribute("hidden");
         if (elements.chatsEmptyTitle) {
-          elements.chatsEmptyTitle.textContent = stale ? "账号状态待复核" : "账号已掉线";
+          elements.chatsEmptyTitle.textContent = account.refresh_deferred
+            ? "暂时无法校验"
+            : stale
+              ? "账号状态待复核"
+              : "账号已掉线";
         }
         if (elements.chatsEmptyCopy) {
-          elements.chatsEmptyCopy.textContent = stale
-            ? "最近一次真实校验已过期。请先在账号列表刷新状态，再打开账号 Web。"
-            : "请返回账号列表重新登录后再查看会话。";
+          elements.chatsEmptyCopy.textContent = account.refresh_deferred
+            ? "Telegram 暂时不可达，未确认账号在线。请稍后刷新或重新登录。"
+            : stale
+              ? "最近一次真实校验已过期且尚未复核，请先在账号列表刷新状态，再打开账号 Web。"
+              : "请返回账号列表重新登录后再查看会话。";
         }
         showReloginAction();
         showNotice(
           elements.chatsError,
-          stale
-            ? "在线状态超过校验有效期，未发送任何聊天、头像或资料请求。"
-            : "该账号的 Telegram 授权已失效，未发送任何聊天请求。",
+          account.refresh_deferred
+            ? "Telegram 暂时不可达，未发送任何聊天、头像或资料请求。"
+            : stale
+              ? "最新状态尚未确认，未发送任何聊天、头像或资料请求。"
+              : "该账号的 Telegram 授权已失效，未发送任何聊天请求。",
         );
       } else {
         hideReloginAction();
@@ -1861,7 +1891,7 @@
     .catch((error) => {
       showToast(error.message);
     })
-    .then(() => loadAccount())
+    .then(() => loadAccount(true))
     .then((online) => {
       if (online) {
         loadChats();
