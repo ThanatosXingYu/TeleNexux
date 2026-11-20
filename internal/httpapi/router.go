@@ -41,7 +41,10 @@ const (
 	accountValidationTimeout = 35 * time.Second
 )
 
-var errAccountValidationDeferred = errors.New("Telegram account validation deferred")
+var (
+	errAccountValidationDeferred = errors.New("Telegram account validation deferred")
+	errAccountValidationSkipped  = errors.New("Telegram account validation skipped")
+)
 
 type AccountService interface {
 	Create(ctx context.Context, input account.CreateInput) (account.Account, error)
@@ -1374,6 +1377,7 @@ type accountRefreshOutcome struct {
 	Status    string `json:"status"`
 	Reason    string `json:"reason,omitempty"`
 	Deferred  bool   `json:"deferred,omitempty"`
+	Skipped   bool   `json:"skipped,omitempty"`
 }
 
 type accountRefreshWarning struct {
@@ -1869,6 +1873,15 @@ func (a *API) refreshAccounts(w http.ResponseWriter, r *http.Request) {
 			})
 			continue
 		}
+		if errors.Is(result.err, errAccountValidationSkipped) {
+			outcomes = append(outcomes, accountRefreshOutcome{
+				AccountID: items[i].ID,
+				Status:    items[i].Status,
+				Reason:    "该账号当前不是在线或掉线状态，已跳过授权校验",
+				Skipped:   true,
+			})
+			continue
+		}
 		a.logger.Error(
 			"persist refreshed Telegram account status",
 			"account_id",
@@ -1928,6 +1941,19 @@ func (a *API) refreshAccount(w http.ResponseWriter, r *http.Request) {
 					Message:   "Telegram 暂时不可达或请求受限，已保留原状态，请稍后重试",
 				}},
 				"verified_at": time.Now().UTC(),
+			})
+			return
+		}
+		if errors.Is(err, errAccountValidationSkipped) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"item": updated,
+				"outcomes": []accountRefreshOutcome{{
+					AccountID: updated.ID,
+					Status:    updated.Status,
+					Reason:    "该账号当前不是在线或掉线状态，已跳过授权校验",
+					Skipped:   true,
+				}},
+				"warnings": []accountRefreshWarning{},
 			})
 			return
 		}
@@ -2138,7 +2164,7 @@ func (a *API) refreshAccountStatus(
 	item account.Account,
 ) (account.Account, error) {
 	if item.Status != account.StatusOnline && item.Status != account.StatusError {
-		return item, nil
+		return item, errAccountValidationSkipped
 	}
 	validateCtx, validateCancel := context.WithTimeout(
 		context.WithoutCancel(ctx),

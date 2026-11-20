@@ -1410,6 +1410,35 @@ func TestRefreshAccountsKeepsStatusForTransientTelegramFailure(t *testing.T) {
 	}
 }
 
+func TestRefreshAccountsSkipsPausedAccountWithoutTelegramRequest(t *testing.T) {
+	accounts := &fakeAccountService{
+		items:   []account.Account{{ID: 42, Status: account.StatusPaused, StatusReason: "manual pause"}},
+		created: account.Account{ID: 42, Status: account.StatusPaused, StatusReason: "manual pause"},
+	}
+	chats := &fakeTelegramChatService{}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/refresh", strings.NewReader(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithDependencies(
+		accounts,
+		&fakeTelegramAuthService{},
+		chats,
+		nil,
+	).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if chats.inspectCalls != 0 {
+		t.Fatalf("InspectSession() calls = %d, want 0", chats.inspectCalls)
+	}
+	if !strings.Contains(recorder.Body.String(), `"skipped":true`) ||
+		!strings.Contains(recorder.Body.String(), "已跳过授权校验") {
+		t.Fatalf("response = %s, want skipped refresh outcome", recorder.Body.String())
+	}
+}
+
 func TestRefreshAccountDefersTransientTelegramFailure(t *testing.T) {
 	accounts := &fakeAccountService{
 		created: account.Account{ID: 42, Status: account.StatusOnline},

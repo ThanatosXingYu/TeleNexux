@@ -1409,7 +1409,11 @@
         accountRefreshWarnings = [];
       }
       const items = Array.isArray(payload?.items) ? payload.items : [];
+      let verifiedAt = null;
       if (verifySessions) {
+        verifiedAt = payload?.verified_at
+          ? new Date(payload.verified_at).toISOString()
+          : new Date().toISOString();
         const outcomes = new Map(
           (Array.isArray(payload?.outcomes) ? payload.outcomes : [])
             .map((outcome) => [Number(outcome.account_id), outcome]),
@@ -1422,6 +1426,10 @@
           item.status = outcome.status || item.status;
           item.status_reason = outcome.reason || "";
           item.refresh_deferred = Boolean(outcome.deferred);
+          item.refresh_skipped = Boolean(outcome.skipped);
+          if (!outcome.deferred && !outcome.skipped) {
+            item.last_verified_at = verifiedAt;
+          }
         });
       }
       allAccounts = items;
@@ -1503,6 +1511,12 @@
         refreshed.status = outcome.status || refreshed.status;
         refreshed.status_reason = outcome.reason || "";
         refreshed.refresh_deferred = Boolean(outcome.deferred);
+        refreshed.refresh_skipped = Boolean(outcome.skipped);
+        if (!outcome.deferred && !outcome.skipped) {
+          refreshed.last_verified_at = updated.verified_at
+            ? new Date(updated.verified_at).toISOString()
+            : new Date().toISOString();
+        }
       }
       allAccounts = allAccounts.map((item) => (
         Number(item.id) === Number(refreshed.id) ? refreshed : item
@@ -1512,11 +1526,13 @@
       showAccountToast(
         refreshed.refresh_deferred
           ? `账号校验未完成：${state.reason}`
+          : refreshed.refresh_skipped
+            ? `已跳过校验：${state.reason}`
           : state.key === "error"
-          ? `账号校验完成：${state.label}${state.reason ? ` · ${state.reason}` : ""}`
-          : state.key === "stale"
-          ? "状态校验结果缺少最新校验时间，请重试"
-          : "账号状态已重新校验",
+            ? `账号校验完成：${state.label}${state.reason ? ` · ${state.reason}` : ""}`
+            : state.key === "stale"
+              ? "状态校验结果缺少最新校验时间，请重试"
+              : `${formatPhone(refreshed.phone_number)} · 授权有效`,
       );
     } catch (error) {
       showNotice(accountsError, error.message, true);
@@ -1635,19 +1651,22 @@
     try {
       if (await loadAccounts(true)) {
         markAutomaticVerification();
-        const offline = allAccounts.filter(
-          (account) => accountStatus(account).key === "error",
-        ).length;
+        const active = allAccounts.filter((account) => !isDeletedAccount(account));
+        const offline = active.filter((account) => accountStatus(account).key === "error").length;
+        const skipped = active.filter((account) => account.refresh_skipped).length;
+        const checked = active.length - skipped - accountRefreshWarnings.length;
         const deferred = accountRefreshWarnings.length;
         if (deferred > 0) {
           showAccountToast(
-            `状态校验完成，${deferred} 个账号暂时无法连接，原状态已保留`,
+            `状态校验完成：${checked} 个已校验，${deferred} 个暂时不可达，${skipped} 个已跳过`,
           );
         } else {
           showAccountToast(
-            offline > 0
-              ? `状态校验完成，${offline} 个账号需要重新登录`
-              : `状态校验完成，${targets.length} 个账号授权有效`,
+            skipped > 0
+              ? `状态校验完成：${checked} 个已校验，${skipped} 个已跳过${offline > 0 ? `，${offline} 个需要重新登录` : ""}`
+              : offline > 0
+                ? `状态校验完成，${offline} 个账号需要重新登录`
+                : `状态校验完成，${checked} 个账号授权有效`,
           );
         }
       } else {
@@ -1738,19 +1757,22 @@
       }
       if (await loadAccounts(true)) {
         markAutomaticVerification();
-        const offline = allAccounts.filter(
-          (account) => accountStatus(account).key === "error",
-        ).length;
+        const active = allAccounts.filter((account) => !isDeletedAccount(account));
+        const offline = active.filter((account) => accountStatus(account).key === "error").length;
+        const skipped = active.filter((account) => account.refresh_skipped).length;
+        const checked = active.length - skipped - accountRefreshWarnings.length;
         const deferred = accountRefreshWarnings.length;
         if (deferred > 0) {
           showAccountToast(
-            `状态校验完成，${deferred} 个账号暂时无法连接，原状态已保留`,
+            `状态校验完成：${checked} 个已校验，${deferred} 个暂时不可达，${skipped} 个已跳过`,
           );
         } else {
           showAccountToast(
-            offline > 0
-              ? `状态校验完成，${offline} 个账号需要重新登录`
-              : `状态校验完成，${allAccounts.length} 个账号授权有效`,
+            skipped > 0
+              ? `状态校验完成：${checked} 个已校验，${skipped} 个已跳过${offline > 0 ? `，${offline} 个需要重新登录` : ""}`
+              : offline > 0
+                ? `状态校验完成，${offline} 个账号需要重新登录`
+                : `状态校验完成，${checked} 个账号授权有效`,
           );
         }
       }
@@ -2140,7 +2162,7 @@
         return;
       }
       if (candidates.length > 1) {
-        showNotice(accountsError, "请从账号列表选择需要重新登录的账号。");
+        showNotice(accountsError, "请在账号列表中点击对应账号的“重新登录”。");
         accountSearch?.focus();
         return;
       }
