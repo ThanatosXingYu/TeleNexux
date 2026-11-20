@@ -1279,7 +1279,8 @@ func TestRefreshAccountsPersistsExpiredSession(t *testing.T) {
 	if !strings.Contains(recorder.Body.String(), "重新登录") {
 		t.Fatalf("response = %s, want actionable refresh reason", recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), `"outcomes":[{"account_id":42,"status":"error","reason":"Telegram 授权已失效，请重新登录"}]`) {
+	if !strings.Contains(recorder.Body.String(),
+		`"outcomes":[{"account_id":42,"status":"error","reason":"Telegram 授权已失效，请重新登录","verified_at":"1970-01-01T00:00:10Z"}]`) {
 		t.Fatalf("response = %s, want explicit refresh outcome", recorder.Body.String())
 	}
 }
@@ -1565,7 +1566,8 @@ func TestRefreshAccountUsesTelegramInspection(t *testing.T) {
 		t.Fatalf("inspect calls = %d, validate calls = %d, want a real Telegram inspection",
 			chats.inspectCalls, chats.validateCalls)
 	}
-	if !strings.Contains(recorder.Body.String(), `"outcomes":[{"account_id":42,"status":"online"}]`) {
+	if !strings.Contains(recorder.Body.String(),
+		`"outcomes":[{"account_id":42,"status":"online","verified_at":"1970-01-01T00:00:10Z"}]`) {
 		t.Fatalf("response = %s, want a successful refresh outcome", recorder.Body.String())
 	}
 	if !strings.Contains(recorder.Body.String(), `"verified_at":`) {

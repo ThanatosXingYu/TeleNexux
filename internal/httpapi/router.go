@@ -1383,11 +1383,12 @@ type accountRefreshResult struct {
 }
 
 type accountRefreshOutcome struct {
-	AccountID int64  `json:"account_id"`
-	Status    string `json:"status"`
-	Reason    string `json:"reason,omitempty"`
-	Deferred  bool   `json:"deferred,omitempty"`
-	Skipped   bool   `json:"skipped,omitempty"`
+	AccountID  int64  `json:"account_id"`
+	Status     string `json:"status"`
+	Reason     string `json:"reason,omitempty"`
+	Deferred   bool   `json:"deferred,omitempty"`
+	Skipped    bool   `json:"skipped,omitempty"`
+	VerifiedAt string `json:"verified_at,omitempty"`
 }
 
 type accountRefreshWarning struct {
@@ -1868,9 +1869,10 @@ func (a *API) refreshAccounts(w http.ResponseWriter, r *http.Request) {
 		items[i] = result.item
 		if result.err == nil {
 			outcomes = append(outcomes, accountRefreshOutcome{
-				AccountID: items[i].ID,
-				Status:    items[i].Status,
-				Reason:    items[i].StatusReason,
+				AccountID:  items[i].ID,
+				Status:     items[i].Status,
+				Reason:     items[i].StatusReason,
+				VerifiedAt: accountVerifiedAt(items[i]),
 			})
 			continue
 		}
@@ -1979,13 +1981,21 @@ func (a *API) refreshAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"item": updated,
 		"outcomes": []accountRefreshOutcome{{
-			AccountID: updated.ID,
-			Status:    updated.Status,
-			Reason:    updated.StatusReason,
+			AccountID:  updated.ID,
+			Status:     updated.Status,
+			Reason:     updated.StatusReason,
+			VerifiedAt: accountVerifiedAt(updated),
 		}},
 		"warnings":    []accountRefreshWarning{},
 		"verified_at": time.Now().UTC(),
 	})
+}
+
+func accountVerifiedAt(item account.Account) string {
+	if item.LastVerifiedAt == nil {
+		return ""
+	}
+	return item.LastVerifiedAt.UTC().Format(time.RFC3339Nano)
 }
 
 type accountProxyInput struct {

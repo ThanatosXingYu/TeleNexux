@@ -1424,11 +1424,7 @@
         accountRefreshWarnings = [];
       }
       const items = Array.isArray(payload?.items) ? payload.items : [];
-      let verifiedAt = null;
       if (verifySessions) {
-        verifiedAt = payload?.verified_at
-          ? new Date(payload.verified_at).toISOString()
-          : new Date().toISOString();
         const outcomes = new Map(
           (Array.isArray(payload?.outcomes) ? payload.outcomes : [])
             .map((outcome) => [Number(outcome.account_id), outcome]),
@@ -1443,7 +1439,7 @@
           item.refresh_deferred = Boolean(outcome.deferred);
           item.refresh_skipped = Boolean(outcome.skipped);
           if (!outcome.deferred && !outcome.skipped) {
-            item.last_verified_at = verifiedAt;
+            item.last_verified_at = outcome.verified_at || item.last_verified_at;
           }
         });
       }
@@ -1492,7 +1488,7 @@
           reason: outcome?.reason || item.status_reason || "",
           deferred: Boolean(outcome?.deferred),
           skipped: Boolean(outcome?.skipped),
-          verified_at: verifiedAt,
+          verified_at: outcome?.verified_at || verifiedAt || item.last_verified_at || "",
         });
         return;
       }
@@ -1507,7 +1503,7 @@
       items: [...current.values()],
       outcomes,
       warnings,
-      verified_at: new Date().toISOString(),
+      verified_at: outcomes.map((outcome) => outcome.verified_at).filter(Boolean).sort().at(-1) || "",
     };
   };
 
@@ -1539,9 +1535,7 @@
         refreshed.refresh_deferred = Boolean(outcome.deferred);
         refreshed.refresh_skipped = Boolean(outcome.skipped);
         if (!outcome.deferred && !outcome.skipped) {
-          refreshed.last_verified_at = updated.verified_at
-            ? new Date(updated.verified_at).toISOString()
-            : refreshed.last_verified_at;
+          refreshed.last_verified_at = outcome.verified_at || refreshed.last_verified_at;
         }
       }
       allAccounts = allAccounts.map((item) => (
