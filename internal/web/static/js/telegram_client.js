@@ -1033,9 +1033,16 @@
   };
 
   const hideContextMenu = () => {
+    const activeMenu = !elements.contextMenu?.hidden
+      ? elements.contextMenu
+      : (!elements.appContextMenu?.hidden ? elements.appContextMenu : null);
+    const focusedInside = activeMenu?.contains(document.activeElement);
     elements.contextMenu?.setAttribute("hidden", "");
     elements.appContextMenu?.setAttribute("hidden", "");
     state.contextMessage = null;
+    if (focusedInside) {
+      root.focus({preventScroll: true});
+    }
   };
 
   const placeContextMenu = (menu, event) => {
@@ -1614,6 +1621,34 @@
     const message = row ? findMessage(row.dataset.messageId) : null;
     hideContextMenu();
     openContextMenu(event, message);
+  });
+
+  [elements.contextMenu, elements.appContextMenu].forEach((menu) => {
+    menu?.addEventListener("keydown", (event) => {
+      const items = [...menu.querySelectorAll("button:not([disabled])")];
+      if (items.length === 0) {
+        return;
+      }
+      const currentIndex = Math.max(0, items.indexOf(document.activeElement));
+      let nextIndex = currentIndex;
+      if (event.key === "ArrowDown") {
+        nextIndex = (currentIndex + 1) % items.length;
+      } else if (event.key === "ArrowUp") {
+        nextIndex = (currentIndex - 1 + items.length) % items.length;
+      } else if (event.key === "Home") {
+        nextIndex = 0;
+      } else if (event.key === "End") {
+        nextIndex = items.length - 1;
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        items[currentIndex].click();
+        return;
+      } else {
+        return;
+      }
+      event.preventDefault();
+      items[nextIndex].focus({preventScroll: true});
+    });
   });
 
   elements.appContextMenu?.addEventListener("click", (event) => {

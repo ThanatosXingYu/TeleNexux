@@ -917,10 +917,17 @@
     : null;
   const accountAvatarQueue = [];
   let accountAvatarActive = null;
+  let accountAvatarTimer = 0;
+  const accountAvatarTimeout = 12000;
+  const clearAccountAvatarTimer = () => {
+    window.clearTimeout(accountAvatarTimer);
+    accountAvatarTimer = 0;
+  };
   const completeAccountAvatarLoad = (image) => {
     if (accountAvatarActive !== image) {
       return;
     }
+    clearAccountAvatarTimer();
     accountAvatarActive = null;
     while (accountAvatarQueue.length > 0) {
       const next = accountAvatarQueue.shift();
@@ -936,7 +943,18 @@
       return;
     }
     accountAvatarActive = image;
+    accountAvatarTimer = window.setTimeout(() => {
+      if (accountAvatarActive !== image) {
+        return;
+      }
+      image.dispatchEvent(new Event("error"));
+    }, accountAvatarTimeout);
     image.src = avatarURL;
+  };
+  const resetAccountAvatarQueue = () => {
+    clearAccountAvatarTimer();
+    accountAvatarActive = null;
+    accountAvatarQueue.length = 0;
   };
   const queueAccountAvatarLoad = (image, avatarURL) => {
     if (!accountAvatarActive) {
@@ -948,6 +966,9 @@
 
   const applyAccountAvatar = (avatar, account) => {
     const label = account.display_name || account.username || "Telegram";
+    if (!accountAvatarURL(account)) {
+      resetAccountAvatarQueue();
+    }
     avatar.replaceChildren();
     const fallback = document.createElement("span");
     fallback.className = "account-avatar-fallback";

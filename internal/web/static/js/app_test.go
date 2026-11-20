@@ -98,6 +98,8 @@ func TestScriptUsesOnlyReferencedControls(t *testing.T) {
 		`new URLSearchParams(window.location.search).get("relogin")`,
 		`accountVerificationTTL = 10 * 60 * 1000`,
 		`accountAvatarObserver`,
+		`accountAvatarTimeout`,
+		`resetAccountAvatarQueue`,
 		"`/api/v1/accounts/${encodeURIComponent(account.id)}/avatar`",
 		`data-account-offline`,
 		`data-account-search`,

@@ -34,6 +34,8 @@ func TestTelegramClientScriptBehaviors(t *testing.T) {
 		`/search?`,
 		`chatAvatarURL`,
 		`contextmenu`,
+		`event.key === "ArrowDown"`,
+		`items[nextIndex].focus({preventScroll: true})`,
 		`data-app-context-menu`,
 		`placeContextMenu(elements.appContextMenu, event)`,
 		`state.actionMessageIDs = []`,
