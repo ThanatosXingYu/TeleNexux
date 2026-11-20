@@ -70,6 +70,7 @@ type fakeChatReader struct {
 type recordingChatReader struct {
 	mu           sync.Mutex
 	calls        []int64
+	targets      []int64
 	errByAccount map[int64]error
 }
 
@@ -77,13 +78,14 @@ func (r *recordingChatReader) CollectMessages(
 	_ context.Context,
 	accountID int64,
 	_ string,
-	_ int64,
+	peerID int64,
 	_ int,
 	_ int,
 	_ int,
 ) (telegramchat.MessageCollection, error) {
 	r.mu.Lock()
 	r.calls = append(r.calls, accountID)
+	r.targets = append(r.targets, peerID)
 	r.mu.Unlock()
 	if err := r.errByAccount[accountID]; err != nil {
 		return telegramchat.MessageCollection{}, err
@@ -1088,6 +1090,36 @@ func TestSchedulerAppliesPerAccountTargetBudget(t *testing.T) {
 	status := scheduler.Status()
 	if status.QueuedTargets != 2 {
 		t.Fatalf("queued targets = %d, want 2", status.QueuedTargets)
+	}
+}
+
+func TestSchedulerRotatesPerAccountTargetsAcrossRuns(t *testing.T) {
+	ctx := context.Background()
+	service := testOperationsService(t)
+	for _, peerID := range []int64{42, 43, 44, 45} {
+		if _, err := service.CreateRule(
+			ctx,
+			fmt.Sprintf("Target %d", peerID),
+			7,
+			"chat",
+			peerID,
+			"Ops",
+			nil,
+		); err != nil {
+			t.Fatalf("CreateRule() error = %v", err)
+		}
+	}
+	reader := &recordingChatReader{}
+	scheduler := New(service, &fakeAccountLookup{}, reader, time.Minute, testLogger())
+	scheduler.targetBudget = 2
+	for run := 0; run < 2; run++ {
+		if err := scheduler.RunOnce(ctx); err != nil {
+			t.Fatalf("RunOnce(%d) error = %v", run, err)
+		}
+	}
+	want := []int64{42, 43, 44, 45}
+	if fmt.Sprint(reader.targets) != fmt.Sprint(want) {
+		t.Fatalf("collection targets = %v, want %v", reader.targets, want)
 	}
 }
 

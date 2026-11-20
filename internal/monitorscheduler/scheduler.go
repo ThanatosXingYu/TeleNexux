@@ -82,6 +82,7 @@ type Status struct {
 type accountTargetGroup struct {
 	accountID        int64
 	targets          []operations.CollectionTarget
+	offset           int
 	next             int
 	nextCollectionAt time.Time
 	blocked          bool
@@ -105,6 +106,7 @@ type Scheduler struct {
 	mu             sync.Mutex
 	runMu          sync.Mutex
 	status         Status
+	targetCursors  map[int64]int
 }
 
 func New(
@@ -131,6 +133,7 @@ func New(
 			Mode:                "polling",
 			PollIntervalSeconds: int64(interval / time.Second),
 		},
+		targetCursors: make(map[int64]int),
 	}
 }
 
@@ -237,7 +240,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 		s.finish(started, runErr)
 		return runErr
 	}
-	groups := groupTargetsByAccount(targets)
+	groups := s.groupTargetsByAccount(targets)
 	s.resetAccountStatuses(groups)
 	workerCount := s.accountWorkers
 	if workerCount <= 0 {
@@ -308,20 +311,24 @@ func (s *Scheduler) runAccountGroup(
 		budget = 1
 	}
 	var runErr error
-	processed := 0
-	for group.next < len(group.targets) && processed < budget {
+	attempted := 0
+	for group.next < len(group.targets) && attempted < budget {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(runErr, err)
 		}
-		target := group.targets[group.next]
+		index := (group.next + group.offset) % len(group.targets)
+		target := group.targets[index]
 		group.next++
-		processed++
+		attempted++
 		stop, err := s.runAccountTarget(ctx, group, target)
 		runErr = errors.Join(runErr, err)
 		if stop {
 			group.blocked = true
 			return runErr
 		}
+	}
+	if attempted > 0 {
+		s.setTargetCursor(group.accountID, group.offset+attempted)
 	}
 	return runErr
 }
@@ -507,17 +514,24 @@ func (s *Scheduler) clearAccountDeferral(
 	return nil
 }
 
-func groupTargetsByAccount(
+func (s *Scheduler) groupTargetsByAccount(
 	targets []operations.CollectionTarget,
 ) []accountTargetGroup {
 	groups := make([]accountTargetGroup, 0)
 	indexByAccount := make(map[int64]int)
+	countByAccount := make(map[int64]int)
+	for _, target := range targets {
+		countByAccount[target.AccountID]++
+	}
 	for _, target := range targets {
 		index, found := indexByAccount[target.AccountID]
 		if !found {
 			index = len(groups)
 			indexByAccount[target.AccountID] = index
-			groups = append(groups, accountTargetGroup{accountID: target.AccountID})
+			groups = append(groups, accountTargetGroup{
+				accountID: target.AccountID,
+				offset:    s.targetCursor(target.AccountID, countByAccount[target.AccountID]),
+			})
 		}
 		groups[index].targets = append(groups[index].targets, target)
 		groups[index].failures = max(
@@ -534,6 +548,21 @@ func groupTargetsByAccount(
 		}
 	}
 	return groups
+}
+
+func (s *Scheduler) targetCursor(accountID int64, targetCount int) int {
+	if targetCount <= 0 {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.targetCursors[accountID] % targetCount
+}
+
+func (s *Scheduler) setTargetCursor(accountID int64, cursor int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.targetCursors[accountID] = cursor
 }
 
 func (s *Scheduler) ingestCollection(
