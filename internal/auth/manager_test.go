@@ -182,8 +182,32 @@ func TestManagerRejectsWeakSetup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
-	if err := fresh.Setup("x", "short"); err == nil {
-		t.Fatal("Setup() accepted invalid credentials")
+	if err := fresh.Setup("admin", "1234567"); err == nil {
+		t.Fatal("Setup() accepted a password shorter than 8 characters")
+	}
+	if err := fresh.Setup("admin", "12345678"); err != nil {
+		t.Fatalf("Setup() rejected an 8-character password: %v", err)
+	}
+	userManager, err := NewManager(filepath.Join(t.TempDir(), "users.json"))
+	if err != nil {
+		t.Fatalf("NewManager(users) error = %v", err)
+	}
+	if err := userManager.Setup("owner", "owner-pass"); err != nil {
+		t.Fatalf("Setup(owner) error = %v", err)
+	}
+	if _, err := userManager.CreateUser("operator", "1234567", RoleOperator); err == nil {
+		t.Fatal("CreateUser() accepted a password shorter than 8 characters")
+	}
+	if _, err := userManager.CreateUser("operator", "12345678", RoleOperator); err != nil {
+		t.Fatalf("CreateUser() rejected an 8-character password: %v", err)
+	}
+	shortPassword := "1234567"
+	if _, err := userManager.UpdateUser("operator", UserUpdate{Password: &shortPassword}); err == nil {
+		t.Fatal("UpdateUser() accepted a password shorter than 8 characters")
+	}
+	validPassword := "87654321"
+	if _, err := userManager.UpdateUser("operator", UserUpdate{Password: &validPassword}); err != nil {
+		t.Fatalf("UpdateUser() rejected an 8-character password: %v", err)
 	}
 	if !manager.Configured() {
 		t.Fatal("test manager should be configured")

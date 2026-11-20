@@ -145,6 +145,13 @@ func TestLoginRendersWithoutAdminShell(t *testing.T) {
 	if strings.Contains(body, `class="sidebar"`) {
 		t.Error("login page should not include the dashboard sidebar")
 	}
+	if !strings.Contains(body, `minlength="8" maxlength="128"`) ||
+		!strings.Contains(body, "至少 8 位") {
+		t.Error("login page must describe the 8-character password minimum")
+	}
+	if strings.Contains(body, `minlength="12"`) || strings.Contains(body, "至少 12 位") {
+		t.Error("login page still exposes the old 12-character password minimum")
+	}
 }
 
 func TestUnknownPageReturns404(t *testing.T) {

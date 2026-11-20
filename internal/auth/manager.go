@@ -27,6 +27,9 @@ const (
 	CSRFCookie = "telenexus_csrf"
 	CSRFHeader = "X-CSRF-Token"
 
+	minimumPasswordLength = 8
+	maximumPasswordLength = 128
+
 	RoleAdministrator = "administrator"
 	RoleOperator      = "operator"
 	RoleViewer        = "viewer"
@@ -653,8 +656,12 @@ func normalizeUsername(value string) string {
 }
 
 func validatePassword(password string) error {
-	if len(password) < 12 || len(password) > 128 {
-		return errors.New("密码需为 12 到 128 个字符")
+	if len(password) < minimumPasswordLength || len(password) > maximumPasswordLength {
+		return fmt.Errorf(
+			"密码需为 %d 到 %d 个字符",
+			minimumPasswordLength,
+			maximumPasswordLength,
+		)
 	}
 	return nil
 }

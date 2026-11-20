@@ -2916,7 +2916,9 @@
         const password = document.createElement("input");
         password.type = "password";
         password.autocomplete = "new-password";
-        password.placeholder = "12 位以上新密码";
+        password.minLength = 8;
+        password.maxLength = 128;
+        password.placeholder = "8 位以上新密码";
         password.hidden = true;
         password.dataset.authUserPasswordInput = "";
         const passwordSave = document.createElement("button");
@@ -2968,8 +2970,8 @@
           });
           passwordSave.addEventListener("click", async () => {
             const value = password.value;
-            if (value.length < 12 || value.length > 128) {
-              showNotice(authUsersNotice, "密码需为 12 到 128 个字符", true);
+            if (value.length < password.minLength || value.length > password.maxLength) {
+              showNotice(authUsersNotice, "密码需为 8 到 128 个字符", true);
               return;
             }
             passwordSave.disabled = true;
