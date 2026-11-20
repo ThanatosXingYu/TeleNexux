@@ -82,6 +82,8 @@ func TestScriptUsesOnlyReferencedControls(t *testing.T) {
 		`/restore`,
 		`restoreAccount(account, restore)`,
 		`accountStatus(account).key !== "online"`,
+		`const online = activeAccounts.filter(`,
+		`(item) => accountStatus(item).key === "online",`,
 		`.account-row-select input`,
 		`/proxy/check`,
 		`openProxyDialog(account)`,

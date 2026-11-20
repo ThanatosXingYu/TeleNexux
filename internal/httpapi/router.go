@@ -74,7 +74,7 @@ type TelegramAuthService interface {
 }
 
 type TelegramChatService interface {
-	ValidateSession(ctx context.Context, accountID int64) error
+	InspectSession(ctx context.Context, accountID int64) (telegramchat.Profile, error)
 	DeleteSession(accountID int64) error
 	ResetAccount(accountID int64)
 	Chats(ctx context.Context, accountID int64, limit int) (telegramchat.ChatPage, error)
@@ -2086,7 +2086,7 @@ func (a *API) refreshAccountStatus(
 		context.WithoutCancel(ctx),
 		accountValidationTimeout,
 	)
-	err := a.chats.ValidateSession(validateCtx, item.ID)
+	profile, err := a.validateAccountProfile(validateCtx, item.ID)
 	validateCancel()
 	if err != nil {
 		if !errors.Is(err, telegramchat.ErrSessionMissing) &&
@@ -2114,18 +2114,44 @@ func (a *API) refreshAccountStatus(
 		}
 		return updated, nil
 	}
+	if profile.ID != item.ID {
+		updateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if _, err := a.accounts.RecordVerification(
+			updateCtx,
+			item.ID,
+			account.StatusError,
+			"Telegram 授权账号与本地账号不一致，请重新登录",
+		); err != nil {
+			return item, fmt.Errorf("record account %d mismatch: %w", item.ID, err)
+		}
+		return item, nil
+	}
 	updateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	updated, err := a.accounts.RecordVerification(
+	updated, err := a.accounts.UpsertAuthorized(
 		updateCtx,
-		item.ID,
-		account.StatusOnline,
-		"",
+		account.CreateInput{
+			ID:          profile.ID,
+			PhoneNumber: profile.PhoneNumber,
+			Username:    profile.Username,
+			DisplayName: profile.DisplayName,
+		},
 	)
 	if err != nil {
 		return item, fmt.Errorf("record account %d verification: %w", item.ID, err)
 	}
 	return updated, nil
+}
+
+func (a *API) validateAccountProfile(
+	ctx context.Context,
+	accountID int64,
+) (telegramchat.Profile, error) {
+	if a.chats == nil {
+		return telegramchat.Profile{}, telegramchat.ErrNotConfigured
+	}
+	return a.chats.InspectSession(ctx, accountID)
 }
 
 func (a *API) prepareChatService(w http.ResponseWriter) bool {

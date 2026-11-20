@@ -114,15 +114,18 @@ func (s *fakeAccountService) UpsertAuthorized(
 	_ context.Context,
 	input account.CreateInput,
 ) (account.Account, error) {
-	if s.upsertErr != nil {
-		return account.Account{}, s.upsertErr
+	if s.upsertErr != nil || s.updateErr != nil {
+		return account.Account{}, errors.Join(s.upsertErr, s.updateErr)
 	}
+	now := time.Unix(10, 0).UTC()
 	s.created = account.Account{
-		ID:          input.ID,
-		PhoneNumber: input.PhoneNumber,
-		Username:    input.Username,
-		DisplayName: input.DisplayName,
-		Status:      account.StatusOnline,
+		ID:             input.ID,
+		PhoneNumber:    input.PhoneNumber,
+		Username:       input.Username,
+		DisplayName:    input.DisplayName,
+		Status:         account.StatusOnline,
+		StatusReason:   "",
+		LastVerifiedAt: &now,
 	}
 	return s.created, nil
 }
@@ -328,16 +331,49 @@ type fakeTelegramChatService struct {
 	chatsErr      error
 	messagesErr   error
 	validateErr   error
+	inspectErr    error
+	profile       telegramchat.Profile
 	deleteErr     error
 	sessionID     int64
 	deleteScope   bool
 	validateCalls int
+	inspectCalls  int
 	resetID       int64
 }
 
-func (s *fakeTelegramChatService) ValidateSession(_ context.Context, _ int64) error {
+func (s *fakeTelegramChatService) ValidateSession(
+	_ context.Context,
+	_ int64,
+) error {
 	s.validateCalls++
 	return s.validateErr
+}
+
+func (s *fakeTelegramChatService) InspectSession(
+	_ context.Context,
+	accountID int64,
+) (telegramchat.Profile, error) {
+	s.inspectCalls++
+	if s.inspectErr != nil {
+		return telegramchat.Profile{}, s.inspectErr
+	}
+	if s.profile.ID == 0 {
+		s.profile.ID = accountID
+	}
+	return s.profile, nil
+}
+
+func (s *fakeTelegramChatService) CurrentProfile(
+	_ context.Context,
+	accountID int64,
+) (telegramchat.Profile, error) {
+	if s.validateErr != nil {
+		return telegramchat.Profile{}, s.validateErr
+	}
+	if s.profile.ID == 0 {
+		s.profile.ID = accountID
+	}
+	return s.profile, nil
 }
 
 func (s *fakeTelegramChatService) DeleteSession(accountID int64) error {
@@ -408,13 +444,6 @@ func (s *fakeTelegramChatService) SearchChats(
 	_ int,
 ) (telegramchat.ChatPage, error) {
 	return s.chats, s.chatsErr
-}
-
-func (s *fakeTelegramChatService) CurrentProfile(
-	_ context.Context,
-	_ int64,
-) (telegramchat.Profile, error) {
-	return telegramchat.Profile{}, s.messagesErr
 }
 
 func (s *fakeTelegramChatService) UpdateCurrentProfile(
@@ -1196,7 +1225,7 @@ func TestRefreshAccountsPersistsExpiredSession(t *testing.T) {
 		items:   []account.Account{{ID: 42, Status: account.StatusOnline}},
 		created: account.Account{ID: 42, Status: account.StatusOnline},
 	}
-	chats := &fakeTelegramChatService{validateErr: telegramchat.ErrSessionInvalid}
+	chats := &fakeTelegramChatService{inspectErr: telegramchat.ErrSessionInvalid}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/refresh", strings.NewReader(`{}`))
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
@@ -1303,12 +1332,17 @@ func TestCheckAccountProxyDoesNotMarkAccountOffline(t *testing.T) {
 }
 
 func TestRefreshAccountsPersistsValidSession(t *testing.T) {
+	now := time.Unix(10, 0).UTC()
 	accounts := &fakeAccountService{
 		items: []account.Account{{
 			ID:     42,
 			Status: account.StatusError,
 		}},
-		created: account.Account{ID: 42, Status: account.StatusError},
+		created: account.Account{
+			ID:             42,
+			Status:         account.StatusError,
+			LastVerifiedAt: &now,
+		},
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/refresh", strings.NewReader(`{}`))
 	request.Header.Set("Content-Type", "application/json")
@@ -1324,8 +1358,9 @@ func TestRefreshAccountsPersistsValidSession(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
 	}
-	if accounts.verifyCalls != 1 {
-		t.Fatalf("RecordVerification() calls = %d, want 1", accounts.verifyCalls)
+	if accounts.verifyCalls != 0 {
+		t.Fatalf("RecordVerification() calls = %d, want 0; successful refresh uses UpsertAuthorized",
+			accounts.verifyCalls)
 	}
 	if accounts.created.Status != account.StatusOnline || accounts.created.LastVerifiedAt == nil {
 		t.Fatalf("account verification = %+v, want persisted online status", accounts.created)
@@ -1344,7 +1379,7 @@ func TestRefreshAccountsKeepsStatusForTransientTelegramFailure(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	chats := &fakeTelegramChatService{
-		validateErr: fmt.Errorf("%w: connection reset", telegramchat.ErrTelegram),
+		inspectErr: fmt.Errorf("%w: connection reset", telegramchat.ErrTelegram),
 	}
 
 	newTestHandlerWithDependencies(
@@ -1377,7 +1412,7 @@ func TestRefreshAccountDefersTransientTelegramFailure(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	chats := &fakeTelegramChatService{
-		validateErr: fmt.Errorf("%w: timeout", telegramchat.ErrTimeout),
+		inspectErr: fmt.Errorf("%w: timeout", telegramchat.ErrTimeout),
 	}
 
 	newTestHandlerWithDependencies(
@@ -1395,6 +1430,70 @@ func TestRefreshAccountDefersTransientTelegramFailure(t *testing.T) {
 	}
 	if accounts.verifyCalls != 0 {
 		t.Fatalf("RecordVerification() calls = %d, want 0", accounts.verifyCalls)
+	}
+	if chats.inspectCalls != 1 || chats.validateCalls != 0 {
+		t.Fatalf("inspect calls = %d, validate calls = %d, want one real session check",
+			chats.inspectCalls, chats.validateCalls)
+	}
+}
+
+func TestRefreshAccountSynchronizesTelegramProfile(t *testing.T) {
+	accounts := &fakeAccountService{
+		created: account.Account{
+			ID:          42,
+			PhoneNumber: "10000",
+			Username:    "stale",
+			DisplayName: "Old Name",
+			Status:      account.StatusOnline,
+		},
+	}
+	chats := &fakeTelegramChatService{profile: telegramchat.Profile{
+		ID:          42,
+		PhoneNumber: "15550001005",
+		Username:    "fresh_user",
+		DisplayName: "Fresh Name",
+	}}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/42/refresh", strings.NewReader(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithDependencies(accounts, &fakeTelegramAuthService{}, chats, nil).
+		ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if chats.inspectCalls != 1 || chats.validateCalls != 0 {
+		t.Fatalf("inspect calls = %d, validate calls = %d, want one real session check",
+			chats.inspectCalls, chats.validateCalls)
+	}
+	if accounts.created.PhoneNumber != "15550001005" ||
+		accounts.created.Username != "fresh_user" ||
+		accounts.created.DisplayName != "Fresh Name" {
+		t.Fatalf("account profile = %+v, want synchronized Telegram metadata", accounts.created)
+	}
+}
+
+func TestRefreshAccountUsesTelegramInspection(t *testing.T) {
+	accounts := &fakeAccountService{
+		created: account.Account{ID: 42, Status: account.StatusOnline},
+	}
+	chats := &fakeTelegramChatService{
+		profile: telegramchat.Profile{ID: 42, Username: "verified_user"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/42/refresh", strings.NewReader(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithDependencies(accounts, &fakeTelegramAuthService{}, chats, nil).
+		ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if chats.inspectCalls != 1 || chats.validateCalls != 0 {
+		t.Fatalf("inspect calls = %d, validate calls = %d, want a real Telegram inspection",
+			chats.inspectCalls, chats.validateCalls)
 	}
 }
 
@@ -1427,7 +1526,7 @@ func TestChatAccessRevalidatesStaleOnlineAccount(t *testing.T) {
 	accounts := &fakeAccountService{
 		created: account.Account{ID: 42, Status: account.StatusOnline},
 	}
-	chats := &fakeTelegramChatService{validateErr: telegramchat.ErrSessionInvalid}
+	chats := &fakeTelegramChatService{inspectErr: telegramchat.ErrSessionInvalid}
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/42/chats", nil)
 	recorder := httptest.NewRecorder()
 
@@ -1437,8 +1536,9 @@ func TestChatAccessRevalidatesStaleOnlineAccount(t *testing.T) {
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409; body: %s", recorder.Code, recorder.Body.String())
 	}
-	if chats.validateCalls != 1 {
-		t.Fatalf("ValidateSession() calls = %d, want 1", chats.validateCalls)
+	if chats.inspectCalls != 1 || chats.validateCalls != 0 {
+		t.Fatalf("InspectSession() calls = %d, ValidateSession() calls = %d, want one validation",
+			chats.inspectCalls, chats.validateCalls)
 	}
 	if accounts.created.Status != account.StatusError {
 		t.Fatalf("account status = %q, want %q", accounts.created.Status, account.StatusError)
@@ -1457,7 +1557,9 @@ func TestChatAccessSkipsValidationForFreshAccount(t *testing.T) {
 			LastVerifiedAt: &verifiedAt,
 		},
 	}
-	chats := &fakeTelegramChatService{}
+	chats := &fakeTelegramChatService{
+		profile: telegramchat.Profile{ID: 42, PhoneNumber: "15550001005", Username: "alice"},
+	}
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/42/chats", nil)
 	recorder := httptest.NewRecorder()
 
@@ -1467,8 +1569,9 @@ func TestChatAccessSkipsValidationForFreshAccount(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
 	}
-	if chats.validateCalls != 0 {
-		t.Fatalf("ValidateSession() calls = %d, want 0", chats.validateCalls)
+	if chats.inspectCalls != 0 || chats.validateCalls != 0 {
+		t.Fatalf("session checks = %d inspect, %d validate, want 0",
+			chats.inspectCalls, chats.validateCalls)
 	}
 }
 

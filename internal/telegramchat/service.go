@@ -127,11 +127,15 @@ func (s *Service) ValidateSession(ctx context.Context, accountID int64) error {
 		return ErrNotConfigured
 	}
 	return s.withClient(ctx, accountID, func(ctx context.Context, client *telegram.Client) error {
-		if _, err := client.Self(ctx); err != nil {
-			return err
-		}
-		return nil
+		_, err := client.Self(ctx)
+		return err
 	})
+}
+
+// InspectSession verifies the Telegram authorization and returns fresh profile
+// metadata so account refreshes can update the local projection atomically.
+func (s *Service) InspectSession(ctx context.Context, accountID int64) (Profile, error) {
+	return s.CurrentProfile(ctx, accountID)
 }
 
 // DeleteSession removes the local authorization files for an account without

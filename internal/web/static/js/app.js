@@ -1086,7 +1086,9 @@
     accountsMobile.replaceChildren();
     const activeAccounts = allAccounts.filter((item) => !isDeletedAccount(item));
     const deletedAccounts = allAccounts.filter(isDeletedAccount);
-    const online = activeAccounts.filter((item) => accountStatus(item).key === "online").length;
+    const online = activeAccounts.filter(
+      (item) => accountStatus(item).key === "online",
+    ).length;
     accountCounts.forEach((element) => {
       element.textContent = String(activeAccounts.length);
     });
