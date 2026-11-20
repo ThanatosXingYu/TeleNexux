@@ -105,8 +105,7 @@ func TestLoadPrefersLocalSettingsAndProcessEnvironment(t *testing.T) {
 	if err := os.WriteFile(settingsPath, []byte(`{
 		"http_addr": "127.0.0.1:9500",
 		"telegram_api_id": 456,
-		"telegram_api_hash": "settings-hash",
-		"telegram_code_dns_server": "9.9.9.9:53"
+		"telegram_api_hash": "settings-hash"
 	}`), 0o600); err != nil {
 		t.Fatalf("write settings: %v", err)
 	}

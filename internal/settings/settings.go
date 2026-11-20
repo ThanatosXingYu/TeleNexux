@@ -24,12 +24,6 @@ type Values struct {
 	TelegramAPIHash string `json:"telegram_api_hash,omitempty"`
 }
 
-type persistedValues struct {
-	Values
-	TelegramCodeHosts     json.RawMessage `json:"telegram_code_fetch_hosts,omitempty"`
-	TelegramCodeDNSServer json.RawMessage `json:"telegram_code_dns_server,omitempty"`
-}
-
 type Store struct {
 	path            string
 	mu              sync.RWMutex
@@ -51,14 +45,14 @@ func Load(path string) (Values, error) {
 
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	var persisted persistedValues
+	var persisted Values
 	if err := decoder.Decode(&persisted); err != nil {
 		return Values{}, fmt.Errorf("decode settings file %q: %w", path, err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return Values{}, fmt.Errorf("settings file %q must contain one JSON object", path)
 	}
-	values, err := Normalize(persisted.Values)
+	values, err := Normalize(persisted)
 	if err != nil {
 		return Values{}, fmt.Errorf("validate settings file %q: %w", path, err)
 	}

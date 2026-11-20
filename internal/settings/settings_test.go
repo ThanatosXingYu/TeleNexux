@@ -35,7 +35,7 @@ func TestStoreSavesPrivateSettings(t *testing.T) {
 	}
 }
 
-func TestLoadIgnoresRemovedCodeFetchSettings(t *testing.T) {
+func TestLoadRejectsRemovedCodeFetchSettings(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	if err := os.WriteFile(path, []byte(`{
 		"telegram_api_id": 12345,
@@ -45,12 +45,8 @@ func TestLoadIgnoresRemovedCodeFetchSettings(t *testing.T) {
 	}`), 0o600); err != nil {
 		t.Fatalf("write settings: %v", err)
 	}
-	values, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if values.TelegramAPIID != 12345 || values.TelegramAPIHash != "test-hash" {
-		t.Fatalf("Load() = %+v, want retained Telegram credentials", values)
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() accepted removed code-fetch settings")
 	}
 }
 
