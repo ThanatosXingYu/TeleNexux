@@ -3,10 +3,13 @@ package operations
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -617,7 +620,12 @@ CREATE TABLE IF NOT EXISTS account_destructions (
 	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
 	account_id INTEGER NOT NULL UNIQUE,
 	destroyed_at TEXT NOT NULL,
-	reason TEXT NOT NULL
+	reason TEXT NOT NULL,
+	evidence_event_count INTEGER NOT NULL DEFAULT 0,
+	ingestion_batch_count INTEGER NOT NULL DEFAULT 0,
+	content_digest TEXT NOT NULL DEFAULT '',
+	batch_digest TEXT NOT NULL DEFAULT '',
+	schema_version INTEGER NOT NULL DEFAULT 1
 );
 CREATE TRIGGER IF NOT EXISTS account_destructions_no_update
 BEFORE UPDATE ON account_destructions
@@ -780,6 +788,40 @@ UPDATE monitor_alerts SET updated_at = created_at WHERE updated_at = ''`); err !
 		"payload_sha256 TEXT NOT NULL DEFAULT ''",
 	); err != nil {
 		return err
+	}
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{
+			name:       "evidence_event_count",
+			definition: "evidence_event_count INTEGER NOT NULL DEFAULT 0",
+		},
+		{
+			name:       "ingestion_batch_count",
+			definition: "ingestion_batch_count INTEGER NOT NULL DEFAULT 0",
+		},
+		{
+			name:       "content_digest",
+			definition: "content_digest TEXT NOT NULL DEFAULT ''",
+		},
+		{
+			name:       "batch_digest",
+			definition: "batch_digest TEXT NOT NULL DEFAULT ''",
+		},
+		{
+			name:       "schema_version",
+			definition: "schema_version INTEGER NOT NULL DEFAULT 1",
+		},
+	} {
+		if err := s.ensureColumn(
+			ctx,
+			"account_destructions",
+			column.name,
+			column.definition,
+		); err != nil {
+			return err
+		}
 	}
 	if _, err := s.db.ExecContext(ctx, `
 INSERT INTO monitor_checkpoints (
@@ -2279,6 +2321,10 @@ LIMIT 1`, accountID).Scan(&heldAccountID); err == nil {
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("check account legal holds: %w", err)
 	}
+	summary, err := summarizeAccountDestructionTx(ctx, tx, accountID)
+	if err != nil {
+		return err
+	}
 	for _, query := range []string{
 		`DELETE FROM account_group_members WHERE account_id = ?`,
 		`DELETE FROM monitor_alert_events
@@ -2298,10 +2344,16 @@ LIMIT 1`, accountID).Scan(&heldAccountID); err == nil {
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT OR IGNORE INTO account_destructions (account_id, destroyed_at, reason)
-VALUES (?, ?, 'account_purge')`,
+INSERT OR IGNORE INTO account_destructions (
+	account_id, destroyed_at, reason, evidence_event_count,
+	ingestion_batch_count, content_digest, batch_digest, schema_version
+) VALUES (?, ?, 'account_purge', ?, ?, ?, ?, 1)`,
 		accountID,
 		s.now().UTC().Format(time.RFC3339Nano),
+		summary.EvidenceEventCount,
+		summary.IngestionBatchCount,
+		summary.ContentDigest,
+		summary.BatchDigest,
 	); err != nil {
 		return fmt.Errorf("record account destruction: %w", err)
 	}
@@ -2309,6 +2361,160 @@ VALUES (?, ?, 'account_purge')`,
 		return fmt.Errorf("commit purge account operations: %w", err)
 	}
 	return nil
+}
+
+type accountDestructionSummary struct {
+	EvidenceEventCount  int
+	IngestionBatchCount int
+	ContentDigest       string
+	BatchDigest         string
+}
+
+func summarizeAccountDestructionTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	accountID int64,
+) (accountDestructionSummary, error) {
+	var summary accountDestructionSummary
+	contentDigest := sha256.New()
+	_, _ = io.WriteString(contentDigest, "telenexus-account-destruction-events-v1\n")
+	rows, err := tx.QueryContext(ctx, `
+SELECT sequence, event_id, batch_id, peer_type, peer_id, message_id, event_type,
+	version, observed_at, content_sha256, schema_version
+FROM evidence_events
+WHERE account_id = ?
+ORDER BY sequence`, accountID)
+	if err != nil {
+		return summary, fmt.Errorf("read account destruction events: %w", err)
+	}
+	for rows.Next() {
+		var (
+			sequence, peerID, messageID int64
+			eventID, batchID, peerType  string
+			eventType, observedAt       string
+			contentSHA256               string
+			version, schemaVersion      int
+		)
+		if err := rows.Scan(
+			&sequence,
+			&eventID,
+			&batchID,
+			&peerType,
+			&peerID,
+			&messageID,
+			&eventType,
+			&version,
+			&observedAt,
+			&contentSHA256,
+			&schemaVersion,
+		); err != nil {
+			_ = rows.Close()
+			return summary, fmt.Errorf("scan account destruction event: %w", err)
+		}
+		if _, err := fmt.Fprintf(
+			contentDigest,
+			"%d\x00%s\x00%s\x00%s\x00%d\x00%d\x00%s\x00%d\x00%s\x00%s\x00%d\n",
+			sequence,
+			eventID,
+			batchID,
+			peerType,
+			peerID,
+			messageID,
+			eventType,
+			version,
+			observedAt,
+			contentSHA256,
+			schemaVersion,
+		); err != nil {
+			_ = rows.Close()
+			return summary, fmt.Errorf("hash account destruction event: %w", err)
+		}
+		summary.EvidenceEventCount++
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return summary, fmt.Errorf("iterate account destruction events: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return summary, fmt.Errorf("close account destruction events: %w", err)
+	}
+	summary.ContentDigest = hex.EncodeToString(contentDigest.Sum(nil))
+
+	batchDigest := sha256.New()
+	_, _ = io.WriteString(batchDigest, "telenexus-account-destruction-batches-v1\n")
+	rows, err = tx.QueryContext(ctx, `
+SELECT batch_id, source, peer_type, peer_id, status, started_at, finished_at,
+	fetched_count, event_count, inserted_count, checkpoint_before,
+	checkpoint_after, backlog_detected, payload_sha256, error_text
+FROM ingestion_batches
+WHERE account_id = ?
+ORDER BY started_at, batch_id`, accountID)
+	if err != nil {
+		return summary, fmt.Errorf("read account destruction batches: %w", err)
+	}
+	for rows.Next() {
+		var (
+			batchID, source, peerType, status string
+			startedAt, finishedAt             string
+			payloadSHA256, errorText          string
+			peerID                            int64
+			fetchedCount, eventCount          int
+			insertedCount, checkpointBefore   int
+			checkpointAfter, backlogDetected  int
+		)
+		if err := rows.Scan(
+			&batchID,
+			&source,
+			&peerType,
+			&peerID,
+			&status,
+			&startedAt,
+			&finishedAt,
+			&fetchedCount,
+			&eventCount,
+			&insertedCount,
+			&checkpointBefore,
+			&checkpointAfter,
+			&backlogDetected,
+			&payloadSHA256,
+			&errorText,
+		); err != nil {
+			_ = rows.Close()
+			return summary, fmt.Errorf("scan account destruction batch: %w", err)
+		}
+		if _, err := fmt.Fprintf(
+			batchDigest,
+			"%s\x00%s\x00%s\x00%d\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%s\x00%s\n",
+			batchID,
+			source,
+			peerType,
+			peerID,
+			status,
+			startedAt,
+			finishedAt,
+			fetchedCount,
+			eventCount,
+			insertedCount,
+			checkpointBefore,
+			checkpointAfter,
+			backlogDetected,
+			payloadSHA256,
+			errorText,
+		); err != nil {
+			_ = rows.Close()
+			return summary, fmt.Errorf("hash account destruction batch: %w", err)
+		}
+		summary.IngestionBatchCount++
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return summary, fmt.Errorf("iterate account destruction batches: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return summary, fmt.Errorf("close account destruction batches: %w", err)
+	}
+	summary.BatchDigest = hex.EncodeToString(batchDigest.Sum(nil))
+	return summary, nil
 }
 
 func (s *Service) CheckAccountPurge(ctx context.Context, accountID int64) error {

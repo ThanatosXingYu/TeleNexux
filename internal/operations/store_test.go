@@ -773,16 +773,164 @@ func TestPurgeAccountHonorsLegalHoldAndRetainsDestructionRecord(t *testing.T) {
 			t.Fatalf("%s kept %d account rows", table, count)
 		}
 	}
-	var destructionCount int
+	var destructionCount, evidenceEventCount, batchCount int
+	var contentDigest, batchDigest string
 	if err := service.db.QueryRowContext(ctx, `
-SELECT COUNT(1) FROM account_destructions WHERE account_id = 7`).Scan(
+SELECT COUNT(1), MAX(evidence_event_count), MAX(ingestion_batch_count),
+	MAX(content_digest), MAX(batch_digest)
+FROM account_destructions WHERE account_id = 7`).Scan(
 		&destructionCount,
-	); err != nil || destructionCount != 1 {
-		t.Fatalf("account destruction count = %d, %v", destructionCount, err)
+		&evidenceEventCount,
+		&batchCount,
+		&contentDigest,
+		&batchDigest,
+	); err != nil {
+		t.Fatalf("read account destruction summary: %v", err)
+	}
+	if destructionCount != 1 || evidenceEventCount != 1 || batchCount != 1 {
+		t.Fatalf(
+			"account destruction summary = %d/%d/%d",
+			destructionCount,
+			evidenceEventCount,
+			batchCount,
+		)
+	}
+	if len(contentDigest) != 64 || len(batchDigest) != 64 {
+		t.Fatalf(
+			"account destruction digests = %q/%q",
+			contentDigest,
+			batchDigest,
+		)
 	}
 	if _, err := service.db.ExecContext(ctx, `
 DELETE FROM account_destructions WHERE account_id = 7`); err == nil {
 		t.Fatal("account destruction record must be append-only")
+	}
+}
+
+func TestOpenMigratesAccountDestructionEvidenceSummary(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-account-destruction.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE account_destructions (
+	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+	account_id INTEGER NOT NULL UNIQUE,
+	destroyed_at TEXT NOT NULL,
+	reason TEXT NOT NULL
+)`); err != nil {
+		t.Fatalf("create legacy account destruction table: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+	service, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open() migrated database error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	rows, err := service.db.QueryContext(ctx, `
+SELECT name FROM pragma_table_info('account_destructions')
+WHERE name IN (
+	'evidence_event_count', 'ingestion_batch_count',
+	'content_digest', 'batch_digest', 'schema_version'
+)`)
+	if err != nil {
+		t.Fatalf("inspect migrated account destruction table: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan migrated account destruction column: %v", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate migrated account destruction columns: %v", err)
+	}
+	if len(columns) != 5 {
+		t.Fatalf("migrated account destruction columns = %+v", columns)
+	}
+}
+
+func TestAccountDestructionDigestChangesWithEvidence(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+
+	seed := func(accountID int64, eventID, contentHash string) {
+		t.Helper()
+		if _, err := service.db.ExecContext(ctx, `
+INSERT INTO ingestion_batches (
+	batch_id, source, account_id, peer_type, peer_id, status, started_at, finished_at
+) VALUES (?, 'test', ?, 'chat', 42, 'completed', ?, ?)`,
+			"batch-"+eventID,
+			accountID,
+			now.Format(time.RFC3339Nano),
+			now.Format(time.RFC3339Nano),
+		); err != nil {
+			t.Fatalf("seed destruction batch: %v", err)
+		}
+		if _, err := service.db.ExecContext(ctx, `
+INSERT INTO evidence_events (
+	event_id, batch_id, account_id, peer_type, peer_id, message_id, event_type,
+	version, observed_at, content_sha256, schema_version
+) VALUES (?, ?, ?, 'chat', 42, 101, 'message', 1, ?, ?, 1)`,
+			eventID,
+			"batch-"+eventID,
+			accountID,
+			now.Format(time.RFC3339Nano),
+			contentHash,
+		); err != nil {
+			t.Fatalf("seed destruction event: %v", err)
+		}
+	}
+	seed(7, "event-a", strings.Repeat("a", 64))
+	seed(8, "event-b", strings.Repeat("b", 64))
+	if err := service.PurgeAccount(ctx, 7); err != nil {
+		t.Fatalf("PurgeAccount(7) error = %v", err)
+	}
+	if err := service.PurgeAccount(ctx, 8); err != nil {
+		t.Fatalf("PurgeAccount(8) error = %v", err)
+	}
+	rows, err := service.db.QueryContext(ctx, `
+SELECT account_id, content_digest, batch_digest
+FROM account_destructions
+ORDER BY account_id`)
+	if err != nil {
+		t.Fatalf("read destruction digests: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	content := make(map[int64]string)
+	batches := make(map[int64]string)
+	for rows.Next() {
+		var accountID int64
+		var contentDigest, batchDigest string
+		if err := rows.Scan(&accountID, &contentDigest, &batchDigest); err != nil {
+			t.Fatalf("scan destruction digest: %v", err)
+		}
+		content[accountID] = contentDigest
+		batches[accountID] = batchDigest
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate destruction digests: %v", err)
+	}
+	if content[7] == content[8] || batches[7] == batches[8] {
+		t.Fatalf(
+			"destruction digests do not distinguish evidence: %+v/%+v",
+			content,
+			batches,
+		)
 	}
 }
 
