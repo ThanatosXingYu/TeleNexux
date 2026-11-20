@@ -50,6 +50,7 @@
     profileBio: root.querySelector("[data-profile-bio]"),
     profileHeading: root.querySelector("[data-profile-heading]"),
     profileEdit: root.querySelector("[data-profile-edit]"),
+    accountProfile: root.querySelector("[data-account-profile]"),
     profileForm: root.querySelector("[data-profile-form]"),
     profileCancel: root.querySelector("[data-profile-cancel]"),
     profileError: root.querySelector("[data-profile-error]"),
@@ -313,7 +314,7 @@
   };
 
   const applyAvatar = (element, title, extraClass = "", avatarURL = "") => {
-    if (!element) {
+    if (!element || (state.account && state.account.status !== "online")) {
       return;
     }
     element.className = `tg-avatar ${extraClass} tg-avatar-color-${stableColorIndex(title)}`.replace(/\s+/g, " ").trim();
@@ -1303,6 +1304,9 @@
     });
   });
   root.querySelector("[data-account-menu]")?.addEventListener("click", () => {
+    loadProfile({kind: "current"});
+  });
+  elements.accountProfile?.addEventListener("click", () => {
     loadProfile({kind: "current"});
   });
   root.querySelector("[data-close-profile]")?.addEventListener("click", () => setProfileOpen(false));

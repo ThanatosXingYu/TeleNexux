@@ -35,6 +35,8 @@ func TestTelegramClientScriptBehaviors(t *testing.T) {
 		`/messages/forward`,
 		`/messages/delete`,
 		`openProfileEditor`,
+		`data-account-profile`,
+		`elements.accountProfile?.addEventListener`,
 		`/profile`,
 		`formatPhone`,
 		`avatarObserver`,
