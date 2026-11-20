@@ -123,6 +123,72 @@ func TestSQLiteRepositoryUpsertsAuthorizedAccount(t *testing.T) {
 	}
 }
 
+func TestSQLiteRepositoryRecordsAuthorizedProfile(t *testing.T) {
+	ctx := context.Background()
+	repository, err := NewSQLiteRepository(ctx, filepath.Join(t.TempDir(), "accounts.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteRepository() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	now := time.Date(2026, time.November, 20, 8, 0, 0, 0, time.UTC)
+	service := NewService(repository)
+	service.clock = func() time.Time { return now }
+	item, err := service.Create(ctx, CreateInput{
+		ID:          8005,
+		PhoneNumber: "+15550001005",
+		DisplayName: "Before verification",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	now = now.Add(time.Minute)
+	updated, err := service.RecordAuthorized(ctx, VerificationInput{
+		ID:          item.ID,
+		PhoneNumber: "+15550001006",
+		Username:    " verified_user ",
+		DisplayName: "Verified account",
+	})
+	if err != nil {
+		t.Fatalf("RecordAuthorized() error = %v", err)
+	}
+	if updated.Status != StatusOnline ||
+		updated.PhoneNumber != "+15550001006" ||
+		updated.Username != "verified_user" ||
+		updated.DisplayName != "Verified account" {
+		t.Fatalf("RecordAuthorized() = %+v, want fresh online profile", updated)
+	}
+	if updated.LastVerifiedAt == nil || !updated.LastVerifiedAt.Equal(now) {
+		t.Fatalf("LastVerifiedAt = %v, want %v", updated.LastVerifiedAt, now)
+	}
+}
+
+func TestSQLiteRepositoryRecordAuthorizedRequiresExistingAccount(t *testing.T) {
+	ctx := context.Background()
+	repository, err := NewSQLiteRepository(ctx, filepath.Join(t.TempDir(), "accounts.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteRepository() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	_, err = NewService(repository).RecordAuthorized(ctx, VerificationInput{
+		ID:          9999,
+		PhoneNumber: "+15550009999",
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("RecordAuthorized() error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestSQLiteRepositoryUpdatesAccountStatus(t *testing.T) {
 	ctx := context.Background()
 	repository, err := NewSQLiteRepository(ctx, filepath.Join(t.TempDir(), "accounts.db"))
@@ -150,6 +216,46 @@ func TestSQLiteRepositoryUpdatesAccountStatus(t *testing.T) {
 	}
 	if updated.Status != StatusError || !updated.UpdatedAt.After(item.UpdatedAt) {
 		t.Fatalf("UpdateStatus() = %+v, want error status and newer timestamp", updated)
+	}
+}
+
+func TestSQLiteRepositoryRecordVerificationRefreshesTimestamp(t *testing.T) {
+	ctx := context.Background()
+	repository, err := NewSQLiteRepository(ctx, filepath.Join(t.TempDir(), "accounts.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteRepository() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	now := time.Date(2026, time.November, 20, 8, 0, 0, 0, time.UTC)
+	service := NewService(repository)
+	service.clock = func() time.Time { return now }
+	item, err := service.UpsertAuthorized(ctx, CreateInput{
+		ID:          8006,
+		PhoneNumber: "+15550001006",
+	})
+	if err != nil {
+		t.Fatalf("UpsertAuthorized() error = %v", err)
+	}
+
+	now = now.Add(2 * time.Minute)
+	updated, err := service.RecordVerification(
+		ctx,
+		item.ID,
+		StatusError,
+		"Telegram 授权已失效，请重新登录",
+	)
+	if err != nil {
+		t.Fatalf("RecordVerification() error = %v", err)
+	}
+	if updated.Status != StatusError ||
+		updated.LastVerifiedAt == nil ||
+		!updated.LastVerifiedAt.Equal(now) {
+		t.Fatalf("RecordVerification() = %+v, want current offline verification", updated)
 	}
 }
 

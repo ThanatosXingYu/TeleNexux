@@ -59,6 +59,10 @@ type AccountService interface {
 		status string,
 		reason string,
 	) (account.Account, error)
+	RecordAuthorized(
+		ctx context.Context,
+		input account.VerificationInput,
+	) (account.Account, error)
 	Update(ctx context.Context, id int64, input account.UpdateInput) (account.Account, error)
 	SetProxy(ctx context.Context, id int64, proxy account.Proxy) (account.Account, error)
 	ClearProxy(ctx context.Context, id int64) (account.Account, error)
@@ -2370,9 +2374,9 @@ func (a *API) refreshAccountStatus(
 	}
 	updateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	updated, err := a.accounts.UpsertAuthorized(
+	updated, err := a.accounts.RecordAuthorized(
 		updateCtx,
-		account.CreateInput{
+		account.VerificationInput{
 			ID:          profile.ID,
 			PhoneNumber: profile.PhoneNumber,
 			Username:    profile.Username,

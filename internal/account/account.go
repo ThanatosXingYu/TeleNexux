@@ -73,6 +73,13 @@ type UpdateInput struct {
 	DisplayName string `json:"display_name"`
 }
 
+type VerificationInput struct {
+	ID          int64  `json:"id"`
+	PhoneNumber string `json:"phone_number"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+}
+
 type Filter struct {
 	Status         string
 	Limit          int
@@ -92,6 +99,11 @@ type Repository interface {
 		id int64,
 		status string,
 		reason string,
+		now time.Time,
+	) (Account, error)
+	RecordAuthorized(
+		ctx context.Context,
+		input VerificationInput,
 		now time.Time,
 	) (Account, error)
 	Update(ctx context.Context, id int64, input UpdateInput, now time.Time) (Account, error)
@@ -197,6 +209,28 @@ func (s *Service) RecordVerification(
 		return Account{}, errors.New("status reason must be at most 160 characters")
 	}
 	return s.repository.RecordVerification(ctx, id, status, reason, s.clock().UTC())
+}
+
+func (s *Service) RecordAuthorized(
+	ctx context.Context,
+	input VerificationInput,
+) (Account, error) {
+	input.PhoneNumber = strings.TrimSpace(input.PhoneNumber)
+	input.Username = strings.TrimPrefix(strings.TrimSpace(input.Username), "@")
+	input.DisplayName = strings.TrimSpace(input.DisplayName)
+	if input.ID <= 0 {
+		return Account{}, errors.New("id must be a positive Telegram user ID")
+	}
+	if err := validatePhoneNumber(input.PhoneNumber); err != nil {
+		return Account{}, err
+	}
+	if err := validateUsername(input.Username); err != nil {
+		return Account{}, err
+	}
+	if utf8.RuneCountInString(input.DisplayName) > MaxDisplayName {
+		return Account{}, fmt.Errorf("display_name must be at most %d characters", MaxDisplayName)
+	}
+	return s.repository.RecordAuthorized(ctx, input, s.clock().UTC())
 }
 
 func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Account, error) {

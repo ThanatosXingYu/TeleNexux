@@ -25,10 +25,14 @@ type AccountStore interface {
 		status string,
 		reason string,
 	) (account.Account, error)
+	RecordAuthorized(
+		ctx context.Context,
+		input account.VerificationInput,
+	) (account.Account, error)
 }
 
 type SessionValidator interface {
-	ValidateSession(ctx context.Context, accountID int64) error
+	InspectSession(ctx context.Context, accountID int64) (telegramchat.Profile, error)
 }
 
 type Summary struct {
@@ -122,10 +126,22 @@ func (c *Checker) validate(ctx context.Context, item account.Account) accountRes
 		return accountResult{kind: resultFailed, err: err}
 	}
 	validateCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	err := c.sessions.ValidateSession(validateCtx, item.ID)
+	profile, err := c.sessions.InspectSession(validateCtx, item.ID)
 	cancel()
 	if err == nil {
-		if err := c.record(ctx, item.ID, account.StatusOnline, ""); err != nil {
+		if profile.ID != item.ID {
+			reason := "Telegram 授权账号与本地账号不一致，请重新登录"
+			if recordErr := c.recordVerification(
+				ctx,
+				item.ID,
+				account.StatusError,
+				reason,
+			); recordErr != nil {
+				return accountResult{kind: resultFailed, err: recordErr}
+			}
+			return accountResult{kind: resultOffline}
+		}
+		if err := c.recordAuthorized(ctx, item.ID, profile); err != nil {
 			return accountResult{kind: resultFailed, err: err}
 		}
 		return accountResult{kind: resultOnline}
@@ -138,13 +154,31 @@ func (c *Checker) validate(ctx context.Context, item account.Account) accountRes
 	if errors.Is(err, telegramchat.ErrSessionInvalid) {
 		reason = "Telegram 授权已失效，请重新登录"
 	}
-	if err := c.record(ctx, item.ID, account.StatusError, reason); err != nil {
+	if err := c.recordVerification(ctx, item.ID, account.StatusError, reason); err != nil {
 		return accountResult{kind: resultFailed, err: err}
 	}
 	return accountResult{kind: resultOffline}
 }
 
-func (c *Checker) record(
+func (c *Checker) recordAuthorized(
+	ctx context.Context,
+	accountID int64,
+	profile telegramchat.Profile,
+) error {
+	updateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if _, err := c.accounts.RecordAuthorized(updateCtx, account.VerificationInput{
+		ID:          accountID,
+		PhoneNumber: profile.PhoneNumber,
+		Username:    profile.Username,
+		DisplayName: profile.DisplayName,
+	}); err != nil {
+		return fmt.Errorf("persist account %d status: %w", accountID, err)
+	}
+	return nil
+}
+
+func (c *Checker) recordVerification(
 	ctx context.Context,
 	accountID int64,
 	status string,

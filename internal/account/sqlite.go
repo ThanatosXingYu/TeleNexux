@@ -442,6 +442,42 @@ WHERE id = ? AND purge_state = 'active'`
 	return item, nil
 }
 
+func (r *SQLiteRepository) RecordAuthorized(
+	ctx context.Context,
+	input VerificationInput,
+	now time.Time,
+) (Account, error) {
+	timestamp := now.Format(time.RFC3339Nano)
+	result, err := r.db.ExecContext(ctx, `
+UPDATE accounts
+SET phone_number = ?, username = ?, display_name = ?, status = ?,
+	status_reason = '', last_verified_at = ?, updated_at = ?
+WHERE id = ? AND purge_state = 'active'`,
+		input.PhoneNumber,
+		input.Username,
+		input.DisplayName,
+		StatusOnline,
+		timestamp,
+		timestamp,
+		input.ID,
+	)
+	if err != nil {
+		return Account{}, fmt.Errorf("record authorized account %d: %w", input.ID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Account{}, fmt.Errorf("check authorized account %d: %w", input.ID, err)
+	}
+	if affected == 0 {
+		return Account{}, ErrNotFound
+	}
+	item, err := r.Get(ctx, input.ID)
+	if err != nil {
+		return Account{}, fmt.Errorf("read authorized account %d: %w", input.ID, err)
+	}
+	return item, nil
+}
+
 func (r *SQLiteRepository) Update(
 	ctx context.Context,
 	id int64,

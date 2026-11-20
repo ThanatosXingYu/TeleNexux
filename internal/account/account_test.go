@@ -123,6 +123,26 @@ func (r *memoryRepository) RecordVerification(
 	return item, nil
 }
 
+func (r *memoryRepository) RecordAuthorized(
+	_ context.Context,
+	input VerificationInput,
+	now time.Time,
+) (Account, error) {
+	item, exists := r.accounts[input.ID]
+	if !exists || item.PurgeState != PurgeStateActive {
+		return Account{}, ErrNotFound
+	}
+	item.PhoneNumber = input.PhoneNumber
+	item.Username = input.Username
+	item.DisplayName = input.DisplayName
+	item.Status = StatusOnline
+	item.StatusReason = ""
+	item.LastVerifiedAt = &now
+	item.UpdatedAt = now
+	r.accounts[input.ID] = item
+	return item, nil
+}
+
 func (r *memoryRepository) Update(
 	_ context.Context,
 	id int64,

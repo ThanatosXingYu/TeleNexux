@@ -135,6 +135,26 @@ func (s *fakeAccountService) UpsertAuthorized(
 	return s.created, nil
 }
 
+func (s *fakeAccountService) RecordAuthorized(
+	_ context.Context,
+	input account.VerificationInput,
+) (account.Account, error) {
+	if s.upsertErr != nil || s.updateErr != nil {
+		return account.Account{}, errors.Join(s.upsertErr, s.updateErr)
+	}
+	now := time.Unix(10, 0).UTC()
+	s.created = account.Account{
+		ID:             input.ID,
+		PhoneNumber:    input.PhoneNumber,
+		Username:       input.Username,
+		DisplayName:    input.DisplayName,
+		Status:         account.StatusOnline,
+		StatusReason:   "",
+		LastVerifiedAt: &now,
+	}
+	return s.created, nil
+}
+
 func (s *fakeAccountService) List(
 	_ context.Context,
 	filter account.Filter,
@@ -160,6 +180,24 @@ func (s *fakeOrderedAccountService) List(
 func (s *fakeOrderedAccountService) UpsertAuthorized(
 	_ context.Context,
 	input account.CreateInput,
+) (account.Account, error) {
+	now := time.Unix(10, 0).UTC()
+	item := account.Account{
+		ID:             input.ID,
+		PhoneNumber:    input.PhoneNumber,
+		Username:       input.Username,
+		DisplayName:    input.DisplayName,
+		Status:         account.StatusOnline,
+		LastVerifiedAt: &now,
+	}
+	s.verify = append(s.verify, item)
+	s.created = item
+	return item, nil
+}
+
+func (s *fakeOrderedAccountService) RecordAuthorized(
+	_ context.Context,
+	input account.VerificationInput,
 ) (account.Account, error) {
 	now := time.Unix(10, 0).UTC()
 	item := account.Account{
@@ -1547,7 +1585,7 @@ func TestRefreshAccountsPersistsValidSession(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
 	}
 	if accounts.verifyCalls != 0 {
-		t.Fatalf("RecordVerification() calls = %d, want 0; successful refresh uses UpsertAuthorized",
+		t.Fatalf("RecordVerification() calls = %d, want 0; successful refresh uses RecordAuthorized",
 			accounts.verifyCalls)
 	}
 	if accounts.created.Status != account.StatusOnline || accounts.created.LastVerifiedAt == nil {
