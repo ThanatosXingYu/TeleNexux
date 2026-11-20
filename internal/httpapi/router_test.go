@@ -1687,6 +1687,46 @@ func TestChatAccessRevalidatesStaleOnlineAccount(t *testing.T) {
 	}
 }
 
+func TestOfflineAccountDoesNotReachTelegramChatAPIs(t *testing.T) {
+	accounts := &fakeAccountService{
+		created: account.Account{
+			ID:           42,
+			Status:       account.StatusError,
+			StatusReason: "Telegram 授权已失效，请重新登录",
+		},
+	}
+	chats := &fakeTelegramChatService{}
+	handler := newTestHandlerWithDependencies(
+		accounts,
+		&fakeTelegramAuthService{},
+		chats,
+		nil,
+	)
+	paths := []string{
+		"/api/v1/accounts/42/chats",
+		"/api/v1/accounts/42/profile",
+		"/api/v1/accounts/42/chats/user/99/avatar",
+	}
+	for _, path := range paths {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusConflict {
+			t.Fatalf("%s status = %d, want 409; body: %s",
+				path, recorder.Code, recorder.Body.String())
+		}
+		if !strings.Contains(recorder.Body.String(), `"code":"account_not_online"`) {
+			t.Fatalf("%s body = %s, want account_not_online", path, recorder.Body.String())
+		}
+	}
+	if chats.inspectCalls != 0 || chats.validateCalls != 0 {
+		t.Fatalf("offline account reached Telegram: %d inspect, %d validate",
+			chats.inspectCalls, chats.validateCalls)
+	}
+	if accounts.verifyCalls != 0 {
+		t.Fatalf("offline account verification calls = %d, want 0", accounts.verifyCalls)
+	}
+}
+
 func TestChatAccessSkipsValidationForFreshAccount(t *testing.T) {
 	verifiedAt := time.Now().UTC()
 	accounts := &fakeAccountService{
