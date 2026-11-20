@@ -1659,6 +1659,9 @@ LIMIT 500`,
 }
 
 func (s *Service) DeleteRule(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return errors.New("rule ID must be positive")
+	}
 	result, err := s.db.ExecContext(ctx, `DELETE FROM monitor_rules WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete monitor rule: %w", err)
@@ -1880,7 +1883,13 @@ INSERT INTO monitor_alert_events (
 }
 
 const selectAlertQuery = `
-SELECT a.id, a.rule_id, COALESCE(r.name, ''), a.account_id, a.peer_type, a.peer_id,
+SELECT a.id, a.rule_id,
+	COALESCE(
+		(SELECT rv.name FROM monitor_rule_versions rv
+		 WHERE rv.rule_id = a.rule_id AND rv.version = a.rule_version),
+		COALESCE(r.name, '')
+	),
+	a.account_id, a.peer_type, a.peer_id,
 	a.rule_version, a.peer_title, a.message_id, a.matched_keyword, a.message_preview, a.state,
 	COALESCE(r.notification_channel_id, 0), COALESCE(nc.name, ''), a.created_at,
 	COALESCE(d.id, 0), COALESCE(d.state, ''), COALESCE(d.attempt_count, 0),

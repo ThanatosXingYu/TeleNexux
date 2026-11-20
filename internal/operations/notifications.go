@@ -168,7 +168,12 @@ func (s *Service) ClaimNotificationDelivery(
 	)
 	err = tx.QueryRowContext(ctx, `
 SELECT d.id, d.alert_id, d.channel_id, d.channel_kind, nc.name, nc.config_json,
-	d.attempt_count, d.next_attempt_at, a.rule_id, COALESCE(r.name, ''),
+	d.attempt_count, d.next_attempt_at, a.rule_id,
+	COALESCE(
+		(SELECT rv.name FROM monitor_rule_versions rv
+		 WHERE rv.rule_id = a.rule_id AND rv.version = a.rule_version),
+		COALESCE(r.name, '')
+	),
 	a.account_id, a.peer_type, a.peer_id, a.peer_title, a.message_id,
 	a.matched_keyword, a.message_preview, a.severity, a.created_at
 FROM notification_deliveries d
