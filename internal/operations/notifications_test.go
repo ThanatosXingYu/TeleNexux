@@ -138,6 +138,13 @@ func TestWebhookNotificationRetriesWithBackoffAndStops(t *testing.T) {
 		!nextAttempt.Equal(now.Add(30*time.Second)) {
 		t.Fatalf("RetryNotificationDelivery() = %q, %v", state, nextAttempt)
 	}
+	if _, err := service.UpdateAlert(ctx, delivery.AlertID, AlertUpdateInput{
+		Action: "acknowledge",
+		Actor:  "operator",
+		Note:   "reviewing delivery failure",
+	}); err != nil {
+		t.Fatalf("UpdateAlert(acknowledge) error = %v", err)
+	}
 	if _, err := service.db.ExecContext(
 		ctx,
 		`UPDATE notification_deliveries SET attempt_count = ? WHERE id = ?`,
@@ -158,25 +165,43 @@ func TestWebhookNotificationRetriesWithBackoffAndStops(t *testing.T) {
 	if state != "failed" || nextAttempt != nil {
 		t.Fatalf("RetryNotificationDelivery(final) = %q, %v", state, nextAttempt)
 	}
-	var severity, failureAlertedAt string
+	var severity, failureAlertedAt, alertState string
 	if err := service.db.QueryRowContext(ctx, `
-SELECT a.severity, d.failure_alerted_at
+SELECT a.severity, a.state, d.failure_alerted_at
 FROM monitor_alerts a
 JOIN notification_deliveries d ON d.alert_id = a.id
 WHERE d.id = ?`, delivery.ID,
-	).Scan(&severity, &failureAlertedAt); err != nil {
+	).Scan(&severity, &alertState, &failureAlertedAt); err != nil {
 		t.Fatalf("read failed delivery escalation: %v", err)
 	}
-	if severity != "critical" || failureAlertedAt == "" {
-		t.Fatalf("failed delivery escalation = %q/%q", severity, failureAlertedAt)
+	if severity != "critical" || alertState != "acknowledged" || failureAlertedAt == "" {
+		t.Fatalf(
+			"failed delivery escalation = %q/%q/%q",
+			severity,
+			alertState,
+			failureAlertedAt,
+		)
 	}
 	var escalationEvents int
+	var previousState, nextState string
 	if err := service.db.QueryRowContext(ctx, `
-SELECT COUNT(1) FROM monitor_alert_events
+SELECT COUNT(1), MAX(previous_state), MAX(next_state) FROM monitor_alert_events
 WHERE alert_id = ? AND action = 'severity_changed' AND actor = 'system'`,
 		delivery.AlertID,
-	).Scan(&escalationEvents); err != nil || escalationEvents != 1 {
+	).Scan(
+		&escalationEvents,
+		&previousState,
+		&nextState,
+	); err != nil || escalationEvents != 1 {
 		t.Fatalf("failed delivery escalation events = %d, %v", escalationEvents, err)
+	}
+	if previousState != alertState || nextState != alertState {
+		t.Fatalf(
+			"failed delivery escalation state = %q -> %q, want %q",
+			previousState,
+			nextState,
+			alertState,
+		)
 	}
 	state, nextAttempt, err = service.RetryNotificationDelivery(
 		ctx,

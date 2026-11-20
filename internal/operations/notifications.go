@@ -347,7 +347,7 @@ WHERE id = ? AND state = 'queued' AND attempt_count = ?`,
 		id,
 		attemptCount,
 	).Scan(&alertID); errors.Is(err, sql.ErrNoRows) {
-		return "", nil, s.notificationClaimLost(ctx, id)
+		return "", nil, ErrNotificationClaimLost
 	} else if err != nil {
 		return "", nil, fmt.Errorf("read notification retry claim: %w", err)
 	}
@@ -435,12 +435,24 @@ WHERE id = ? AND failure_alerted_at = ''`,
 	if affected == 0 {
 		return nil
 	}
+	var alertState string
+	if err := tx.QueryRowContext(ctx, `
+SELECT state FROM monitor_alerts WHERE id = ?`, alertID,
+	).Scan(&alertState); errors.Is(err, sql.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("read failed notification alert state: %w", err)
+	}
+	if alertState != "pending" && alertState != "acknowledged" {
+		return nil
+	}
 	result, err = tx.ExecContext(ctx, `
 UPDATE monitor_alerts
 SET severity = 'critical', updated_at = ?
-WHERE id = ? AND state IN ('pending', 'acknowledged')`,
+WHERE id = ? AND state = ?`,
 		timestamp,
 		alertID,
+		alertState,
 	)
 	if err != nil {
 		return fmt.Errorf("escalate failed notification alert: %w", err)
@@ -456,9 +468,11 @@ WHERE id = ? AND state IN ('pending', 'acknowledged')`,
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO monitor_alert_events (
 	alert_id, action, actor, note, previous_state, next_state, created_at
-) VALUES (?, 'severity_changed', 'system', ?, 'pending', 'pending', ?)`,
+) VALUES (?, 'severity_changed', 'system', ?, ?, ?, ?)`,
 		alertID,
 		note,
+		alertState,
+		alertState,
 		timestamp,
 	); err != nil {
 		return fmt.Errorf("record failed notification alert event: %w", err)
