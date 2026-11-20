@@ -1,21 +1,21 @@
 {{define "system.html"}}
 <section class="account-toolbar settings-toolbar" aria-label="系统配置操作">
   <div class="settings-tabs" role="tablist" aria-label="系统配置分类">
-    <button class="{{if eq .SettingsTab "basic"}}active{{end}}" type="button" role="tab" aria-selected="{{if eq .SettingsTab "basic"}}true{{else}}false{{end}}" data-settings-tab="basic">基础配置</button>
-    <button class="{{if eq .SettingsTab "telegram"}}active{{end}}" type="button" role="tab" aria-selected="{{if eq .SettingsTab "telegram"}}true{{else}}false{{end}}" data-settings-tab="telegram">Telegram 应用</button>
-    <button class="{{if eq .SettingsTab "page"}}active{{end}}" type="button" role="tab" aria-selected="{{if eq .SettingsTab "page"}}true{{else}}false{{end}}" data-settings-tab="page">页面配置</button>
-    <button class="{{if eq .SettingsTab "display"}}active{{end}}" type="button" role="tab" aria-selected="{{if eq .SettingsTab "display"}}true{{else}}false{{end}}" data-settings-tab="display">内容显示</button>
-    <button class="{{if eq .SettingsTab "runtime"}}active{{end}}" type="button" role="tab" aria-selected="{{if eq .SettingsTab "runtime"}}true{{else}}false{{end}}" data-settings-tab="runtime">运行参数</button>
-    <button class="{{if eq .SettingsTab "device"}}active{{end}}" type="button" role="tab" aria-selected="{{if eq .SettingsTab "device"}}true{{else}}false{{end}}" data-settings-tab="device">设备身份</button>
-    <button class="{{if eq .SettingsTab "security"}}active{{end}}" type="button" role="tab" aria-selected="{{if eq .SettingsTab "security"}}true{{else}}false{{end}}" data-settings-tab="security">登录与安全</button>
-    <button class="{{if eq .SettingsTab "status"}}active{{end}}" type="button" role="tab" aria-selected="{{if eq .SettingsTab "status"}}true{{else}}false{{end}}" data-settings-tab="status">服务状态</button>
+    <button id="settings-tab-basic" class="{{if eq .SettingsTab "basic"}}active{{end}}" type="button" role="tab" aria-controls="settings-panel-basic" aria-selected="{{if eq .SettingsTab "basic"}}true{{else}}false{{end}}" data-settings-tab="basic">基础配置</button>
+    <button id="settings-tab-telegram" class="{{if eq .SettingsTab "telegram"}}active{{end}}" type="button" role="tab" aria-controls="settings-panel-telegram" aria-selected="{{if eq .SettingsTab "telegram"}}true{{else}}false{{end}}" data-settings-tab="telegram">Telegram 应用</button>
+    <button id="settings-tab-page" class="{{if eq .SettingsTab "page"}}active{{end}}" type="button" role="tab" aria-controls="settings-panel-page" aria-selected="{{if eq .SettingsTab "page"}}true{{else}}false{{end}}" data-settings-tab="page">页面配置</button>
+    <button id="settings-tab-display" class="{{if eq .SettingsTab "display"}}active{{end}}" type="button" role="tab" aria-controls="settings-panel-display" aria-selected="{{if eq .SettingsTab "display"}}true{{else}}false{{end}}" data-settings-tab="display">内容显示</button>
+    <button id="settings-tab-runtime" class="{{if eq .SettingsTab "runtime"}}active{{end}}" type="button" role="tab" aria-controls="settings-panel-runtime" aria-selected="{{if eq .SettingsTab "runtime"}}true{{else}}false{{end}}" data-settings-tab="runtime">运行参数</button>
+    <button id="settings-tab-device" class="{{if eq .SettingsTab "device"}}active{{end}}" type="button" role="tab" aria-controls="settings-panel-device" aria-selected="{{if eq .SettingsTab "device"}}true{{else}}false{{end}}" data-settings-tab="device">设备身份</button>
+    <button id="settings-tab-security" class="{{if eq .SettingsTab "security"}}active{{end}}" type="button" role="tab" aria-controls="settings-panel-security" aria-selected="{{if eq .SettingsTab "security"}}true{{else}}false{{end}}" data-settings-tab="security">登录与安全</button>
+    <button id="settings-tab-status" class="{{if eq .SettingsTab "status"}}active{{end}}" type="button" role="tab" aria-controls="settings-panel-status" aria-selected="{{if eq .SettingsTab "status"}}true{{else}}false{{end}}" data-settings-tab="status">服务状态</button>
   </div>
   <span class="badge badge-neutral" data-settings-state>读取中</span>
 </section>
 
 <form class="settings-form" data-settings-form>
   <div class="settings-layout settings-tabbed-layout">
-    <section class="card settings-card" data-settings-panel="basic" {{if ne .SettingsTab "basic"}}hidden{{end}}>
+    <section id="settings-panel-basic" class="card settings-card" role="tabpanel" aria-labelledby="settings-tab-basic" data-settings-panel="basic" {{if ne .SettingsTab "basic"}}hidden{{end}}>
       <div class="card-header">
         <div>
           <h2>服务访问</h2>
@@ -42,7 +42,7 @@
       </label>
     </section>
 
-    <section class="card settings-card" data-settings-panel="telegram" {{if ne .SettingsTab "telegram"}}hidden{{end}}>
+    <section id="settings-panel-telegram" class="card settings-card" role="tabpanel" aria-labelledby="settings-tab-telegram" data-settings-panel="telegram" {{if ne .SettingsTab "telegram"}}hidden{{end}}>
       <div class="card-header">
         <div>
           <h2>Telegram 应用凭据</h2>
@@ -64,7 +64,7 @@
       </div>
     </section>
 
-    <section class="card settings-card" data-settings-panel="page" {{if ne .SettingsTab "page"}}hidden{{end}}>
+    <section id="settings-panel-page" class="card settings-card" role="tabpanel" aria-labelledby="settings-tab-page" data-settings-panel="page" {{if ne .SettingsTab "page"}}hidden{{end}}>
       <div class="card-header">
         <div>
           <h2>页面框架</h2>
@@ -77,9 +77,12 @@
         <label class="setting-row"><span>page-tabs 页面页签</span><input type="checkbox" checked data-page-setting="tabs"></label>
         <label class="setting-row"><span>sidebar 左侧导航</span><input type="checkbox" checked data-page-setting="sidebar"></label>
       </div>
+      <p class="field-hint settings-inline-note">
+        开关修改后立即保存到当前浏览器，不需要点击页面底部的保存按钮。
+      </p>
     </section>
 
-    <section class="card settings-card" data-settings-panel="display" {{if ne .SettingsTab "display"}}hidden{{end}}>
+    <section id="settings-panel-display" class="card settings-card" role="tabpanel" aria-labelledby="settings-tab-display" data-settings-panel="display" {{if ne .SettingsTab "display"}}hidden{{end}}>
       <div class="card-header">
         <div>
           <h2>内容显示</h2>
@@ -93,7 +96,7 @@
       </div>
     </section>
 
-    <section class="card settings-card" data-settings-panel="runtime" {{if ne .SettingsTab "runtime"}}hidden{{end}}>
+    <section id="settings-panel-runtime" class="card settings-card" role="tabpanel" aria-labelledby="settings-tab-runtime" data-settings-panel="runtime" {{if ne .SettingsTab "runtime"}}hidden{{end}}>
       <div class="card-header">
         <div>
           <h2>运行参数</h2>
@@ -116,7 +119,7 @@
       </div>
     </section>
 
-    <section class="card settings-card" data-settings-panel="device" {{if ne .SettingsTab "device"}}hidden{{end}}>
+    <section id="settings-panel-device" class="card settings-card" role="tabpanel" aria-labelledby="settings-tab-device" data-settings-panel="device" {{if ne .SettingsTab "device"}}hidden{{end}}>
       <div class="card-header">
         <div>
           <h2>登录设备身份</h2>
@@ -130,7 +133,7 @@
       </div>
     </section>
 
-    <section class="card settings-card" data-settings-panel="security" {{if ne .SettingsTab "security"}}hidden{{end}}>
+    <section id="settings-panel-security" class="card settings-card" role="tabpanel" aria-labelledby="settings-tab-security" data-settings-panel="security" {{if ne .SettingsTab "security"}}hidden{{end}}>
       <div class="card-header">
         <div>
           <h2>登录与会话安全</h2>
@@ -145,7 +148,7 @@
       </ul>
     </section>
 
-    <section class="card settings-card" data-settings-panel="status" {{if ne .SettingsTab "status"}}hidden{{end}}>
+    <section id="settings-panel-status" class="card settings-card" role="tabpanel" aria-labelledby="settings-tab-status" data-settings-panel="status" {{if ne .SettingsTab "status"}}hidden{{end}}>
       <div class="card-header">
         <div>
           <h2>服务状态</h2>
