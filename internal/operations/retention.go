@@ -475,6 +475,49 @@ func destroyOrphanEvidenceTx(
 	actor string,
 	now time.Time,
 ) (int, error) {
+	var evidenceCount int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(1)
+FROM evidence_events
+WHERE account_id = ? AND peer_type = ? AND peer_id = ? AND message_id = ?
+	AND COALESCE(NULLIF(sent_at, ''), observed_at) < ?
+	AND NOT EXISTS (
+		SELECT 1
+		FROM indexed_messages AS m
+		WHERE m.account_id = evidence_events.account_id
+			AND m.peer_type = evidence_events.peer_type
+			AND m.peer_id = evidence_events.peer_id
+			AND m.message_id = evidence_events.message_id
+	)
+	AND NOT `+activeLegalHoldCondition("evidence_events"),
+		candidate.AccountID,
+		candidate.PeerType,
+		candidate.PeerID,
+		candidate.MessageID,
+		now.AddDate(0, 0, -retentionDays).Format(time.RFC3339Nano),
+	).Scan(&evidenceCount); err != nil {
+		return 0, fmt.Errorf("count orphan message evidence: %w", err)
+	}
+	if evidenceCount == 0 {
+		return 0, nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO retention_destructions (
+	account_id, peer_type, peer_id, message_id, content_hash,
+	evidence_event_count, retention_days, destroyed_by, reason, destroyed_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'retention_expired_orphan_evidence', ?)`,
+		candidate.AccountID,
+		candidate.PeerType,
+		candidate.PeerID,
+		candidate.MessageID,
+		candidate.ContentHash,
+		evidenceCount,
+		retentionDays,
+		actor,
+		now.Format(time.RFC3339Nano),
+	); err != nil {
+		return 0, fmt.Errorf("record orphan evidence destruction: %w", err)
+	}
 	result, err := tx.ExecContext(ctx, `
 DELETE FROM evidence_events
 WHERE account_id = ? AND peer_type = ? AND peer_id = ? AND message_id = ?
@@ -497,12 +540,12 @@ WHERE account_id = ? AND peer_type = ? AND peer_id = ? AND message_id = ?
 	if err != nil {
 		return 0, fmt.Errorf("delete orphan message evidence: %w", err)
 	}
-	evidenceCount, err := result.RowsAffected()
+	deletedCount, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("count orphan message evidence: %w", err)
 	}
-	if evidenceCount == 0 {
-		return 0, nil
+	if int(deletedCount) != evidenceCount {
+		return 0, errors.New("orphan evidence candidate changed before destruction")
 	}
 	if _, err := tx.ExecContext(ctx, `
 UPDATE monitor_alerts
@@ -515,24 +558,7 @@ WHERE account_id = ? AND peer_type = ? AND peer_id = ? AND message_id = ?`,
 	); err != nil {
 		return 0, fmt.Errorf("scrub expired orphan alert preview: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO retention_destructions (
-	account_id, peer_type, peer_id, message_id, content_hash,
-	evidence_event_count, retention_days, destroyed_by, reason, destroyed_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'retention_expired_orphan_evidence', ?)`,
-		candidate.AccountID,
-		candidate.PeerType,
-		candidate.PeerID,
-		candidate.MessageID,
-		candidate.ContentHash,
-		evidenceCount,
-		retentionDays,
-		actor,
-		now.Format(time.RFC3339Nano),
-	); err != nil {
-		return 0, fmt.Errorf("record orphan evidence destruction: %w", err)
-	}
-	return int(evidenceCount), nil
+	return evidenceCount, nil
 }
 
 func (s *Service) destroyRetentionCandidateTx(
@@ -565,31 +591,17 @@ WHERE account_id = ? AND peer_type = ? AND peer_id = ? AND message_id = ?
 	if affected != 1 {
 		return 0, errors.New("retention candidate changed before destruction")
 	}
-	evidence, err := tx.ExecContext(ctx, `
-DELETE FROM evidence_events
+	var evidenceCount int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(1)
+FROM evidence_events
 WHERE account_id = ? AND peer_type = ? AND peer_id = ? AND message_id = ?`,
 		candidate.AccountID,
 		candidate.PeerType,
 		candidate.PeerID,
 		candidate.MessageID,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("delete retained message evidence: %w", err)
-	}
-	evidenceCount, err := evidence.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("count destroyed message evidence: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-UPDATE monitor_alerts
-SET message_preview = ''
-WHERE account_id = ? AND peer_type = ? AND peer_id = ? AND message_id = ?`,
-		candidate.AccountID,
-		candidate.PeerType,
-		candidate.PeerID,
-		candidate.MessageID,
-	); err != nil {
-		return 0, fmt.Errorf("scrub expired alert preview: %w", err)
+	).Scan(&evidenceCount); err != nil {
+		return 0, fmt.Errorf("count retained message evidence: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO retention_destructions (
@@ -608,7 +620,36 @@ INSERT INTO retention_destructions (
 	); err != nil {
 		return 0, fmt.Errorf("record retention destruction: %w", err)
 	}
-	return int(evidenceCount), nil
+	evidence, err := tx.ExecContext(ctx, `
+DELETE FROM evidence_events
+WHERE account_id = ? AND peer_type = ? AND peer_id = ? AND message_id = ?`,
+		candidate.AccountID,
+		candidate.PeerType,
+		candidate.PeerID,
+		candidate.MessageID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("delete retained message evidence: %w", err)
+	}
+	deletedCount, err := evidence.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count destroyed message evidence: %w", err)
+	}
+	if int(deletedCount) != evidenceCount {
+		return 0, errors.New("retention evidence changed before destruction")
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE monitor_alerts
+SET message_preview = ''
+WHERE account_id = ? AND peer_type = ? AND peer_id = ? AND message_id = ?`,
+		candidate.AccountID,
+		candidate.PeerType,
+		candidate.PeerID,
+		candidate.MessageID,
+	); err != nil {
+		return 0, fmt.Errorf("scrub expired alert preview: %w", err)
+	}
+	return evidenceCount, nil
 }
 
 func normalizeLegalHoldInput(input LegalHoldInput) (LegalHoldInput, error) {
