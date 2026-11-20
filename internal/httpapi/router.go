@@ -441,6 +441,8 @@ func (a *API) Handler() http.Handler {
 		a.requireAPIPermission(auth.PermissionAccountRead, a.getCurrentProfile))
 	mux.HandleFunc("PUT /api/v1/accounts/{id}/profile",
 		a.requireAPIPermission(auth.PermissionAccountWrite, a.updateCurrentProfile))
+	mux.HandleFunc("GET /api/v1/accounts/{id}/avatar",
+		a.requireAPIPermission(auth.PermissionAccountRead, a.getCurrentAvatar))
 	mux.HandleFunc(
 		"GET /api/v1/accounts/{id}/chats/{peerType}/{peerID}/profile",
 		a.requireAPIPermission(auth.PermissionChatRead, a.getChatProfile),
@@ -2654,6 +2656,25 @@ func (a *API) getChatAvatar(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (a *API) getCurrentAvatar(w http.ResponseWriter, r *http.Request) {
+	accountID, ok := a.authorizedAccount(w, r)
+	if !ok {
+		return
+	}
+	avatar, err := a.chats.Avatar(r.Context(), accountID, "user", accountID)
+	if err != nil {
+		a.writeChatError(r.Context(), w, accountID, err)
+		return
+	}
+	w.Header().Set("Content-Type", avatar.ContentType)
+	w.Header().Set("Cache-Control", "private, max-age=900")
+	w.Header().Set("Content-Length", strconv.Itoa(len(avatar.Data)))
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(avatar.Data); err != nil {
+		a.logger.Debug("write current Telegram avatar", "account_id", accountID, "error", err)
+	}
+}
+
 func (a *API) authorizedChatPeer(w http.ResponseWriter, r *http.Request) (int64, string, int64, bool) {
 	accountID, ok := a.authorizedAccount(w, r)
 	if !ok {
@@ -3388,6 +3409,7 @@ func shouldAuditRequest(method, pattern string) bool {
 	case "/api/v1/health",
 		"/api/v1/search/health",
 		"/api/v1/telegram/auth/qr/{loginID}",
+		"/api/v1/accounts/{id}/avatar",
 		"/api/v1/accounts/{id}/chats/{peerType}/{peerID}/avatar":
 		return method != http.MethodGet
 	default:

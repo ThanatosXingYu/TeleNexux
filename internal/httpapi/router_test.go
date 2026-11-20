@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -329,14 +330,20 @@ func (s *fakeTelegramAuthService) CancelQR(_ string) error {
 type fakeTelegramChatService struct {
 	chats         telegramchat.ChatPage
 	messages      telegramchat.MessagePage
+	avatar        telegramchat.Avatar
 	chatsErr      error
 	messagesErr   error
+	avatarErr     error
 	validateErr   error
 	inspectErr    error
 	profile       telegramchat.Profile
 	deleteErr     error
 	sessionID     int64
 	deleteScope   bool
+	avatarAccount int64
+	avatarPeer    int64
+	avatarType    string
+	avatarCalls   int
 	validateCalls int
 	inspectCalls  int
 	resetID       int64
@@ -466,11 +473,15 @@ func (s *fakeTelegramChatService) ChatProfile(
 
 func (s *fakeTelegramChatService) Avatar(
 	_ context.Context,
-	_ int64,
-	_ string,
-	_ int64,
+	accountID int64,
+	peerType string,
+	peerID int64,
 ) (telegramchat.Avatar, error) {
-	return telegramchat.Avatar{}, s.messagesErr
+	s.avatarCalls++
+	s.avatarAccount = accountID
+	s.avatarType = peerType
+	s.avatarPeer = peerID
+	return s.avatar, s.avatarErr
 }
 
 func (s *fakeTelegramChatService) DeleteMessages(
@@ -1705,6 +1716,7 @@ func TestOfflineAccountDoesNotReachTelegramChatAPIs(t *testing.T) {
 	paths := []string{
 		"/api/v1/accounts/42/chats",
 		"/api/v1/accounts/42/profile",
+		"/api/v1/accounts/42/avatar",
 		"/api/v1/accounts/42/chats/user/99/avatar",
 	}
 	for _, path := range paths {
@@ -1718,12 +1730,53 @@ func TestOfflineAccountDoesNotReachTelegramChatAPIs(t *testing.T) {
 			t.Fatalf("%s body = %s, want account_not_online", path, recorder.Body.String())
 		}
 	}
-	if chats.inspectCalls != 0 || chats.validateCalls != 0 {
-		t.Fatalf("offline account reached Telegram: %d inspect, %d validate",
-			chats.inspectCalls, chats.validateCalls)
+	if chats.inspectCalls != 0 || chats.validateCalls != 0 || chats.avatarCalls != 0 {
+		t.Fatalf("offline account reached Telegram: %d inspect, %d validate, %d avatar",
+			chats.inspectCalls, chats.validateCalls, chats.avatarCalls)
 	}
 	if accounts.verifyCalls != 0 {
 		t.Fatalf("offline account verification calls = %d, want 0", accounts.verifyCalls)
+	}
+}
+
+func TestCurrentAccountAvatarUsesDedicatedRoute(t *testing.T) {
+	verifiedAt := time.Now().UTC()
+	accounts := &fakeAccountService{
+		created: account.Account{
+			ID:             42,
+			Status:         account.StatusOnline,
+			LastVerifiedAt: &verifiedAt,
+		},
+	}
+	chats := &fakeTelegramChatService{
+		avatar: telegramchat.Avatar{
+			Data:        []byte("\x89PNG\r\n\x1a\n"),
+			ContentType: "image/png",
+		},
+	}
+	handler := newTestHandlerWithDependencies(
+		accounts,
+		&fakeTelegramAuthService{},
+		chats,
+		nil,
+	)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/accounts/42/avatar",
+		nil,
+	))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if chats.avatarAccount != 42 || chats.avatarType != "user" || chats.avatarPeer != 42 {
+		t.Fatalf("avatar request = account %d, %s/%d; want 42, user/42",
+			chats.avatarAccount, chats.avatarType, chats.avatarPeer)
+	}
+	if recorder.Header().Get("Content-Type") != "image/png" ||
+		!bytes.Equal(recorder.Body.Bytes(), chats.avatar.Data) {
+		t.Fatalf("avatar response = %q, %x", recorder.Header().Get("Content-Type"), recorder.Body.Bytes())
 	}
 }
 
