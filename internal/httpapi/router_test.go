@@ -653,7 +653,10 @@ func TestAuthSessionReportsRolePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTestManager() error = %v", err)
 	}
-	token, session, err := manager.CreateRoleSession(auth.RoleViewer)
+	if _, err := manager.CreateUser("reader", "strong-password-456", auth.RoleViewer); err != nil {
+		t.Fatalf("CreateUser(viewer) error = %v", err)
+	}
+	token, session, err := manager.CreateUserSession("reader", auth.RoleViewer)
 	if err != nil {
 		t.Fatalf("CreateRoleSession() error = %v", err)
 	}
@@ -677,6 +680,38 @@ func TestAuthSessionReportsRolePermissions(t *testing.T) {
 	if !slices.Contains(payload.Permissions, auth.PermissionChatRead) ||
 		slices.Contains(payload.Permissions, auth.PermissionChatOperate) ||
 		slices.Contains(payload.Permissions, auth.PermissionAccountWrite) {
+		t.Fatalf("viewer permissions = %v", payload.Permissions)
+	}
+}
+
+func TestViewerLoginCreatesViewerSession(t *testing.T) {
+	manager, err := auth.NewTestManager("owner", "strong-password-123")
+	if err != nil {
+		t.Fatalf("NewTestManager() error = %v", err)
+	}
+	if _, err := manager.CreateUser("reader", "strong-password-456", auth.RoleViewer); err != nil {
+		t.Fatalf("CreateUser() error = %v", err)
+	}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/login",
+		strings.NewReader(`{"username":"reader","password":"strong-password-456"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.RemoteAddr = "127.0.0.1:50001"
+	recorder := httptest.NewRecorder()
+	newRawTestHandler(t, manager).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", recorder.Code, recorder.Body.String())
+	}
+	var payload authSessionResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode login response: %v", err)
+	}
+	if payload.Username != "reader" || payload.Role != auth.RoleViewer {
+		t.Fatalf("login principal = %q/%q", payload.Username, payload.Role)
+	}
+	if slices.Contains(payload.Permissions, auth.PermissionUserWrite) {
 		t.Fatalf("viewer permissions = %v", payload.Permissions)
 	}
 }
@@ -2258,13 +2293,19 @@ func TestAPIPermissionEnforcesRoleScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTestManager() error = %v", err)
 	}
-	viewerToken, viewer, err := manager.CreateRoleSession(auth.RoleViewer)
-	if err != nil {
-		t.Fatalf("CreateRoleSession(viewer) error = %v", err)
+	if _, err := manager.CreateUser("reader", "strong-password-456", auth.RoleViewer); err != nil {
+		t.Fatalf("CreateUser(viewer) error = %v", err)
 	}
-	operatorToken, operator, err := manager.CreateRoleSession(auth.RoleOperator)
+	if _, err := manager.CreateUser("operator", "strong-password-789", auth.RoleOperator); err != nil {
+		t.Fatalf("CreateUser(operator) error = %v", err)
+	}
+	viewerToken, viewer, err := manager.CreateUserSession("reader", auth.RoleViewer)
 	if err != nil {
-		t.Fatalf("CreateRoleSession(operator) error = %v", err)
+		t.Fatalf("CreateUserSession(viewer) error = %v", err)
+	}
+	operatorToken, operator, err := manager.CreateUserSession("operator", auth.RoleOperator)
+	if err != nil {
+		t.Fatalf("CreateUserSession(operator) error = %v", err)
 	}
 	api := &API{
 		auth:   manager,
@@ -2313,6 +2354,113 @@ func TestAPIPermissionEnforcesRoleScope(t *testing.T) {
 	}
 	if viewer.Role != auth.RoleViewer {
 		t.Fatalf("viewer session role = %q", viewer.Role)
+	}
+}
+
+func TestUserManagementRequiresAdministrator(t *testing.T) {
+	manager, adminToken, adminCSRF := testAuthentication()
+	if _, err := manager.CreateUser("user-reader", "strong-password-456", auth.RoleViewer); err != nil {
+		t.Fatalf("CreateUser(viewer) error = %v", err)
+	}
+	viewerToken, viewer, err := manager.CreateUserSession("user-reader", auth.RoleViewer)
+	if err != nil {
+		t.Fatalf("CreateUserSession() error = %v", err)
+	}
+	handler := newRawTestHandler(t, manager)
+	viewerHandler := authenticatedTestHandler{
+		next:  handler,
+		token: viewerToken,
+		csrf:  viewer.CSRF,
+	}
+	createBody := `{"username":"new-operator","password":"strong-password-789","role":"operator"}`
+	forbidden := httptest.NewRecorder()
+	viewerHandler.ServeHTTP(forbidden, httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/users",
+		strings.NewReader(createBody),
+	))
+	if forbidden.Code != http.StatusForbidden {
+		t.Fatalf("viewer create user status = %d; body: %s",
+			forbidden.Code, forbidden.Body.String())
+	}
+
+	adminHandler := authenticatedTestHandler{
+		next:  handler,
+		token: adminToken,
+		csrf:  adminCSRF,
+	}
+	createRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/users",
+		strings.NewReader(createBody),
+	)
+	createRequest.Header.Set("Content-Type", "application/json")
+	created := httptest.NewRecorder()
+	adminHandler.ServeHTTP(created, createRequest)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("admin create user status = %d; body: %s",
+			created.Code, created.Body.String())
+	}
+	if strings.Contains(strings.ToLower(created.Body.String()), "password") {
+		t.Fatalf("user response exposed password data: %s", created.Body.String())
+	}
+	list := httptest.NewRecorder()
+	adminHandler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/v1/auth/users", nil))
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), "new-operator") {
+		t.Fatalf("list users status = %d; body: %s", list.Code, list.Body.String())
+	}
+}
+
+func TestChangedUserRoleRevokesExistingSession(t *testing.T) {
+	manager, adminToken, adminCSRF := testAuthentication()
+	if _, err := manager.CreateUser("role-reader", "strong-password-456", auth.RoleViewer); err != nil {
+		t.Fatalf("CreateUser() error = %v", err)
+	}
+	viewerToken, viewer, err := manager.CreateUserSession("role-reader", auth.RoleViewer)
+	if err != nil {
+		t.Fatalf("CreateUserSession() error = %v", err)
+	}
+	handler := newRawTestHandler(t, manager)
+	viewerHandler := authenticatedTestHandler{
+		next:  handler,
+		token: viewerToken,
+		csrf:  viewer.CSRF,
+	}
+	before := httptest.NewRecorder()
+	viewerHandler.ServeHTTP(before, httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/accounts",
+		nil,
+	))
+	if before.Code != http.StatusOK {
+		t.Fatalf("viewer accounts status = %d; body: %s", before.Code, before.Body.String())
+	}
+
+	adminHandler := authenticatedTestHandler{
+		next:  handler,
+		token: adminToken,
+		csrf:  adminCSRF,
+	}
+	updateRequest := httptest.NewRequest(
+		http.MethodPatch,
+		"/api/v1/auth/users/role-reader",
+		strings.NewReader(`{"role":"operator"}`),
+	)
+	updateRequest.Header.Set("Content-Type", "application/json")
+	updated := httptest.NewRecorder()
+	adminHandler.ServeHTTP(updated, updateRequest)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("update role status = %d; body: %s", updated.Code, updated.Body.String())
+	}
+
+	after := httptest.NewRecorder()
+	viewerHandler.ServeHTTP(after, httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/accounts",
+		nil,
+	))
+	if after.Code != http.StatusUnauthorized {
+		t.Fatalf("stale session status = %d; body: %s", after.Code, after.Body.String())
 	}
 }
 
@@ -2533,7 +2681,10 @@ func TestSearchIndexHealthAndRebuildAPI(t *testing.T) {
 		t.Fatalf("seed message: %v", err)
 	}
 	manager, adminToken, adminCSRF := testAuthentication()
-	viewerToken, viewerSession, err := manager.CreateRoleSession(auth.RoleViewer)
+	if _, err := manager.CreateUser("search-reader", "strong-password-456", auth.RoleViewer); err != nil {
+		t.Fatalf("create viewer user: %v", err)
+	}
+	viewerToken, viewerSession, err := manager.CreateUserSession("search-reader", auth.RoleViewer)
 	if err != nil {
 		t.Fatalf("create viewer session: %v", err)
 	}
@@ -2680,7 +2831,13 @@ func TestCorrelationAnalysisAPIReturnsTraceableGroups(t *testing.T) {
 		}
 	}
 	manager, _, _ := testAuthentication()
-	viewerToken, viewerSession, err := manager.CreateRoleSession(auth.RoleViewer)
+	if _, err := manager.CreateUser("correlation-reader", "strong-password-456", auth.RoleViewer); err != nil {
+		t.Fatalf("create viewer user: %v", err)
+	}
+	viewerToken, viewerSession, err := manager.CreateUserSession(
+		"correlation-reader",
+		auth.RoleViewer,
+	)
 	if err != nil {
 		t.Fatalf("create viewer session: %v", err)
 	}

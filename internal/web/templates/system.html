@@ -136,11 +136,54 @@
     <section id="settings-panel-security" class="card settings-card" role="tabpanel" aria-labelledby="settings-tab-security" data-settings-panel="security" {{if ne .SettingsTab "security"}}hidden{{end}}>
       <div class="card-header">
         <div>
-          <h2>登录与会话安全</h2>
-          <span class="muted">Telegram 授权文件与 SQLite 数据库均保存在本地受保护目录。</span>
+          <h2>本地用户与权限</h2>
+          <span class="muted">管理员可维护操作员和查看者；密码只写不回显。</span>
         </div>
         <span class="stat-icon stat-green"><span class="icon icon-shield-check" aria-hidden="true"></span></span>
       </div>
+      <div class="settings-user-toolbar">
+        <span class="badge badge-neutral" data-auth-users-state>读取中</span>
+        <button class="button button-secondary" type="button" data-auth-user-refresh>
+          <span class="icon icon-refresh-cw" aria-hidden="true"></span>
+          刷新
+        </button>
+      </div>
+      <p class="form-notice" data-auth-users-notice hidden></p>
+      <div class="table-scroll">
+        <table class="data-table" data-auth-users-table>
+          <thead>
+            <tr><th>用户名</th><th>角色</th><th>状态</th></tr>
+          </thead>
+          <tbody data-auth-users-body>
+            <tr><td colspan="3">正在读取本地用户...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <form class="auth-user-form" data-auth-user-create hidden>
+        <h3>添加本地用户</h3>
+        <div class="form-grid">
+          <label class="field">
+            <span>用户名</span>
+            <input name="username" type="text" autocomplete="off" maxlength="64" required>
+          </label>
+          <label class="field">
+            <span>初始密码</span>
+            <input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>
+          </label>
+          <label class="field">
+            <span>角色</span>
+            <select name="role">
+              <option value="operator">操作员</option>
+              <option value="viewer">只读查看者</option>
+              <option value="administrator">管理员</option>
+            </select>
+          </label>
+        </div>
+        <button class="button button-primary" type="submit">
+          <span class="icon icon-user-round-plus" aria-hidden="true"></span>
+          创建用户
+        </button>
+      </form>
       <ul class="settings-note-list">
         <li>授权会话不进入 Git、镜像或浏览器存储，文件权限限制为当前用户。</li>
         <li>API Hash、验证码和云密码不会写入页面或日志。</li>

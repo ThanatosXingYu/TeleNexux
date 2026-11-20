@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -186,5 +187,90 @@ func TestManagerRejectsWeakSetup(t *testing.T) {
 	}
 	if !manager.Configured() {
 		t.Fatal("test manager should be configured")
+	}
+}
+
+func TestManagerLoadsLegacyAdministratorCredentials(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	data, err := json.Marshal(credentials{
+		Username:     "legacy.admin",
+		PasswordHash: "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy",
+	})
+	if err != nil {
+		t.Fatalf("marshal legacy credentials: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write legacy credentials: %v", err)
+	}
+	manager, err := NewManager(path)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if !manager.Configured() {
+		t.Fatal("legacy administrator should be configured")
+	}
+	users := manager.ListUsers()
+	if len(users) != 1 || users[0].Role != RoleAdministrator || users[0].Username != "legacy.admin" {
+		t.Fatalf("legacy users = %+v", users)
+	}
+}
+
+func TestManagerCreatesViewerAndRevokesChangedSessions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	manager, err := NewManager(path)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Setup("owner", "strong-password-123"); err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
+	if _, err := manager.CreateUser("analyst", "strong-password-456", RoleViewer); err != nil {
+		t.Fatalf("CreateUser() error = %v", err)
+	}
+	actor, err := manager.Authenticate("analyst", "strong-password-456")
+	if err != nil {
+		t.Fatalf("Authenticate() error = %v", err)
+	}
+	if actor.Actor != "analyst" || actor.Role != RoleViewer {
+		t.Fatalf("Authenticate() principal = %+v", actor)
+	}
+	token, _, err := manager.CreateUserSession(actor.Actor, actor.Role)
+	if err != nil {
+		t.Fatalf("CreateUserSession() error = %v", err)
+	}
+	disabled := true
+	if _, err := manager.UpdateUser("analyst", UserUpdate{Disabled: &disabled}); err != nil {
+		t.Fatalf("UpdateUser() error = %v", err)
+	}
+	if _, err := manager.SessionFor(token); !errors.Is(err, ErrInvalidSession) {
+		t.Fatalf("SessionFor() after disable error = %v, want ErrInvalidSession", err)
+	}
+	if _, err := manager.Authenticate("analyst", "strong-password-456"); !errors.Is(err, ErrInvalidLogin) {
+		t.Fatalf("disabled login error = %v, want ErrInvalidLogin", err)
+	}
+	reloaded, err := NewManager(path)
+	if err != nil {
+		t.Fatalf("reload manager error = %v", err)
+	}
+	if len(reloaded.ListUsers()) != 2 {
+		t.Fatalf("reloaded users = %+v", reloaded.ListUsers())
+	}
+	if _, err := reloaded.CreateUser("owner2", "strong-password-789", RoleOperator); err != nil {
+		t.Fatalf("CreateUser() after reload error = %v", err)
+	}
+}
+
+func TestManagerPreventsRemovingLastAdministrator(t *testing.T) {
+	manager, err := NewTestManager("owner", "strong-password-123")
+	if err != nil {
+		t.Fatalf("NewTestManager() error = %v", err)
+	}
+	viewerRole := RoleViewer
+	if _, err := manager.UpdateUser("owner", UserUpdate{Role: &viewerRole}); !errors.Is(err, ErrLastAdministrator) {
+		t.Fatalf("UpdateUser() role error = %v, want ErrLastAdministrator", err)
+	}
+	disabled := true
+	if _, err := manager.UpdateUser("owner", UserUpdate{Disabled: &disabled}); !errors.Is(err, ErrLastAdministrator) {
+		t.Fatalf("UpdateUser() disable error = %v, want ErrLastAdministrator", err)
 	}
 }

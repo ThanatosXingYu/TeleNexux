@@ -23,6 +23,10 @@ go run ./cmd/telenexus
 服务默认仅监听 `http://127.0.0.1:9487`。打开
 `http://localhost:9487/login` 完成本机管理员初始化，然后进入账号列表点击
 “添加账号”。首次初始化只允许本机请求；管理员密码使用 bcrypt 保存。
+管理员可在“系统配置 → 登录与安全”创建操作员或只读查看者；操作员可维护
+账号、聊天和监控，但不能读取审计、修改留存、管理用户或更改系统配置。
+角色、启停状态或密码变化会立即撤销该用户的已有会话。旧版单管理员
+`auth.json` 会自动兼容读取。
 默认使用二维码登录，
 也可以切换到手机号登录；用户名方式用于核对账号，最终仍须使用该账号扫描
 二维码完成授权。
@@ -136,7 +140,7 @@ sidecar；后续连接沿用同一资料，不会使用项目名称作为设备�
 | `LOG_LEVEL` | `info` | `debug`、`info`、`warn` 或 `error` |
 | `DATABASE_PATH` | `./data/telenexus.db` | SQLite 数据文件 |
 | `SETTINGS_PATH` | `./data/settings.json` | 系统设置本地文件 |
-| `AUTH_PATH` | `./data/auth.json` | 管理员凭据文件，权限 `0600` |
+| `AUTH_PATH` | `./data/auth.json` | 本地用户凭据文件，权限 `0600` |
 | `ACCOUNT_PROXIES_PATH` | `./data/account-proxies.json` | 加密的账号代理凭据文件 |
 | `SHUTDOWN_TIMEOUT` | `10s` | HTTP 启动检查与关闭超时 |
 | `TELEGRAM_API_ID` | 空 | Telegram 应用 ID |
@@ -148,8 +152,20 @@ sidecar；后续连接沿用同一资料，不会使用项目名称作为设备�
 
 ## API
 
-除登录、初始化和 `/healthz` 外，API 均要求管理员会话。写请求还必须携带
-与 HttpOnly Cookie 配套的 `X-CSRF-Token`。
+除登录、初始化和 `/healthz` 外，API 均要求本地用户会话。路由按管理员、
+操作员和查看者角色校验权限；未知权限默认拒绝。写请求还必须携带与
+HttpOnly Cookie 配套的 `X-CSRF-Token`。
+
+本地用户管理仅允许管理员调用：
+
+```text
+GET   /api/v1/auth/users
+POST  /api/v1/auth/users
+PATCH /api/v1/auth/users/{username}
+```
+
+创建用户和重置密码时只提交明文密码，服务端使用 bcrypt 保存；任何响应都
+不会回显密码哈希。系统必须始终保留至少一个启用的管理员。
 
 账号查询：
 

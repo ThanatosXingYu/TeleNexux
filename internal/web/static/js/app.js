@@ -307,6 +307,36 @@
     userTrigger.setAttribute("aria-expanded", String(shouldOpen));
   });
 
+  const loadCurrentUser = async () => {
+    try {
+      const session = await requestJSON("/api/v1/auth/session");
+      if (!session?.authenticated || !session.username) {
+        return;
+      }
+      const name = userTrigger?.querySelector(".user-name");
+      if (name) {
+        name.textContent = session.username;
+      }
+      const avatar = userTrigger?.querySelector(".avatar");
+      if (avatar) {
+        avatar.textContent = session.username.slice(0, 2).toUpperCase();
+      }
+      const role = userDropdown?.querySelector(".dropdown-caption");
+      if (role) {
+        const labels = {
+          administrator: "系统管理员",
+          operator: "操作员",
+          viewer: "只读查看者",
+        };
+        role.textContent = labels[session.role] || session.role || "本地用户";
+      }
+    } catch {
+      // Page-level API calls handle expired sessions consistently.
+    }
+  };
+
+  loadCurrentUser();
+
   document.querySelector("[data-logout]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     button.disabled = true;
@@ -2641,6 +2671,11 @@
     const healthChecked = document.querySelector("[data-health-checked]");
     const healthChecks = document.querySelector("[data-health-checks]");
     const healthRefresh = document.querySelector("[data-health-refresh]");
+    const authUsersState = document.querySelector("[data-auth-users-state]");
+    const authUsersNotice = document.querySelector("[data-auth-users-notice]");
+    const authUsersBody = document.querySelector("[data-auth-users-body]");
+    const authUserRefresh = document.querySelector("[data-auth-user-refresh]");
+    const authUserCreate = document.querySelector("[data-auth-user-create]");
     const readOnlySettingsTabs = new Set(["page", "display", "device", "security", "status"]);
 
     const activateSettingsTab = (name, updateURL = false) => {
@@ -2755,6 +2790,200 @@
       administrator: "管理员鉴权",
     };
 
+    const roleLabels = {
+      administrator: "管理员",
+      operator: "操作员",
+      viewer: "只读查看者",
+    };
+
+    const renderAuthUsers = (payload) => {
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      const canManage = Array.isArray(payload?.permissions) &&
+        payload.permissions.includes("user:write");
+      authUserCreate?.toggleAttribute("hidden", !canManage);
+      if (authUsersState) {
+        authUsersState.textContent = `${items.length} 个本地用户`;
+        authUsersState.className = "badge badge-neutral";
+      }
+      if (!authUsersBody) {
+        return;
+      }
+      authUsersBody.replaceChildren();
+      items.forEach((user) => {
+        const row = document.createElement("tr");
+        row.className = "auth-user-row";
+        const username = document.createElement("td");
+        const name = document.createElement("strong");
+        name.textContent = user.username || "";
+        username.append(name);
+        if (user.username === payload.current_user) {
+          const current = document.createElement("span");
+          current.className = "badge badge-blue";
+          current.textContent = "当前用户";
+          username.append(" ", current);
+        }
+        const role = document.createElement("td");
+        const roleSelect = document.createElement("select");
+        roleSelect.dataset.authUserRole = "";
+        Object.entries(roleLabels).forEach(([value, label]) => {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = label;
+          option.selected = value === user.role;
+          roleSelect.append(option);
+        });
+        roleSelect.disabled = !canManage;
+        role.append(roleSelect);
+        const actions = document.createElement("td");
+        const wrap = document.createElement("div");
+        wrap.className = "auth-user-actions";
+        const status = document.createElement("button");
+        status.type = "button";
+        status.className = "text-button";
+        status.dataset.authUserStatus = "";
+        status.textContent = user.disabled ? "已停用" : "启用中";
+        status.setAttribute("aria-pressed", String(!user.disabled));
+        status.disabled = !canManage;
+        const save = document.createElement("button");
+        save.type = "button";
+        save.className = "text-button";
+        save.dataset.authUserSave = "";
+        save.textContent = "保存";
+        save.disabled = !canManage;
+        const reset = document.createElement("button");
+        reset.type = "button";
+        reset.className = "text-button";
+        reset.dataset.authUserPassword = "";
+        reset.textContent = "重置密码";
+        reset.disabled = !canManage;
+        const password = document.createElement("input");
+        password.type = "password";
+        password.autocomplete = "new-password";
+        password.placeholder = "12 位以上新密码";
+        password.hidden = true;
+        password.dataset.authUserPasswordInput = "";
+        const passwordSave = document.createElement("button");
+        passwordSave.type = "button";
+        passwordSave.className = "text-button";
+        passwordSave.dataset.authUserPasswordSave = "";
+        passwordSave.textContent = "确认重置";
+        passwordSave.hidden = true;
+        wrap.append(status, save, reset, password, passwordSave);
+        actions.append(wrap);
+        row.append(username, role, actions);
+        if (canManage) {
+          save.addEventListener("click", async () => {
+            save.disabled = true;
+            try {
+              await requestJSON(`/api/v1/auth/users/${encodeURIComponent(user.username)}`, {
+                method: "PATCH",
+                body: JSON.stringify({
+                  role: roleSelect.value,
+                }),
+              });
+              showNotice(authUsersNotice, "用户角色已保存");
+              await loadAuthUsers();
+            } catch (error) {
+              showNotice(authUsersNotice, error.message, true);
+            } finally {
+              save.disabled = false;
+            }
+          });
+          status.addEventListener("click", async () => {
+            status.disabled = true;
+            try {
+              await requestJSON(`/api/v1/auth/users/${encodeURIComponent(user.username)}`, {
+                method: "PATCH",
+                body: JSON.stringify({disabled: !user.disabled}),
+              });
+              showNotice(authUsersNotice, user.disabled ? "用户已启用" : "用户已停用");
+              await loadAuthUsers();
+            } catch (error) {
+              showNotice(authUsersNotice, error.message, true);
+            } finally {
+              status.disabled = false;
+            }
+          });
+          reset.addEventListener("click", () => {
+            password.hidden = false;
+            passwordSave.hidden = false;
+            password.focus();
+          });
+          passwordSave.addEventListener("click", async () => {
+            const value = password.value;
+            if (value.length < 12 || value.length > 128) {
+              showNotice(authUsersNotice, "密码需为 12 到 128 个字符", true);
+              return;
+            }
+            passwordSave.disabled = true;
+            try {
+              await requestJSON(`/api/v1/auth/users/${encodeURIComponent(user.username)}`, {
+                method: "PATCH",
+                body: JSON.stringify({password: value}),
+              });
+              password.value = "";
+              password.hidden = true;
+              passwordSave.hidden = true;
+              showNotice(authUsersNotice, "密码已更新，相关旧会话已失效");
+            } catch (error) {
+              showNotice(authUsersNotice, error.message, true);
+            } finally {
+              passwordSave.disabled = false;
+            }
+          });
+        }
+        authUsersBody.append(row);
+      });
+      if (!items.length) {
+        const row = document.createElement("tr");
+        const cell = document.createElement("td");
+        cell.colSpan = 3;
+        cell.textContent = "暂无本地用户";
+        row.append(cell);
+        authUsersBody.append(row);
+      }
+    };
+
+    const loadAuthUsers = async () => {
+      authUserRefresh?.setAttribute("disabled", "");
+      try {
+        renderAuthUsers(await requestJSON("/api/v1/auth/users"));
+      } catch (error) {
+        if (authUsersState) {
+          authUsersState.textContent = "读取失败";
+          authUsersState.className = "badge badge-red";
+        }
+        showNotice(authUsersNotice, error.message, true);
+      } finally {
+        authUserRefresh?.removeAttribute("disabled");
+      }
+    };
+
+    authUserRefresh?.addEventListener("click", loadAuthUsers);
+    authUserCreate?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const data = new FormData(authUserCreate);
+      const submit = authUserCreate.querySelector("button[type='submit']");
+      submit?.setAttribute("disabled", "");
+      try {
+        await requestJSON("/api/v1/auth/users", {
+          method: "POST",
+          body: JSON.stringify({
+            username: String(data.get("username") || "").trim(),
+            password: String(data.get("password") || ""),
+            role: String(data.get("role") || "viewer"),
+          }),
+        });
+        authUserCreate.reset();
+        showNotice(authUsersNotice, "用户已创建");
+        await loadAuthUsers();
+      } catch (error) {
+        showNotice(authUsersNotice, error.message, true);
+      } finally {
+        submit?.removeAttribute("disabled");
+      }
+    });
+
     const loadHealth = async () => {
       healthRefresh?.setAttribute("disabled", "");
       if (healthStatus) {
@@ -2845,5 +3074,6 @@
     });
     loadSettings();
     loadHealth();
+    loadAuthUsers();
   }
 })();

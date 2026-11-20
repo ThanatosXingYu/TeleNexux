@@ -315,6 +315,12 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/login", a.loginAdministrator)
 	mux.HandleFunc("POST /api/v1/auth/logout",
 		a.requireAPIPermission(auth.PermissionSession, a.logoutAdministrator))
+	mux.HandleFunc("GET /api/v1/auth/users",
+		a.requireAPIPermission(auth.PermissionUserRead, a.listAuthUsers))
+	mux.HandleFunc("POST /api/v1/auth/users",
+		a.requireAPIPermission(auth.PermissionUserWrite, a.createAuthUser))
+	mux.HandleFunc("PATCH /api/v1/auth/users/{username}",
+		a.requireAPIPermission(auth.PermissionUserWrite, a.updateAuthUser))
 	mux.HandleFunc("GET /api/v1/health",
 		a.requireAPIPermission(auth.PermissionHealthRead, a.healthDetails))
 	mux.HandleFunc("GET /api/v1/audit/events",
@@ -1377,6 +1383,13 @@ type authSessionResponse struct {
 	CSRFToken     string   `json:"csrf_token,omitempty"`
 }
 
+type authUsersResponse struct {
+	Items       []auth.User `json:"items"`
+	CurrentUser string      `json:"current_user"`
+	CSRFToken   string      `json:"csrf_token,omitempty"`
+	Permissions []string    `json:"permissions,omitempty"`
+}
+
 type accountRefreshResult struct {
 	item account.Account
 	err  error
@@ -1409,10 +1422,10 @@ func (a *API) authSession(w http.ResponseWriter, r *http.Request) {
 	response := authSessionResponse{Configured: a.auth.Configured()}
 	token, ok := sessionCookie(r)
 	if ok {
-		session, err := a.auth.Lookup(token)
+		session, err := a.auth.SessionFor(token)
 		if err == nil {
 			response.Authenticated = true
-			response.Username = a.auth.Username()
+			response.Username = session.Actor
 			response.Role = session.Role
 			response.Permissions = auth.Permissions(session.Role)
 			response.CSRFToken = session.CSRF
@@ -1451,8 +1464,11 @@ func (a *API) setupAdministrator(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_admin_credentials", err.Error())
 		return
 	}
-	principal = auth.Principal{Actor: a.auth.Username(), Role: auth.RoleAdministrator}
-	if err := a.startAdministratorSession(w, r); err != nil {
+	principal = auth.Principal{
+		Actor: strings.ToLower(strings.TrimSpace(input.Username)),
+		Role:  auth.RoleAdministrator,
+	}
+	if err := a.startUserSession(w, r, principal); err != nil {
 		a.logger.Error("create initial administrator session", "error", err)
 		writeError(w, http.StatusInternalServerError, "session_failed", "管理员已创建，请重新登录")
 	}
@@ -1486,7 +1502,8 @@ func (a *API) loginAdministrator(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid_login", "管理员账号或密码不正确")
 		return
 	}
-	if err := a.auth.Login(input.Username, input.Password); err != nil {
+	actor, err := a.auth.Authenticate(input.Username, input.Password)
+	if err != nil {
 		if errors.Is(err, auth.ErrNotConfigured) {
 			writeError(w, http.StatusConflict, "setup_required", "请先初始化管理员账号")
 			return
@@ -1494,9 +1511,9 @@ func (a *API) loginAdministrator(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid_login", "管理员账号或密码不正确")
 		return
 	}
-	principal = auth.Principal{Actor: a.auth.Username(), Role: auth.RoleAdministrator}
+	principal = actor
 	a.clearLoginAttempts(key)
-	if err := a.startAdministratorSession(w, r); err != nil {
+	if err := a.startUserSession(w, r, actor); err != nil {
 		a.logger.Error("create administrator session", "error", err)
 		writeError(w, http.StatusInternalServerError, "session_failed", "无法创建管理员会话")
 	}
@@ -1511,8 +1528,88 @@ func (a *API) logoutAdministrator(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *API) startAdministratorSession(w http.ResponseWriter, r *http.Request) error {
-	token, session, err := a.auth.CreateSession()
+func (a *API) listAuthUsers(w http.ResponseWriter, r *http.Request) {
+	if a.auth == nil {
+		writeError(w, http.StatusServiceUnavailable, "auth_unavailable", "管理员鉴权尚未初始化")
+		return
+	}
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	token, ok := sessionCookie(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication_required", "请先登录管理台")
+		return
+	}
+	session, err := a.auth.SessionFor(token)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "authentication_required", "请先登录管理台")
+		return
+	}
+	writeJSON(w, http.StatusOK, authUsersResponse{
+		Items:       a.auth.ListUsers(),
+		CurrentUser: session.Actor,
+		CSRFToken:   session.CSRF,
+		Permissions: auth.Permissions(principal.Role),
+	})
+}
+
+func (a *API) createAuthUser(w http.ResponseWriter, r *http.Request) {
+	if !prepareJSONMutation(w, r) {
+		return
+	}
+	var input struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Role     string `json:"role"`
+	}
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	user, err := a.auth.CreateUser(input.Username, input.Password, input.Role)
+	switch {
+	case errors.Is(err, auth.ErrUserExists):
+		writeError(w, http.StatusConflict, "user_exists", "该用户名已存在")
+	case err != nil:
+		writeError(w, http.StatusUnprocessableEntity, "invalid_user", err.Error())
+	default:
+		writeJSON(w, http.StatusCreated, user)
+	}
+}
+
+func (a *API) updateAuthUser(w http.ResponseWriter, r *http.Request) {
+	if !prepareJSONMutation(w, r) {
+		return
+	}
+	var input struct {
+		Role     *string `json:"role"`
+		Password *string `json:"password"`
+		Disabled *bool   `json:"disabled"`
+	}
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	user, err := a.auth.UpdateUser(r.PathValue("username"), auth.UserUpdate{
+		Role:     input.Role,
+		Password: input.Password,
+		Disabled: input.Disabled,
+	})
+	switch {
+	case errors.Is(err, auth.ErrUserNotFound):
+		writeError(w, http.StatusNotFound, "user_not_found", "用户不存在")
+	case errors.Is(err, auth.ErrLastAdministrator):
+		writeError(w, http.StatusConflict, "last_administrator", "必须保留至少一个启用的管理员")
+	case err != nil:
+		writeError(w, http.StatusUnprocessableEntity, "invalid_user", err.Error())
+	default:
+		writeJSON(w, http.StatusOK, user)
+	}
+}
+
+func (a *API) startUserSession(
+	w http.ResponseWriter,
+	r *http.Request,
+	actor auth.Principal,
+) error {
+	token, session, err := a.auth.CreateUserSession(actor.Actor, actor.Role)
 	if err != nil {
 		return err
 	}
@@ -1538,7 +1635,7 @@ func (a *API) startAdministratorSession(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, authSessionResponse{
 		Configured:    true,
 		Authenticated: true,
-		Username:      a.auth.Username(),
+		Username:      session.Actor,
 		Role:          session.Role,
 		Permissions:   auth.Permissions(session.Role),
 		CSRFToken:     session.CSRF,
@@ -1618,7 +1715,7 @@ func (a *API) authorizedSession(
 		reject()
 		return auth.Session{}, false
 	}
-	session, err := a.auth.Lookup(token)
+	session, err := a.auth.SessionFor(token)
 	if err != nil {
 		a.clearAuthCookies(w, r)
 		reject()
