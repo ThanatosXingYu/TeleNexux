@@ -415,6 +415,7 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
 	delivered_at TEXT NOT NULL DEFAULT '',
 	next_attempt_at TEXT NOT NULL DEFAULT '',
 	error_text TEXT NOT NULL DEFAULT '',
+	failure_alerted_at TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
 	UNIQUE(alert_id, channel_id)
@@ -755,6 +756,14 @@ FROM monitor_rules`); err != nil {
 		"notification_deliveries",
 		"next_attempt_at",
 		"next_attempt_at TEXT NOT NULL DEFAULT ''",
+	); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(
+		ctx,
+		"notification_deliveries",
+		"failure_alerted_at",
+		"failure_alerted_at TEXT NOT NULL DEFAULT ''",
 	); err != nil {
 		return err
 	}
@@ -1803,8 +1812,9 @@ INSERT OR IGNORE INTO monitor_alerts (
 	delivery, err := tx.ExecContext(ctx, `
 INSERT INTO notification_deliveries (
 	alert_id, channel_id, channel_kind, state, attempt_count,
-	last_attempt_at, delivered_at, next_attempt_at, error_text, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?)`,
+	last_attempt_at, delivered_at, next_attempt_at, error_text,
+	failure_alerted_at, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, '', '', '', ?, ?)`,
 		alert.ID,
 		rule.NotificationChannelID,
 		rule.NotificationChannelKind,

@@ -158,6 +158,43 @@ func TestWebhookNotificationRetriesWithBackoffAndStops(t *testing.T) {
 	if state != "failed" || nextAttempt != nil {
 		t.Fatalf("RetryNotificationDelivery(final) = %q, %v", state, nextAttempt)
 	}
+	var severity, failureAlertedAt string
+	if err := service.db.QueryRowContext(ctx, `
+SELECT a.severity, d.failure_alerted_at
+FROM monitor_alerts a
+JOIN notification_deliveries d ON d.alert_id = a.id
+WHERE d.id = ?`, delivery.ID,
+	).Scan(&severity, &failureAlertedAt); err != nil {
+		t.Fatalf("read failed delivery escalation: %v", err)
+	}
+	if severity != "critical" || failureAlertedAt == "" {
+		t.Fatalf("failed delivery escalation = %q/%q", severity, failureAlertedAt)
+	}
+	var escalationEvents int
+	if err := service.db.QueryRowContext(ctx, `
+SELECT COUNT(1) FROM monitor_alert_events
+WHERE alert_id = ? AND action = 'severity_changed' AND actor = 'system'`,
+		delivery.AlertID,
+	).Scan(&escalationEvents); err != nil || escalationEvents != 1 {
+		t.Fatalf("failed delivery escalation events = %d, %v", escalationEvents, err)
+	}
+	state, nextAttempt, err = service.RetryNotificationDelivery(
+		ctx,
+		delivery.ID,
+		notificationMaxAttempts,
+		"duplicate final failure",
+	)
+	if !errors.Is(err, ErrNotificationClaimLost) || state != "" || nextAttempt != nil {
+		t.Fatalf("duplicate RetryNotificationDelivery() = %q, %v, %v",
+			state, nextAttempt, err)
+	}
+	if err := service.db.QueryRowContext(ctx, `
+SELECT COUNT(1) FROM monitor_alert_events
+WHERE alert_id = ? AND action = 'severity_changed' AND actor = 'system'`,
+		delivery.AlertID,
+	).Scan(&escalationEvents); err != nil || escalationEvents != 1 {
+		t.Fatalf("duplicate failed delivery escalation events = %d, %v", escalationEvents, err)
+	}
 }
 
 func TestNotificationClaimUsesLeaseToAvoidConcurrentDelivery(t *testing.T) {
@@ -432,5 +469,14 @@ WHERE name = 'next_attempt_at'`).Scan(&columnCount); err != nil {
 	}
 	if columnCount != 1 {
 		t.Fatalf("next_attempt_at column count = %d", columnCount)
+	}
+	if err := service.db.QueryRowContext(ctx, `
+SELECT COUNT(1)
+FROM pragma_table_info('notification_deliveries')
+WHERE name = 'failure_alerted_at'`).Scan(&columnCount); err != nil {
+		t.Fatalf("inspect failure escalation column: %v", err)
+	}
+	if columnCount != 1 {
+		t.Fatalf("failure_alerted_at column count = %d", columnCount)
 	}
 }

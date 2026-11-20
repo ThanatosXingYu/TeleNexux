@@ -327,13 +327,31 @@ SELECT attempt_count, state FROM notification_deliveries WHERE id = ?`, id,
 	nextState := "queued"
 	nextAttempt := now.Add(notificationRetryDelay(attemptCount))
 	nextAttemptText := nextAttempt.Format(time.RFC3339Nano)
-	if attemptCount >= notificationMaxAttempts {
+	finalFailure := attemptCount >= notificationMaxAttempts
+	if finalFailure {
 		nextState = "failed"
 		nextAttempt = time.Time{}
 		nextAttemptText = ""
 	}
 	errorText = truncate(strings.TrimSpace(errorText), 300)
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", nil, fmt.Errorf("begin notification retry: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var alertID int64
+	if err := tx.QueryRowContext(ctx, `
+SELECT alert_id
+FROM notification_deliveries
+WHERE id = ? AND state = 'queued' AND attempt_count = ?`,
+		id,
+		attemptCount,
+	).Scan(&alertID); errors.Is(err, sql.ErrNoRows) {
+		return "", nil, s.notificationClaimLost(ctx, id)
+	} else if err != nil {
+		return "", nil, fmt.Errorf("read notification retry claim: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `
 UPDATE notification_deliveries
 SET state = ?, next_attempt_at = ?, error_text = ?, updated_at = ?
 WHERE id = ? AND state = 'queued' AND attempt_count = ?`,
@@ -353,6 +371,21 @@ WHERE id = ? AND state = 'queued' AND attempt_count = ?`,
 	}
 	if affected == 0 {
 		return "", nil, ErrNotificationClaimLost
+	}
+	if finalFailure {
+		if err := escalateFailedDelivery(
+			ctx,
+			tx,
+			alertID,
+			id,
+			errorText,
+			now,
+		); err != nil {
+			return "", nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return "", nil, fmt.Errorf("commit notification retry: %w", err)
 	}
 	if nextState == "failed" {
 		return nextState, nil, nil
@@ -374,6 +407,63 @@ SELECT 1 FROM notification_deliveries WHERE id = ?`, id).Scan(&exists)
 		return fmt.Errorf("read notification delivery claim state: %w", err)
 	}
 	return ErrNotificationClaimLost
+}
+
+func escalateFailedDelivery(
+	ctx context.Context,
+	tx *sql.Tx,
+	alertID int64,
+	deliveryID int64,
+	errorText string,
+	now time.Time,
+) error {
+	timestamp := now.UTC().Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(ctx, `
+UPDATE notification_deliveries
+SET failure_alerted_at = ?
+WHERE id = ? AND failure_alerted_at = ''`,
+		timestamp,
+		deliveryID,
+	)
+	if err != nil {
+		return fmt.Errorf("record failed notification escalation: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check failed notification escalation: %w", err)
+	}
+	if affected == 0 {
+		return nil
+	}
+	result, err = tx.ExecContext(ctx, `
+UPDATE monitor_alerts
+SET severity = 'critical', updated_at = ?
+WHERE id = ? AND state IN ('pending', 'acknowledged')`,
+		timestamp,
+		alertID,
+	)
+	if err != nil {
+		return fmt.Errorf("escalate failed notification alert: %w", err)
+	}
+	affected, err = result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check escalated notification alert: %w", err)
+	}
+	if affected == 0 {
+		return nil
+	}
+	note := truncate("通知投递连续失败，已升级为严重告警："+errorText, 500)
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO monitor_alert_events (
+	alert_id, action, actor, note, previous_state, next_state, created_at
+) VALUES (?, 'severity_changed', 'system', ?, 'pending', 'pending', ?)`,
+		alertID,
+		note,
+		timestamp,
+	); err != nil {
+		return fmt.Errorf("record failed notification alert event: %w", err)
+	}
+	return nil
 }
 
 func notificationRetryDelay(attemptCount int) time.Duration {
