@@ -1450,9 +1450,11 @@ func (a *API) authSession(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) setupAdministrator(w http.ResponseWriter, r *http.Request) {
 	w = responseWriter(w)
-	principal := auth.Principal{Actor: anonymousAuditActor, Role: anonymousAuditRole}
+	principal := auth.Principal{Actor: "", Role: ""}
 	defer func() {
-		a.recordAudit(r, responseWriter(w).StatusCode(), principal)
+		if principal.Actor != "" {
+			a.recordAudit(r, responseWriter(w).StatusCode(), principal)
+		}
 	}()
 	defer a.recoverRequest(w, r)
 	if a.auth == nil {
@@ -1467,6 +1469,7 @@ func (a *API) setupAdministrator(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "already_configured", "管理员账号已经初始化")
 		return
 	}
+	principal = auth.Principal{Actor: anonymousAuditActor, Role: anonymousAuditRole}
 	var input struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -1490,15 +1493,18 @@ func (a *API) setupAdministrator(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) loginAdministrator(w http.ResponseWriter, r *http.Request) {
 	w = responseWriter(w)
-	principal := auth.Principal{Actor: anonymousAuditActor, Role: anonymousAuditRole}
+	principal := auth.Principal{Actor: "", Role: ""}
 	defer func() {
-		a.recordAudit(r, responseWriter(w).StatusCode(), principal)
+		if principal.Actor != "" {
+			a.recordAudit(r, responseWriter(w).StatusCode(), principal)
+		}
 	}()
 	defer a.recoverRequest(w, r)
 	if a.auth == nil {
 		writeError(w, http.StatusServiceUnavailable, "auth_unavailable", "管理员鉴权尚未初始化")
 		return
 	}
+	principal = auth.Principal{Actor: anonymousAuditActor, Role: anonymousAuditRole}
 	key := clientAddress(r)
 	if retryAfter := a.reserveLoginAttempt(key); retryAfter > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
@@ -1663,9 +1669,11 @@ func (a *API) requireAPIPermission(
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w = responseWriter(w)
-		principal := auth.Principal{Actor: anonymousAuditActor, Role: anonymousAuditRole}
+		principal := auth.Principal{Actor: "", Role: ""}
 		defer func() {
-			a.recordAudit(r, responseWriter(w).StatusCode(), principal)
+			if principal.Actor != "" {
+				a.recordAudit(r, responseWriter(w).StatusCode(), principal)
+			}
 		}()
 		defer a.recoverRequest(w, r)
 		session, ok := a.authorizedSession(w, r, false)

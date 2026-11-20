@@ -2362,6 +2362,21 @@ func TestAuthenticatedAPIAccessIsAudited(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
 	}
 
+	unauthenticatedRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/accounts",
+		strings.NewReader(`{}`),
+	)
+	unauthenticatedRequest.Header.Set("Content-Type", "application/json")
+	unauthenticatedRecorder := httptest.NewRecorder()
+	handler.next.ServeHTTP(unauthenticatedRecorder, unauthenticatedRequest)
+	if unauthenticatedRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d, want 401; body: %s",
+			unauthenticatedRecorder.Code,
+			unauthenticatedRecorder.Body.String(),
+		)
+	}
+
 	deniedRequest := httptest.NewRequest(
 		http.MethodPost,
 		"/api/v1/accounts",
@@ -2382,6 +2397,11 @@ func TestAuthenticatedAPIAccessIsAudited(t *testing.T) {
 	}
 	if len(page.Items) != 2 {
 		t.Fatalf("audit events = %+v", page.Items)
+	}
+	for _, event := range page.Items {
+		if event.Actor == anonymousAuditActor {
+			t.Fatalf("unauthenticated API request created audit event: %+v", event)
+		}
 	}
 	readEvent := page.Items[1]
 	if readEvent.Actor != "admin" || readEvent.Role != auth.RoleAdministrator ||
