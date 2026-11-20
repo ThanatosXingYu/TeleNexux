@@ -521,10 +521,11 @@ CREATE TABLE IF NOT EXISTS ingestion_batches (
 	account_id INTEGER NOT NULL,
 	peer_type TEXT NOT NULL,
 	peer_id INTEGER NOT NULL,
-	status TEXT NOT NULL CHECK (status IN ('completed', 'partial', 'failed')),
+	status TEXT NOT NULL CHECK (status IN ('completed', 'partial', 'failed', 'failure_window')),
 	started_at TEXT NOT NULL,
 	finished_at TEXT NOT NULL,
 	fetched_count INTEGER NOT NULL DEFAULT 0,
+	attempt_count INTEGER NOT NULL DEFAULT 0,
 	event_count INTEGER NOT NULL DEFAULT 0,
 	inserted_count INTEGER NOT NULL DEFAULT 0,
 	checkpoint_before INTEGER NOT NULL DEFAULT 0,
@@ -537,9 +538,13 @@ CREATE INDEX IF NOT EXISTS ingestion_batches_target_idx
 	ON ingestion_batches(account_id, peer_type, peer_id, finished_at DESC);
 CREATE TRIGGER IF NOT EXISTS ingestion_batches_no_update
 BEFORE UPDATE ON ingestion_batches
+WHEN OLD.status != 'failure_window'
 BEGIN
 	SELECT RAISE(ABORT, 'ingestion batches are append-only');
 END;
+CREATE UNIQUE INDEX IF NOT EXISTS ingestion_batches_failure_window_idx
+	ON ingestion_batches(account_id, peer_type, peer_id)
+	WHERE status = 'failure_window';
 CREATE TABLE IF NOT EXISTS evidence_events (
 	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
 	event_id TEXT NOT NULL UNIQUE,
@@ -570,6 +575,22 @@ CREATE TRIGGER IF NOT EXISTS evidence_events_no_update
 BEFORE UPDATE ON evidence_events
 BEGIN
 	SELECT RAISE(ABORT, 'evidence events are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS evidence_events_delete_requires_destruction
+BEFORE DELETE ON evidence_events
+WHEN NOT EXISTS (
+	SELECT 1 FROM retention_destructions
+	WHERE account_id = OLD.account_id
+		AND peer_type = OLD.peer_type
+		AND peer_id = OLD.peer_id
+		AND message_id = OLD.message_id
+)
+AND NOT EXISTS (
+	SELECT 1 FROM account_destructions
+	WHERE account_id = OLD.account_id
+)
+BEGIN
+	SELECT RAISE(ABORT, 'evidence events require recorded destruction');
 END;
 CREATE TABLE IF NOT EXISTS retention_policies (
 	id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -693,7 +714,43 @@ BEGIN
 	SELECT RAISE(ABORT, 'audit events are append-only');
 END;`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
-		return fmt.Errorf("migrate operations database: %w", err)
+		if !strings.Contains(strings.ToLower(err.Error()), "check constraint failed") {
+			return fmt.Errorf("migrate operations database: %w", err)
+		}
+		if err := s.ensureColumn(
+			ctx,
+			"ingestion_batches",
+			"payload_sha256",
+			"payload_sha256 TEXT NOT NULL DEFAULT ''",
+		); err != nil {
+			return err
+		}
+		if err := s.rebuildFailureWindowBatchTable(ctx); err != nil {
+			return fmt.Errorf("migrate operations database: %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx, schema); err != nil {
+			return fmt.Errorf("migrate operations database: %w", err)
+		}
+	}
+	if err := s.ensureColumn(
+		ctx,
+		"ingestion_batches",
+		"payload_sha256",
+		"payload_sha256 TEXT NOT NULL DEFAULT ''",
+	); err != nil {
+		return err
+	}
+	needsFailureWindowMigration, err := s.ingestionBatchSchemaNeedsRebuild(ctx)
+	if err != nil {
+		return err
+	}
+	if needsFailureWindowMigration {
+		if err := s.rebuildFailureWindowBatchTable(ctx); err != nil {
+			return fmt.Errorf("migrate operations database: %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx, schema); err != nil {
+			return fmt.Errorf("migrate operations database: %w", err)
+		}
 	}
 	if ftsExists == 0 {
 		if _, err := s.db.ExecContext(ctx,
@@ -824,6 +881,14 @@ UPDATE monitor_alerts SET updated_at = created_at WHERE updated_at = ''`); err !
 	); err != nil {
 		return err
 	}
+	if err := s.ensureColumn(
+		ctx,
+		"ingestion_batches",
+		"attempt_count",
+		"attempt_count INTEGER NOT NULL DEFAULT 0",
+	); err != nil {
+		return err
+	}
 	for _, column := range []struct {
 		name       string
 		definition string
@@ -871,6 +936,99 @@ ON CONFLICT(account_id, peer_type, peer_id) DO NOTHING`); err != nil {
 		return fmt.Errorf("seed monitor checkpoints: %w", err)
 	}
 	return nil
+}
+
+func (s *Service) rebuildFailureWindowBatchTable(ctx context.Context) error {
+	const createTemporary = `
+CREATE TABLE ingestion_batches_failure_window_migration (
+	batch_id TEXT PRIMARY KEY,
+	source TEXT NOT NULL,
+	account_id INTEGER NOT NULL,
+	peer_type TEXT NOT NULL,
+	peer_id INTEGER NOT NULL,
+	status TEXT NOT NULL CHECK (
+		status IN ('completed', 'partial', 'failed', 'failure_window')
+	),
+	started_at TEXT NOT NULL,
+	finished_at TEXT NOT NULL,
+	fetched_count INTEGER NOT NULL DEFAULT 0,
+	attempt_count INTEGER NOT NULL DEFAULT 0,
+	event_count INTEGER NOT NULL DEFAULT 0,
+	inserted_count INTEGER NOT NULL DEFAULT 0,
+	checkpoint_before INTEGER NOT NULL DEFAULT 0,
+	checkpoint_after INTEGER NOT NULL DEFAULT 0,
+	backlog_detected INTEGER NOT NULL DEFAULT 0,
+	payload_sha256 TEXT NOT NULL DEFAULT '',
+	error_text TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO ingestion_batches_failure_window_migration (
+	batch_id, source, account_id, peer_type, peer_id, status, started_at,
+	finished_at, fetched_count, attempt_count, event_count, inserted_count,
+	checkpoint_before, checkpoint_after, backlog_detected, payload_sha256,
+	error_text
+)
+SELECT batch_id, source, account_id, peer_type, peer_id, status, started_at,
+	finished_at, fetched_count, 0, event_count, inserted_count,
+	checkpoint_before, checkpoint_after, backlog_detected, payload_sha256,
+	error_text
+FROM ingestion_batches;`
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin failure window migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, "DROP TRIGGER IF EXISTS ingestion_batches_no_update"); err != nil {
+		return fmt.Errorf("drop legacy ingestion batch trigger: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, createTemporary); err != nil {
+		return fmt.Errorf("create failure window batch table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DROP TABLE ingestion_batches"); err != nil {
+		return fmt.Errorf("replace ingestion batch table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		"ALTER TABLE ingestion_batches_failure_window_migration RENAME TO ingestion_batches",
+	); err != nil {
+		return fmt.Errorf("publish failure window batch table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+CREATE INDEX IF NOT EXISTS ingestion_batches_target_idx
+	ON ingestion_batches(account_id, peer_type, peer_id, finished_at DESC)`); err != nil {
+		return fmt.Errorf("recreate ingestion batch target index: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+CREATE UNIQUE INDEX IF NOT EXISTS ingestion_batches_failure_window_idx
+	ON ingestion_batches(account_id, peer_type, peer_id)
+	WHERE status = 'failure_window'`); err != nil {
+		return fmt.Errorf("create failure window batch index: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+CREATE TRIGGER ingestion_batches_no_update
+BEFORE UPDATE ON ingestion_batches
+WHEN OLD.status != 'failure_window'
+BEGIN
+	SELECT RAISE(ABORT, 'ingestion batches are append-only');
+END`); err != nil {
+		return fmt.Errorf("create ingestion batch protection trigger: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit failure window migration: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) ingestionBatchSchemaNeedsRebuild(ctx context.Context) (bool, error) {
+	var definition string
+	if err := s.db.QueryRowContext(ctx, `
+SELECT COALESCE(sql, '')
+FROM sqlite_master
+WHERE type = 'table' AND name = 'ingestion_batches'`,
+	).Scan(&definition); err != nil {
+		return false, fmt.Errorf("inspect ingestion batch table definition: %w", err)
+	}
+	normalized := strings.ToLower(definition)
+	return !strings.Contains(normalized, "'failure_window'") ||
+		!strings.Contains(normalized, "attempt_count"), nil
 }
 
 func (s *Service) ensureColumn(
@@ -2431,6 +2589,20 @@ LIMIT 1`, accountID).Scan(&heldAccountID); err == nil {
 	if err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT OR IGNORE INTO account_destructions (
+	account_id, destroyed_at, reason, evidence_event_count,
+	ingestion_batch_count, content_digest, batch_digest, schema_version
+) VALUES (?, ?, 'account_purge', ?, ?, ?, ?, 1)`,
+		accountID,
+		s.now().UTC().Format(time.RFC3339Nano),
+		summary.EvidenceEventCount,
+		summary.IngestionBatchCount,
+		summary.ContentDigest,
+		summary.BatchDigest,
+	); err != nil {
+		return fmt.Errorf("record account destruction: %w", err)
+	}
 	for _, query := range []string{
 		`DELETE FROM account_group_members WHERE account_id = ?`,
 		`DELETE FROM monitor_alert_events
@@ -2449,20 +2621,6 @@ LIMIT 1`, accountID).Scan(&heldAccountID); err == nil {
 		if _, err := tx.ExecContext(ctx, query, accountID); err != nil {
 			return fmt.Errorf("purge account operations: %w", err)
 		}
-	}
-	if _, err := tx.ExecContext(ctx, `
-INSERT OR IGNORE INTO account_destructions (
-	account_id, destroyed_at, reason, evidence_event_count,
-	ingestion_batch_count, content_digest, batch_digest, schema_version
-) VALUES (?, ?, 'account_purge', ?, ?, ?, ?, 1)`,
-		accountID,
-		s.now().UTC().Format(time.RFC3339Nano),
-		summary.EvidenceEventCount,
-		summary.IngestionBatchCount,
-		summary.ContentDigest,
-		summary.BatchDigest,
-	); err != nil {
-		return fmt.Errorf("record account destruction: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit purge account operations: %w", err)
@@ -2551,7 +2709,7 @@ ORDER BY sequence`, accountID)
 	_, _ = io.WriteString(batchDigest, "telenexus-account-destruction-batches-v1\n")
 	rows, err = tx.QueryContext(ctx, `
 SELECT batch_id, source, peer_type, peer_id, status, started_at, finished_at,
-	fetched_count, event_count, inserted_count, checkpoint_before,
+	fetched_count, attempt_count, event_count, inserted_count, checkpoint_before,
 	checkpoint_after, backlog_detected, payload_sha256, error_text
 FROM ingestion_batches
 WHERE account_id = ?
@@ -2565,7 +2723,8 @@ ORDER BY started_at, batch_id`, accountID)
 			startedAt, finishedAt             string
 			payloadSHA256, errorText          string
 			peerID                            int64
-			fetchedCount, eventCount          int
+			fetchedCount, attemptCount        int
+			eventCount                        int
 			insertedCount, checkpointBefore   int
 			checkpointAfter, backlogDetected  int
 		)
@@ -2578,6 +2737,7 @@ ORDER BY started_at, batch_id`, accountID)
 			&startedAt,
 			&finishedAt,
 			&fetchedCount,
+			&attemptCount,
 			&eventCount,
 			&insertedCount,
 			&checkpointBefore,
@@ -2591,7 +2751,7 @@ ORDER BY started_at, batch_id`, accountID)
 		}
 		if _, err := fmt.Fprintf(
 			batchDigest,
-			"%s\x00%s\x00%s\x00%d\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%s\x00%s\n",
+			"%s\x00%s\x00%s\x00%d\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%s\x00%s\n",
 			batchID,
 			source,
 			peerType,
@@ -2600,6 +2760,7 @@ ORDER BY started_at, batch_id`, accountID)
 			startedAt,
 			finishedAt,
 			fetchedCount,
+			attemptCount,
 			eventCount,
 			insertedCount,
 			checkpointBefore,

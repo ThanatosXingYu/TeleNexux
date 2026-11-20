@@ -31,6 +31,8 @@ type CollectionTarget struct {
 	LastSuccessfulAt           *time.Time `json:"last_successful_at,omitempty"`
 	CheckpointDelaySeconds     int64      `json:"checkpoint_delay_seconds"`
 	LastBatchFetched           int        `json:"last_batch_fetched"`
+	LastBatchStatus            string     `json:"last_batch_status,omitempty"`
+	LastBatchAttempts          int        `json:"last_batch_attempts"`
 	LastBatchAt                *time.Time `json:"last_batch_at,omitempty"`
 	AccountConsecutiveFailures int        `json:"account_consecutive_failures"`
 	AccountLastError           string     `json:"account_last_error,omitempty"`
@@ -55,6 +57,13 @@ type IngestBatchResult struct {
 	Inserted int     `json:"inserted"`
 	Events   int     `json:"events"`
 	Alerts   []Alert `json:"alerts"`
+}
+
+type FailureWindowResult struct {
+	BatchID        string    `json:"batch_id"`
+	Attempts       int       `json:"attempts"`
+	FirstStartedAt time.Time `json:"first_started_at"`
+	LastStartedAt  time.Time `json:"last_started_at"`
 }
 
 type EvidenceEvent struct {
@@ -104,6 +113,8 @@ SELECT r.account_id, r.peer_type, r.peer_id, MAX(r.peer_title),
 	COALESCE(st.last_error, ''),
 	COALESCE(c.last_success_at, ''),
 	COALESCE(b.fetched_count, 0),
+	COALESCE(b.status, ''),
+	COALESCE(b.attempt_count, 0),
 	COALESCE(b.finished_at, '')
 FROM monitor_rules r
 LEFT JOIN monitor_checkpoints c
@@ -149,6 +160,8 @@ ORDER BY r.account_id, r.peer_type, r.peer_id`)
 			&target.AccountLastError,
 			&lastSuccessful,
 			&target.LastBatchFetched,
+			&target.LastBatchStatus,
+			&target.LastBatchAttempts,
 			&lastBatch,
 		); err != nil {
 			return nil, fmt.Errorf("scan collection target: %w", err)
@@ -296,6 +309,9 @@ func (s *Service) ingestBatchTx(
 		return IngestBatchResult{}, err
 	}
 	if input.Complete {
+		if err := s.closeFailureWindowTx(ctx, tx, input); err != nil {
+			return IngestBatchResult{}, err
+		}
 		if err := s.advanceCheckpointTx(ctx, tx, input, checkpointAfter, now); err != nil {
 			return IngestBatchResult{}, err
 		}
@@ -527,10 +543,10 @@ func (s *Service) insertBatchTx(
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO ingestion_batches (
 	batch_id, source, account_id, peer_type, peer_id, status, started_at,
-	finished_at, fetched_count, event_count, inserted_count,
+	finished_at, fetched_count, attempt_count, event_count, inserted_count,
 	checkpoint_before, checkpoint_after, backlog_detected, payload_sha256,
 	error_text
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, '')`,
 		input.BatchID,
 		input.Source,
 		input.AccountID,
@@ -549,6 +565,25 @@ INSERT INTO ingestion_batches (
 	)
 	if err != nil {
 		return fmt.Errorf("record ingestion batch: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) closeFailureWindowTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	input IngestBatchInput,
+) error {
+	if _, err := tx.ExecContext(ctx, `
+UPDATE ingestion_batches
+SET status = 'failed'
+WHERE account_id = ? AND peer_type = ? AND peer_id = ?
+	AND status = 'failure_window'`,
+		input.AccountID,
+		input.PeerType,
+		input.PeerID,
+	); err != nil {
+		return fmt.Errorf("close collection failure window: %w", err)
 	}
 	return nil
 }
@@ -630,41 +665,106 @@ func (s *Service) RecordBatchFailure(
 	input IngestBatchInput,
 	runErr error,
 ) error {
+	_, err := s.RecordCollectionFailure(ctx, input, runErr)
+	return err
+}
+
+// RecordCollectionFailure coalesces repeated failures for one account target
+// into a bounded counter window while preserving the original failure batch.
+func (s *Service) RecordCollectionFailure(
+	ctx context.Context,
+	input IngestBatchInput,
+	runErr error,
+) (FailureWindowResult, error) {
 	normalized, err := normalizeBatchInput(input)
 	if err != nil {
-		return err
+		return FailureWindowResult{}, err
 	}
 	if runErr == nil {
 		runErr = errors.New("collection failed")
 	}
+	errorText := truncate(runErr.Error(), 500)
 	now := s.now().UTC()
 	timestamp := now.Format(time.RFC3339Nano)
+	result := FailureWindowResult{
+		BatchID:        normalized.BatchID,
+		Attempts:       1,
+		FirstStartedAt: now,
+		LastStartedAt:  now,
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin failed ingestion batch: %w", err)
+		return FailureWindowResult{}, fmt.Errorf("begin failed ingestion batch: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO ingestion_batches (
-	batch_id, source, account_id, peer_type, peer_id, status, started_at,
-	finished_at, fetched_count, event_count, inserted_count,
-	checkpoint_before, checkpoint_after, backlog_detected, payload_sha256,
-	error_text
-) VALUES (?, ?, ?, ?, ?, 'failed', ?, ?, 0, 0, 0, ?, ?, ?, ?, ?)`,
-		normalized.BatchID,
-		normalized.Source,
+	var firstStartedAt string
+	err = tx.QueryRowContext(ctx, `
+SELECT batch_id, started_at
+FROM ingestion_batches
+WHERE account_id = ? AND peer_type = ? AND peer_id = ?
+	AND status = 'failure_window'
+LIMIT 1`,
 		normalized.AccountID,
 		normalized.PeerType,
 		normalized.PeerID,
-		timestamp,
-		timestamp,
-		normalized.CheckpointBefore,
-		normalized.CheckpointBefore,
-		boolInt(normalized.BacklogDetected),
-		batchPayloadHash(normalized),
-		truncate(runErr.Error(), 500),
-	); err != nil {
-		return fmt.Errorf("record failed ingestion batch: %w", err)
+	).Scan(&result.BatchID, &firstStartedAt)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO ingestion_batches (
+	batch_id, source, account_id, peer_type, peer_id, status, started_at,
+	finished_at, fetched_count, attempt_count, event_count, inserted_count,
+	checkpoint_before, checkpoint_after, backlog_detected, payload_sha256,
+	error_text
+) VALUES (?, ?, ?, ?, ?, 'failure_window', ?, ?, 0, 1, 0, 0, ?, ?, ?, ?, ?)`,
+			normalized.BatchID,
+			normalized.Source,
+			normalized.AccountID,
+			normalized.PeerType,
+			normalized.PeerID,
+			timestamp,
+			timestamp,
+			normalized.CheckpointBefore,
+			normalized.CheckpointBefore,
+			boolInt(normalized.BacklogDetected),
+			batchPayloadHash(normalized),
+			errorText,
+		); err != nil {
+			return FailureWindowResult{}, fmt.Errorf("record failed ingestion batch: %w", err)
+		}
+		result.FirstStartedAt = now
+	case err != nil:
+		return FailureWindowResult{}, fmt.Errorf("read collection failure window: %w", err)
+	default:
+		result.FirstStartedAt, err = time.Parse(time.RFC3339Nano, firstStartedAt)
+		if err != nil {
+			return FailureWindowResult{}, fmt.Errorf("parse failure window start: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+UPDATE ingestion_batches
+SET source = ?, finished_at = ?, attempt_count = attempt_count + 1,
+	checkpoint_before = ?, checkpoint_after = ?,
+	backlog_detected = ?, payload_sha256 = ?, error_text = ?
+WHERE batch_id = ? AND status = 'failure_window'`,
+			normalized.Source,
+			timestamp,
+			normalized.CheckpointBefore,
+			normalized.CheckpointBefore,
+			boolInt(normalized.BacklogDetected),
+			batchPayloadHash(normalized),
+			errorText,
+			result.BatchID,
+		); err != nil {
+			return FailureWindowResult{}, fmt.Errorf("extend collection failure window: %w", err)
+		}
+	}
+	if err := tx.QueryRowContext(ctx, `
+SELECT attempt_count
+FROM ingestion_batches
+WHERE batch_id = ?`,
+		result.BatchID,
+	).Scan(&result.Attempts); err != nil {
+		return FailureWindowResult{}, fmt.Errorf("read failure window attempts: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO monitor_checkpoints (
@@ -680,29 +780,29 @@ ON CONFLICT(account_id, peer_type, peer_id) DO UPDATE SET
 		normalized.PeerType,
 		normalized.PeerID,
 		normalized.CheckpointBefore,
-		truncate(runErr.Error(), 500),
+		errorText,
 		boolInt(normalized.BacklogDetected),
 		timestamp,
 	); err != nil {
-		return fmt.Errorf("record collection failure: %w", err)
+		return FailureWindowResult{}, fmt.Errorf("record collection failure: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 UPDATE monitor_rules
 SET last_run_at = ?, last_error = ?, updated_at = ?
 WHERE account_id = ? AND peer_type = ? AND peer_id = ?`,
 		timestamp,
-		truncate(runErr.Error(), 500),
+		errorText,
 		timestamp,
 		normalized.AccountID,
 		normalized.PeerType,
 		normalized.PeerID,
 	); err != nil {
-		return fmt.Errorf("record monitor rule failure: %w", err)
+		return FailureWindowResult{}, fmt.Errorf("record monitor rule failure: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit failed ingestion batch: %w", err)
+		return FailureWindowResult{}, fmt.Errorf("commit failed ingestion batch: %w", err)
 	}
-	return nil
+	return result, nil
 }
 
 func (s *Service) RecordDeletion(

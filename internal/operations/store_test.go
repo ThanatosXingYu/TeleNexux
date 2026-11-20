@@ -946,6 +946,90 @@ ORDER BY account_id`)
 	}
 }
 
+func TestOpenMigratesLegacyIngestionBatchFailureWindows(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-ingestion-batches.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE ingestion_batches (
+	batch_id TEXT PRIMARY KEY,
+	source TEXT NOT NULL,
+	account_id INTEGER NOT NULL,
+	peer_type TEXT NOT NULL,
+	peer_id INTEGER NOT NULL,
+	status TEXT NOT NULL CHECK (status IN ('completed', 'partial', 'failed')),
+	started_at TEXT NOT NULL,
+	finished_at TEXT NOT NULL,
+	fetched_count INTEGER NOT NULL DEFAULT 0,
+	event_count INTEGER NOT NULL DEFAULT 0,
+	inserted_count INTEGER NOT NULL DEFAULT 0,
+	checkpoint_before INTEGER NOT NULL DEFAULT 0,
+	checkpoint_after INTEGER NOT NULL DEFAULT 0,
+	backlog_detected INTEGER NOT NULL DEFAULT 0,
+	error_text TEXT NOT NULL DEFAULT ''
+);
+CREATE TRIGGER ingestion_batches_no_update
+BEFORE UPDATE ON ingestion_batches
+BEGIN
+	SELECT RAISE(ABORT, 'ingestion batches are append-only');
+END;
+INSERT INTO ingestion_batches (
+	batch_id, source, account_id, peer_type, peer_id, status, started_at,
+	finished_at, fetched_count
+) VALUES (
+	'legacy-batch', 'scheduler', 7, 'chat', 42, 'completed',
+	'2026-11-20T10:00:00Z', '2026-11-20T10:00:00Z', 3
+)`); err != nil {
+		t.Fatalf("create legacy ingestion batch table: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	service, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open() migrated database error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	var (
+		status       string
+		fetchedCount int
+		attemptCount int
+	)
+	if err := service.db.QueryRowContext(ctx, `
+SELECT status, fetched_count, attempt_count
+FROM ingestion_batches
+WHERE batch_id = 'legacy-batch'`,
+	).Scan(&status, &fetchedCount, &attemptCount); err != nil {
+		t.Fatalf("read migrated ingestion batch: %v", err)
+	}
+	if status != "completed" || fetchedCount != 3 || attemptCount != 0 {
+		t.Fatalf(
+			"migrated ingestion batch = %q/%d/%d",
+			status,
+			fetchedCount,
+			attemptCount,
+		)
+	}
+	if _, err := service.db.ExecContext(ctx, `
+INSERT INTO ingestion_batches (
+	batch_id, source, account_id, peer_type, peer_id, status, started_at,
+	finished_at, attempt_count
+) VALUES (
+	'failure-window', 'scheduler', 7, 'chat', 42, 'failure_window',
+	'2026-11-20T10:01:00Z', '2026-11-20T10:01:00Z', 1
+)`); err != nil {
+		t.Fatalf("insert migrated failure window: %v", err)
+	}
+}
+
 func TestOpenMigratesLegacyMonitorRulesToDefaultChannel(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "legacy.db")

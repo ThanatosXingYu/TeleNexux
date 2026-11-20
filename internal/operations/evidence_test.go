@@ -335,6 +335,128 @@ func TestRecordBatchFailureUpdatesCollectionHealth(t *testing.T) {
 	}
 }
 
+func TestRecordCollectionFailureCoalescesAttemptsAndSuccessClosesWindow(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	firstFailureAt := time.Date(2026, 11, 20, 13, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return firstFailureAt }
+	if _, err := service.CreateRule(
+		ctx,
+		"Failure window",
+		8,
+		"channel",
+		99,
+		"Alerts",
+		nil,
+	); err != nil {
+		t.Fatalf("CreateRule() error = %v", err)
+	}
+	input := IngestBatchInput{
+		BatchID:          "first-failure",
+		Source:           "test",
+		AccountID:        8,
+		PeerType:         "channel",
+		PeerID:           99,
+		PeerTitle:        "Alerts",
+		CheckpointBefore: 50,
+	}
+	first, err := service.RecordCollectionFailure(ctx, input, errors.New("first failure"))
+	if err != nil {
+		t.Fatalf("first RecordCollectionFailure() error = %v", err)
+	}
+	if first.Attempts != 1 || first.BatchID != input.BatchID ||
+		!first.FirstStartedAt.Equal(firstFailureAt) {
+		t.Fatalf("first failure result = %+v", first)
+	}
+
+	secondFailureAt := firstFailureAt.Add(5 * time.Minute)
+	service.now = func() time.Time { return secondFailureAt }
+	input.BatchID = "second-failure"
+	second, err := service.RecordCollectionFailure(ctx, input, errors.New("second failure"))
+	if err != nil {
+		t.Fatalf("second RecordCollectionFailure() error = %v", err)
+	}
+	if second.BatchID != first.BatchID || second.Attempts != 2 ||
+		!second.FirstStartedAt.Equal(firstFailureAt) ||
+		!second.LastStartedAt.Equal(secondFailureAt) {
+		t.Fatalf("second failure result = %+v", second)
+	}
+	var batchCount, attempts, fetchedCount int
+	if err := service.db.QueryRowContext(ctx, `
+SELECT COUNT(1), MAX(attempt_count), MAX(fetched_count)
+FROM ingestion_batches
+WHERE account_id = 8 AND peer_type = 'channel' AND peer_id = 99`,
+	).Scan(&batchCount, &attempts, &fetchedCount); err != nil {
+		t.Fatalf("read failure window: %v", err)
+	}
+	if batchCount != 1 || attempts != 2 || fetchedCount != 0 {
+		t.Fatalf(
+			"failure window batch/attempts/fetched = %d/%d/%d",
+			batchCount,
+			attempts,
+			fetchedCount,
+		)
+	}
+
+	targets, err := service.ListCollectionTargets(ctx)
+	if err != nil {
+		t.Fatalf("ListCollectionTargets() error = %v", err)
+	}
+	if len(targets) != 1 ||
+		targets[0].LastBatchStatus != "failure_window" ||
+		targets[0].LastBatchAttempts != 2 ||
+		targets[0].LastBatchFetched != 0 {
+		t.Fatalf("failure window target = %+v", targets)
+	}
+
+	successAt := secondFailureAt.Add(5 * time.Minute)
+	service.now = func() time.Time { return successAt }
+	if _, err := service.IngestBatch(ctx, IngestBatchInput{
+		BatchID:         "success-after-failures",
+		Source:          "test",
+		AccountID:       8,
+		PeerType:        "channel",
+		PeerID:          99,
+		PeerTitle:       "Alerts",
+		CheckpointAfter: 51,
+		Complete:        true,
+	}); err != nil {
+		t.Fatalf("successful IngestBatch() error = %v", err)
+	}
+	var closedStatus string
+	if err := service.db.QueryRowContext(ctx, `
+SELECT status FROM ingestion_batches WHERE batch_id = ?`,
+		first.BatchID,
+	).Scan(&closedStatus); err != nil {
+		t.Fatalf("read closed failure window: %v", err)
+	}
+	if closedStatus != "failed" {
+		t.Fatalf("closed failure window status = %q, want failed", closedStatus)
+	}
+
+	thirdFailureAt := successAt.Add(5 * time.Minute)
+	service.now = func() time.Time { return thirdFailureAt }
+	input.BatchID = "third-failure"
+	third, err := service.RecordCollectionFailure(ctx, input, errors.New("third failure"))
+	if err != nil {
+		t.Fatalf("third RecordCollectionFailure() error = %v", err)
+	}
+	if third.BatchID == first.BatchID || third.Attempts != 1 ||
+		!third.FirstStartedAt.Equal(thirdFailureAt) {
+		t.Fatalf("third failure result = %+v, first = %+v", third, first)
+	}
+	if err := service.db.QueryRowContext(ctx, `
+SELECT COUNT(1)
+FROM ingestion_batches
+WHERE account_id = 8 AND peer_type = 'channel' AND peer_id = 99`,
+	).Scan(&batchCount); err != nil {
+		t.Fatalf("count failure windows: %v", err)
+	}
+	if batchCount != 3 {
+		t.Fatalf("failure batch count = %d, want 3", batchCount)
+	}
+}
+
 func TestMonitorSummaryReportsWorstCheckpointDelayAndFloodWait(t *testing.T) {
 	ctx := context.Background()
 	service := newTestService(t)
@@ -458,6 +580,10 @@ func TestEvidenceAndIngestionBatchesAreAppendOnly(t *testing.T) {
 UPDATE evidence_events SET text = 'tampered'
 WHERE batch_id = 'append-only-batch'`); err == nil {
 		t.Fatal("evidence event update unexpectedly succeeded")
+	}
+	if _, err := service.db.ExecContext(ctx, `
+DELETE FROM evidence_events WHERE batch_id = 'append-only-batch'`); err == nil {
+		t.Fatal("evidence event deletion unexpectedly succeeded")
 	}
 	if _, err := service.db.ExecContext(ctx, `
 UPDATE ingestion_batches SET status = 'failed'

@@ -43,6 +43,7 @@ type EvidenceManifest struct {
 	CompletedBatches  int                     `json:"completed_batches"`
 	PartialBatches    int                     `json:"partial_batches"`
 	FailedBatches     int                     `json:"failed_batches"`
+	FailureWindows    int                     `json:"failure_windows"`
 	IncompleteBatches []EvidenceManifestIssue `json:"incomplete_batches"`
 	FirstSequence     int64                   `json:"first_sequence"`
 	LastSequence      int64                   `json:"last_sequence"`
@@ -211,6 +212,9 @@ GROUP BY status`, args...)
 			manifest.PartialBatches = count
 		case "failed":
 			manifest.FailedBatches = count
+		case "failure_window":
+			manifest.FailureWindows = count
+			manifest.FailedBatches += count
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -223,7 +227,7 @@ GROUP BY status`, args...)
 	issueRows, err := s.db.QueryContext(ctx, `
 SELECT batch_id, account_id, peer_type, peer_id, status
 FROM ingestion_batches`+where+`
-	AND status IN ('partial', 'failed')
+	AND status IN ('partial', 'failed', 'failure_window')
 ORDER BY finished_at, batch_id
 LIMIT 50`, args...)
 	if err != nil {

@@ -60,6 +60,7 @@ func TestBuildEvidenceManifestReportsIntegrityAndIncompleteBatches(t *testing.T)
 		manifest.BatchCount != 2 ||
 		manifest.CompletedBatches != 1 ||
 		manifest.FailedBatches != 1 ||
+		manifest.FailureWindows != 1 ||
 		manifest.GeneratedBy != "operator" ||
 		len(manifest.IncompleteBatches) != 1 ||
 		manifest.IncompleteBatches[0].BatchID != "manifest-failed" ||
