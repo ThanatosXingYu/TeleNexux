@@ -96,6 +96,18 @@ CREATE INDEX IF NOT EXISTS accounts_status_created_idx
 		},
 		{name: "purge_state", definition: "purge_state TEXT NOT NULL DEFAULT 'active'"},
 		{name: "purge_error", definition: "purge_error TEXT NOT NULL DEFAULT ''"},
+		{
+			name:       "proxy_enabled",
+			definition: "proxy_enabled INTEGER NOT NULL DEFAULT 0",
+		},
+		{name: "proxy_host", definition: "proxy_host TEXT NOT NULL DEFAULT ''"},
+		{name: "proxy_port", definition: "proxy_port INTEGER NOT NULL DEFAULT 0"},
+		{name: "proxy_username", definition: "proxy_username TEXT NOT NULL DEFAULT ''"},
+		{
+			name:       "proxy_last_checked_at",
+			definition: "proxy_last_checked_at TEXT NOT NULL DEFAULT ''",
+		},
+		{name: "proxy_last_error", definition: "proxy_last_error TEXT NOT NULL DEFAULT ''"},
 	} {
 		exists, err := r.columnExists(ctx, "accounts", column.name)
 		if err != nil {
@@ -249,7 +261,8 @@ func (r *SQLiteRepository) List(ctx context.Context, filter Filter) ([]Account, 
 	query := `
 SELECT id, phone_number, username, display_name, status, status_reason,
 	last_verified_at, created_at, updated_at, purge_state, purge_error,
-	deletion_requested_at, deletion_effective_at
+	deletion_requested_at, deletion_effective_at, proxy_enabled, proxy_host,
+	proxy_port, proxy_username, proxy_last_checked_at, proxy_last_error
 FROM accounts`
 	args := make([]any, 0, 3)
 	where := make([]string, 0, 2)
@@ -296,7 +309,8 @@ func (r *SQLiteRepository) Get(ctx context.Context, id int64) (Account, error) {
 	const query = `
 SELECT id, phone_number, username, display_name, status, status_reason,
 	last_verified_at, created_at, updated_at, purge_state, purge_error,
-	deletion_requested_at, deletion_effective_at
+	deletion_requested_at, deletion_effective_at, proxy_enabled, proxy_host,
+	proxy_port, proxy_username, proxy_last_checked_at, proxy_last_error
 FROM accounts
 WHERE id = ? AND purge_state = 'active'`
 	item, err := scanAccount(r.db.QueryRowContext(ctx, query, id))
@@ -310,7 +324,8 @@ func (r *SQLiteRepository) GetIncludingDeleted(ctx context.Context, id int64) (A
 	const query = `
 SELECT id, phone_number, username, display_name, status, status_reason,
 	last_verified_at, created_at, updated_at, purge_state, purge_error,
-	deletion_requested_at, deletion_effective_at
+	deletion_requested_at, deletion_effective_at, proxy_enabled, proxy_host,
+	proxy_port, proxy_username, proxy_last_checked_at, proxy_last_error
 FROM accounts
 WHERE id = ?`
 	item, err := scanAccount(r.db.QueryRowContext(ctx, query, id))
@@ -346,6 +361,55 @@ WHERE id = ? AND purge_state = 'active'`
 		return Account{}, fmt.Errorf("read account %d after status update: %w", id, err)
 	}
 	return item, nil
+}
+
+func (r *SQLiteRepository) SetProxy(
+	ctx context.Context,
+	id int64,
+	proxy Proxy,
+	now time.Time,
+) (Account, error) {
+	lastChecked := ""
+	if proxy.LastChecked != nil {
+		lastChecked = proxy.LastChecked.UTC().Format(time.RFC3339Nano)
+	}
+	result, err := r.db.ExecContext(ctx, `
+UPDATE accounts
+SET proxy_enabled = ?, proxy_host = ?, proxy_port = ?, proxy_username = ?,
+	proxy_last_checked_at = ?, proxy_last_error = ?, updated_at = ?
+WHERE id = ? AND purge_state = 'active'`,
+		boolInt(proxy.Enabled),
+		proxy.Host,
+		proxy.Port,
+		proxy.Username,
+		lastChecked,
+		proxy.LastError,
+		now.UTC().Format(time.RFC3339Nano),
+		id,
+	)
+	if err != nil {
+		return Account{}, fmt.Errorf("update account %d proxy: %w", id, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Account{}, fmt.Errorf("check updated account %d proxy: %w", id, err)
+	}
+	if affected == 0 {
+		return Account{}, ErrNotFound
+	}
+	item, err := r.Get(ctx, id)
+	if err != nil {
+		return Account{}, fmt.Errorf("read account %d after proxy update: %w", id, err)
+	}
+	return item, nil
+}
+
+func (r *SQLiteRepository) ClearProxy(
+	ctx context.Context,
+	id int64,
+	now time.Time,
+) (Account, error) {
+	return r.SetProxy(ctx, id, Proxy{}, now)
 }
 
 func (r *SQLiteRepository) RecordVerification(
@@ -519,7 +583,8 @@ func (r *SQLiteRepository) ListDueForPurge(
 	rows, err := r.db.QueryContext(ctx, `
 SELECT id, phone_number, username, display_name, status, status_reason,
 	last_verified_at, created_at, updated_at, purge_state, purge_error,
-	deletion_requested_at, deletion_effective_at
+	deletion_requested_at, deletion_effective_at, proxy_enabled, proxy_host,
+	proxy_port, proxy_username, proxy_last_checked_at, proxy_last_error
 FROM accounts
 WHERE deletion_effective_at != ''
 	AND deletion_effective_at <= ?
@@ -663,7 +728,8 @@ func getAccountIncludingDeletedTx(
 	const query = `
 SELECT id, phone_number, username, display_name, status, status_reason,
 	last_verified_at, created_at, updated_at, purge_state, purge_error,
-	deletion_requested_at, deletion_effective_at
+	deletion_requested_at, deletion_effective_at, proxy_enabled, proxy_host,
+	proxy_port, proxy_username, proxy_last_checked_at, proxy_last_error
 FROM accounts
 WHERE id = ?`
 	item, err := scanAccount(tx.QueryRowContext(ctx, query, id))
@@ -684,6 +750,8 @@ func scanAccount(row rowScanner) (Account, error) {
 	var lastVerifiedAt string
 	var deletionRequestedAt string
 	var deletionEffectiveAt string
+	var proxyLastCheckedAt string
+	var proxyEnabled int
 	if err := row.Scan(
 		&item.ID,
 		&item.PhoneNumber,
@@ -698,6 +766,12 @@ func scanAccount(row rowScanner) (Account, error) {
 		&item.PurgeError,
 		&deletionRequestedAt,
 		&deletionEffectiveAt,
+		&proxyEnabled,
+		&item.Proxy.Host,
+		&item.Proxy.Port,
+		&item.Proxy.Username,
+		&proxyLastCheckedAt,
+		&item.Proxy.LastError,
 	); err != nil {
 		return Account{}, err
 	}
@@ -744,5 +818,25 @@ func scanAccount(row rowScanner) (Account, error) {
 		}
 		item.DeletionEffectiveAt = &value
 	}
+	item.Proxy.Enabled = proxyEnabled != 0
+	item.Proxy.Configured = item.Proxy.Enabled
+	if proxyLastCheckedAt != "" {
+		value, parseErr := time.Parse(time.RFC3339Nano, proxyLastCheckedAt)
+		if parseErr != nil {
+			return Account{}, fmt.Errorf(
+				"parse proxy_last_checked_at for account %d: %w",
+				item.ID,
+				parseErr,
+			)
+		}
+		item.Proxy.LastChecked = &value
+	}
 	return item, nil
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }

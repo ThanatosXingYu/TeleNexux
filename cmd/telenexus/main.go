@@ -15,6 +15,7 @@ import (
 
 	"github.com/ThanatosXingYu/TeleNexux/internal/account"
 	"github.com/ThanatosXingYu/TeleNexux/internal/accounthealth"
+	"github.com/ThanatosXingYu/TeleNexux/internal/accountproxy"
 	"github.com/ThanatosXingYu/TeleNexux/internal/accountpurge"
 	"github.com/ThanatosXingYu/TeleNexux/internal/auth"
 	"github.com/ThanatosXingYu/TeleNexux/internal/config"
@@ -78,6 +79,10 @@ func run() error {
 	if err := health.EnsureSessionDirectory(cfg.TelegramSessionDir); err != nil {
 		return err
 	}
+	proxyStore, err := accountproxy.NewStore(cfg.AccountProxiesPath)
+	if err != nil {
+		return fmt.Errorf("initialize account proxy store: %w", err)
+	}
 	operationsStore, err := operations.Open(ctx, cfg.DatabasePath)
 	if err != nil {
 		return fmt.Errorf("initialize operations storage: %w", err)
@@ -114,7 +119,11 @@ func run() error {
 
 	var telegramDriver telegramauth.Driver
 	if cfg.TelegramAPIID > 0 {
-		telegramDriver = telegramauth.NewGotdDriver(cfg.TelegramAPIID, cfg.TelegramAPIHash)
+		telegramDriver = telegramauth.NewGotdDriverWithProxy(
+			cfg.TelegramAPIID,
+			cfg.TelegramAPIHash,
+			proxyStore,
+		)
 	}
 	telegramAuth, err := telegramauth.NewService(telegramDriver, telegramauth.ServiceConfig{
 		SessionDir:       cfg.TelegramSessionDir,
@@ -122,16 +131,18 @@ func run() error {
 		OperationTimeout: 45 * time.Second,
 		AppID:            cfg.TelegramAPIID,
 		AppHash:          cfg.TelegramAPIHash,
+		ProxyProvider:    proxyStore,
 	})
 	if err != nil {
 		return fmt.Errorf("initialize Telegram authentication: %w", err)
 	}
 	var telegramChats *telegramchat.Service
 	if cfg.TelegramAPIID > 0 {
-		telegramChats, err = telegramchat.NewService(
+		telegramChats, err = telegramchat.NewServiceWithProxy(
 			cfg.TelegramAPIID,
 			cfg.TelegramAPIHash,
 			cfg.TelegramSessionDir,
+			proxyStore,
 		)
 		if err != nil {
 			return fmt.Errorf("initialize Telegram chat service: %w", err)
@@ -165,6 +176,7 @@ func run() error {
 		accountService,
 		purgeSessionCleaner,
 		operationsStore,
+		accountpurge.WithCredentialCleaner(proxyStore),
 	)
 	if err != nil {
 		return fmt.Errorf("initialize account purge worker: %w", err)
@@ -190,6 +202,7 @@ func run() error {
 			}),
 			operationsStore,
 			monitorRunner,
+			httpapi.WithAccountProxyStore(proxyStore),
 		).Handler(),
 	)
 	serverErrors := make(chan error, 1)

@@ -29,9 +29,14 @@ type EvidenceStore interface {
 	PurgeAccount(ctx context.Context, accountID int64) error
 }
 
+type CredentialCleaner interface {
+	Delete(ctx context.Context, accountID int64) (bool, error)
+}
+
 type Service struct {
 	accounts  AccountLifecycle
 	sessions  SessionCleaner
+	proxies   CredentialCleaner
 	evidence  EvidenceStore
 	batchSize int
 }
@@ -40,6 +45,7 @@ func New(
 	accounts AccountLifecycle,
 	sessions SessionCleaner,
 	evidence EvidenceStore,
+	options ...Option,
 ) (*Service, error) {
 	if accounts == nil {
 		return nil, errors.New("account lifecycle is required")
@@ -47,12 +53,26 @@ func New(
 	if evidence == nil {
 		return nil, errors.New("evidence store is required")
 	}
-	return &Service{
+	service := &Service{
 		accounts:  accounts,
 		sessions:  sessions,
 		evidence:  evidence,
 		batchSize: 50,
-	}, nil
+	}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service, nil
+}
+
+type Option func(*Service)
+
+func WithCredentialCleaner(cleaner CredentialCleaner) Option {
+	return func(service *Service) {
+		service.proxies = cleaner
+	}
 }
 
 func (s *Service) RunOnce(ctx context.Context) error {
@@ -94,6 +114,16 @@ func (s *Service) purge(ctx context.Context, accountID int64) error {
 				accountID,
 				"授权会话清理失败，后台将重试",
 				fmt.Errorf("delete session: %w", err),
+			)
+		}
+	}
+	if s.proxies != nil {
+		if _, err := s.proxies.Delete(operationCtx, accountID); err != nil {
+			return s.fail(
+				operationCtx,
+				accountID,
+				"代理凭据清理失败，后台将重试",
+				fmt.Errorf("delete account proxy: %w", err),
 			)
 		}
 	}

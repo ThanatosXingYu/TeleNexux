@@ -7,9 +7,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ThanatosXingYu/TeleNexux/internal/accountproxy"
 	"github.com/ThanatosXingYu/TeleNexux/internal/telegramauth"
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
+	"github.com/gotd/td/telegram/dcs"
 	"github.com/gotd/td/telegram/updates"
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
@@ -127,7 +129,7 @@ func (w *accountWorker) connect() error {
 			w.service.observeGap(w.accountID)
 		},
 	})
-	client := telegram.NewClient(w.service.appID, w.service.appHash, telegram.Options{
+	options := telegram.Options{
 		SessionStorage:  &session.FileStorage{Path: sessionPath},
 		Device:          telegramauth.DeviceForSession(sessionPath),
 		DialTimeout:     15 * time.Second,
@@ -136,7 +138,17 @@ func (w *accountWorker) connect() error {
 		OnDead: func(err error) {
 			w.disconnected(err)
 		},
-	})
+	}
+	if w.service.proxyProvider != nil {
+		dial, err := accountproxy.Resolve(w.service.proxyProvider, w.ctx, w.accountID)
+		if err != nil {
+			return err
+		}
+		if dial != nil {
+			options.Resolver = dcs.Plain(dcs.PlainOptions{Dial: dial})
+		}
+	}
+	client := telegram.NewClient(w.service.appID, w.service.appHash, options)
 
 	return client.Run(w.ctx, func(runCtx context.Context) error {
 		self, err := client.Self(runCtx)

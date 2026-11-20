@@ -7,16 +7,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ThanatosXingYu/TeleNexux/internal/accountproxy"
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
+	"github.com/gotd/td/telegram/dcs"
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
 )
 
 type GotdDriver struct {
-	appID   int
-	appHash string
+	appID         int
+	appHash       string
+	proxyProvider accountproxy.DialProvider
 }
 
 func NewGotdDriver(appID int, appHash string) *GotdDriver {
@@ -24,6 +27,16 @@ func NewGotdDriver(appID int, appHash string) *GotdDriver {
 		appID:   appID,
 		appHash: strings.TrimSpace(appHash),
 	}
+}
+
+func NewGotdDriverWithProxy(
+	appID int,
+	appHash string,
+	proxyProvider accountproxy.DialProvider,
+) *GotdDriver {
+	driver := NewGotdDriver(appID, appHash)
+	driver.proxyProvider = proxyProvider
+	return driver
 }
 
 func (d *GotdDriver) SendCode(
@@ -103,15 +116,109 @@ func (d *GotdDriver) withClient(
 	sessionPath string,
 	run func(context.Context, *telegram.Client) error,
 ) error {
+	return d.withClientForAccount(ctx, sessionPath, 0, run)
+}
+
+func (d *GotdDriver) SendCodeForAccount(
+	ctx context.Context,
+	sessionPath string,
+	phone string,
+	accountID int64,
+) (SentCode, error) {
+	var result SentCode
+	err := d.withClientForAccount(ctx, sessionPath, accountID, func(ctx context.Context, client *telegram.Client) error {
+		sent, err := client.Auth().SendCode(ctx, phone, auth.SendCodeOptions{})
+		if err != nil {
+			return mapTelegramError(err)
+		}
+		value, ok := sent.(*tg.AuthSentCode)
+		if !ok {
+			return fmt.Errorf("%w: unexpected sent code response %T", ErrTelegram, sent)
+		}
+		result = SentCode{
+			CodeHash:   value.PhoneCodeHash,
+			CodeType:   sentCodeType(value.Type),
+			CodeLength: sentCodeLength(value.Type),
+		}
+		return nil
+	})
+	return result, err
+}
+
+func (d *GotdDriver) SignInForAccount(
+	ctx context.Context,
+	sessionPath string,
+	phone string,
+	code string,
+	codeHash string,
+	accountID int64,
+) (*Profile, bool, error) {
+	var profile *Profile
+	passwordRequired := false
+	err := d.withClientForAccount(ctx, sessionPath, accountID, func(ctx context.Context, client *telegram.Client) error {
+		if _, err := client.Auth().SignIn(ctx, phone, code, codeHash); err != nil {
+			if errors.Is(err, auth.ErrPasswordAuthNeeded) {
+				passwordRequired = true
+				return nil
+			}
+			return mapTelegramError(err)
+		}
+		current, err := profileFromClient(ctx, client)
+		if err != nil {
+			return err
+		}
+		profile = current
+		return nil
+	})
+	return profile, passwordRequired, err
+}
+
+func (d *GotdDriver) PasswordForAccount(
+	ctx context.Context,
+	sessionPath string,
+	password string,
+	accountID int64,
+) (*Profile, error) {
+	var profile *Profile
+	err := d.withClientForAccount(ctx, sessionPath, accountID, func(ctx context.Context, client *telegram.Client) error {
+		if _, err := client.Auth().Password(ctx, password); err != nil {
+			return mapTelegramError(err)
+		}
+		current, err := profileFromClient(ctx, client)
+		if err != nil {
+			return err
+		}
+		profile = current
+		return nil
+	})
+	return profile, err
+}
+
+func (d *GotdDriver) withClientForAccount(
+	ctx context.Context,
+	sessionPath string,
+	accountID int64,
+	run func(context.Context, *telegram.Client) error,
+) error {
 	if err := PrepareDeviceSession(sessionPath); err != nil {
 		return fmt.Errorf("prepare Telegram device: %w", err)
 	}
-	client := telegram.NewClient(d.appID, d.appHash, telegram.Options{
+	options := telegram.Options{
 		SessionStorage:  &session.FileStorage{Path: sessionPath},
 		Device:          DeviceForSession(sessionPath),
 		DialTimeout:     15 * time.Second,
 		ExchangeTimeout: 15 * time.Second,
-	})
+	}
+	if d.proxyProvider != nil && accountID > 0 {
+		dial, err := accountproxy.Resolve(d.proxyProvider, ctx, accountID)
+		if err != nil {
+			return err
+		}
+		if dial != nil {
+			options.Resolver = dcs.Plain(dcs.PlainOptions{Dial: dial})
+		}
+	}
+	client := telegram.NewClient(d.appID, d.appHash, options)
 	if err := client.Run(ctx, func(ctx context.Context) error {
 		return run(ctx, client)
 	}); err != nil {

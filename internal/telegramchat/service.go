@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ThanatosXingYu/TeleNexux/internal/accountproxy"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
 )
@@ -117,6 +118,8 @@ type Service struct {
 	peers    map[string]cachedPeer
 	avatarMu sync.RWMutex
 	avatars  map[string]cachedAvatar
+
+	proxyProvider accountproxy.DialProvider
 }
 
 func (s *Service) ValidateSession(ctx context.Context, accountID int64) error {
@@ -161,6 +164,15 @@ func (s *Service) DeleteSession(accountID int64) error {
 }
 
 func NewService(appID int, appHash, sessionDirectory string) (*Service, error) {
+	return NewServiceWithProxy(appID, appHash, sessionDirectory, nil)
+}
+
+func NewServiceWithProxy(
+	appID int,
+	appHash string,
+	sessionDirectory string,
+	proxyProvider accountproxy.DialProvider,
+) (*Service, error) {
 	if appID <= 0 || strings.TrimSpace(appHash) == "" {
 		return nil, ErrNotConfigured
 	}
@@ -181,6 +193,7 @@ func NewService(appID int, appHash, sessionDirectory string) (*Service, error) {
 		updates:          make(chan int64, 64),
 		peers:            make(map[string]cachedPeer),
 		avatars:          make(map[string]cachedAvatar),
+		proxyProvider:    proxyProvider,
 	}, nil
 }
 

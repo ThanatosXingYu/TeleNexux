@@ -12,9 +12,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ThanatosXingYu/TeleNexux/internal/accountproxy"
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth/qrlogin"
+	"github.com/gotd/td/telegram/dcs"
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
 	"rsc.io/qr"
@@ -48,6 +50,8 @@ type QRService struct {
 
 	mu     sync.Mutex
 	logins map[string]*qrLoginState
+
+	proxyProvider accountproxy.DialProvider
 }
 
 type qrLoginState struct {
@@ -67,6 +71,16 @@ type qrLoginState struct {
 }
 
 func NewQRService(appID int, appHash, sessionDir string, loginTTL time.Duration) (*QRService, error) {
+	return NewQRServiceWithProxy(appID, appHash, sessionDir, loginTTL, nil)
+}
+
+func NewQRServiceWithProxy(
+	appID int,
+	appHash string,
+	sessionDir string,
+	loginTTL time.Duration,
+	proxyProvider accountproxy.DialProvider,
+) (*QRService, error) {
 	if appID <= 0 || strings.TrimSpace(appHash) == "" {
 		return nil, ErrNotConfigured
 	}
@@ -77,11 +91,12 @@ func NewQRService(appID int, appHash, sessionDir string, loginTTL time.Duration)
 		loginTTL = 3 * time.Minute
 	}
 	return &QRService{
-		appID:      appID,
-		appHash:    strings.TrimSpace(appHash),
-		sessionDir: sessionDir,
-		loginTTL:   loginTTL,
-		logins:     make(map[string]*qrLoginState),
+		appID:         appID,
+		appHash:       strings.TrimSpace(appHash),
+		sessionDir:    sessionDir,
+		loginTTL:      loginTTL,
+		logins:        make(map[string]*qrLoginState),
+		proxyProvider: proxyProvider,
 	}, nil
 }
 
@@ -183,13 +198,24 @@ func (s *QRService) run(ctx context.Context, state *qrLoginState) {
 	}
 	dispatcher := tg.NewUpdateDispatcher()
 	loggedIn := qrlogin.OnLoginToken(dispatcher)
-	client := telegram.NewClient(s.appID, s.appHash, telegram.Options{
+	options := telegram.Options{
 		SessionStorage:  &session.FileStorage{Path: state.sessionPath},
 		Device:          DeviceForSession(state.sessionPath),
 		UpdateHandler:   dispatcher,
 		DialTimeout:     15 * time.Second,
 		ExchangeTimeout: 15 * time.Second,
-	})
+	}
+	if s.proxyProvider != nil && state.expectedAccountID > 0 {
+		dial, err := accountproxy.Resolve(s.proxyProvider, ctx, state.expectedAccountID)
+		if err != nil {
+			state.fail(err)
+			return
+		}
+		if dial != nil {
+			options.Resolver = dcs.Plain(dcs.PlainOptions{Dial: dial})
+		}
+	}
+	client := telegram.NewClient(s.appID, s.appHash, options)
 	var profile *Profile
 	err := client.Run(ctx, func(runCtx context.Context) error {
 		authorization, err := client.QR().Auth(

@@ -7,12 +7,15 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ThanatosXingYu/TeleNexux/internal/accountproxy"
 )
 
 const (
@@ -58,6 +61,29 @@ type Driver interface {
 	Password(ctx context.Context, sessionPath, password string) (*Profile, error)
 }
 
+type accountDriver interface {
+	SendCodeForAccount(
+		ctx context.Context,
+		sessionPath string,
+		phone string,
+		accountID int64,
+	) (SentCode, error)
+	SignInForAccount(
+		ctx context.Context,
+		sessionPath string,
+		phone string,
+		code string,
+		codeHash string,
+		accountID int64,
+	) (*Profile, bool, error)
+	PasswordForAccount(
+		ctx context.Context,
+		sessionPath string,
+		password string,
+		accountID int64,
+	) (*Profile, error)
+}
+
 type ServiceConfig struct {
 	SessionDir       string
 	LoginTTL         time.Duration
@@ -65,6 +91,7 @@ type ServiceConfig struct {
 	Now              func() time.Time
 	AppID            int
 	AppHash          string
+	ProxyProvider    accountproxy.DialProvider
 }
 
 type Challenge struct {
@@ -99,6 +126,7 @@ type Service struct {
 	operationTimeout time.Duration
 	now              func() time.Time
 	qr               *QRService
+	proxyProvider    accountproxy.DialProvider
 
 	mu     sync.Mutex
 	logins map[string]*loginState
@@ -146,13 +174,20 @@ func NewService(driver Driver, config ServiceConfig) (*Service, error) {
 	service := &Service{
 		driver:           driver,
 		sessionDir:       config.SessionDir,
+		proxyProvider:    config.ProxyProvider,
 		loginTTL:         config.LoginTTL,
 		operationTimeout: config.OperationTimeout,
 		now:              config.Now,
 		logins:           make(map[string]*loginState),
 	}
 	if config.AppID > 0 && strings.TrimSpace(config.AppHash) != "" {
-		qrService, err := NewQRService(config.AppID, config.AppHash, config.SessionDir, 3*time.Minute)
+		qrService, err := NewQRServiceWithProxy(
+			config.AppID,
+			config.AppHash,
+			config.SessionDir,
+			3*time.Minute,
+			config.ProxyProvider,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -232,7 +267,16 @@ func (s *Service) SendCode(
 
 	operationCtx, cancel := s.operationContext(ctx)
 	defer cancel()
-	sent, err := s.driver.SendCode(operationCtx, sessionPath, phone)
+	var sent SentCode
+	if expectedAccountID > 0 && s.proxyProvider != nil {
+		driver, ok := s.driver.(accountDriver)
+		if !ok {
+			return Challenge{}, errors.New("Telegram driver cannot honor account proxy")
+		}
+		sent, err = driver.SendCodeForAccount(operationCtx, sessionPath, phone, expectedAccountID)
+	} else {
+		sent, err = s.driver.SendCode(operationCtx, sessionPath, phone)
+	}
 	if err != nil {
 		removeIfPresent(sessionPath)
 		return Challenge{}, err
@@ -288,13 +332,30 @@ func (s *Service) SubmitCode(ctx context.Context, loginID, code string) (Result,
 
 	operationCtx, cancel := s.operationContext(ctx)
 	defer cancel()
-	profile, passwordRequired, err := s.driver.SignIn(
-		operationCtx,
-		state.sessionPath,
-		state.phone,
-		code,
-		state.codeHash,
-	)
+	var profile *Profile
+	var passwordRequired bool
+	if state.expectedAccountID > 0 && s.proxyProvider != nil {
+		driver, ok := s.driver.(accountDriver)
+		if !ok {
+			return Result{}, errors.New("Telegram driver cannot honor account proxy")
+		}
+		profile, passwordRequired, err = driver.SignInForAccount(
+			operationCtx,
+			state.sessionPath,
+			state.phone,
+			code,
+			state.codeHash,
+			state.expectedAccountID,
+		)
+	} else {
+		profile, passwordRequired, err = s.driver.SignIn(
+			operationCtx,
+			state.sessionPath,
+			state.phone,
+			code,
+			state.codeHash,
+		)
+	}
 	if err != nil {
 		if errors.Is(err, ErrCodeExpired) {
 			s.removeLogin(state)
@@ -326,7 +387,21 @@ func (s *Service) SubmitPassword(ctx context.Context, loginID, password string) 
 
 	operationCtx, cancel := s.operationContext(ctx)
 	defer cancel()
-	profile, err := s.driver.Password(operationCtx, state.sessionPath, password)
+	var profile *Profile
+	if state.expectedAccountID > 0 && s.proxyProvider != nil {
+		driver, ok := s.driver.(accountDriver)
+		if !ok {
+			return Result{}, errors.New("Telegram driver cannot honor account proxy")
+		}
+		profile, err = driver.PasswordForAccount(
+			operationCtx,
+			state.sessionPath,
+			password,
+			state.expectedAccountID,
+		)
+	} else {
+		profile, err = s.driver.Password(operationCtx, state.sessionPath, password)
+	}
 	if err != nil {
 		return Result{}, err
 	}
@@ -342,6 +417,13 @@ func (s *Service) Cancel(loginID string) error {
 	defer state.mu.Unlock()
 	s.removeLogin(state)
 	return nil
+}
+
+func (s *Service) DialContextFor(
+	ctx context.Context,
+	accountID int64,
+) (func(context.Context, string, string) (net.Conn, error), error) {
+	return accountproxy.Resolve(s.proxyProvider, ctx, accountID)
 }
 
 func (s *Service) complete(state *loginState, profile *Profile) (Result, error) {

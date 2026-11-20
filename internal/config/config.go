@@ -20,6 +20,7 @@ type Config struct {
 	DatabasePath       string
 	SettingsPath       string
 	AuthPath           string
+	AccountProxiesPath string
 	ShutdownTimeout    time.Duration
 	TelegramAPIID      int
 	TelegramAPIHash    string
@@ -51,12 +52,16 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		Environment:        valueOrDefault(lookup("APP_ENV"), "development"),
-		HTTPAddr:           valueOrDefault(lookup("HTTP_ADDR"), "127.0.0.1:9487"),
-		LogLevel:           valueOrDefault(lookup("LOG_LEVEL"), "info"),
-		DatabasePath:       valueOrDefault(lookup("DATABASE_PATH"), "./data/telenexus.db"),
-		SettingsPath:       settingsPath,
-		AuthPath:           valueOrDefault(lookup("AUTH_PATH"), "./data/auth.json"),
+		Environment:  valueOrDefault(lookup("APP_ENV"), "development"),
+		HTTPAddr:     valueOrDefault(lookup("HTTP_ADDR"), "127.0.0.1:9487"),
+		LogLevel:     valueOrDefault(lookup("LOG_LEVEL"), "info"),
+		DatabasePath: valueOrDefault(lookup("DATABASE_PATH"), "./data/telenexus.db"),
+		SettingsPath: settingsPath,
+		AuthPath:     valueOrDefault(lookup("AUTH_PATH"), "./data/auth.json"),
+		AccountProxiesPath: valueOrDefault(
+			lookup("ACCOUNT_PROXIES_PATH"),
+			"./data/account-proxies.json",
+		),
 		ShutdownTimeout:    10 * time.Second,
 		TelegramAPIHash:    strings.TrimSpace(lookup("TELEGRAM_API_HASH")),
 		TelegramSessionDir: valueOrDefault(lookup("TELEGRAM_SESSION_DIR"), "./data/telegram-sessions"),
@@ -95,6 +100,9 @@ func (c Config) validate() error {
 	}
 	if c.AuthPath == "" {
 		return errors.New("AUTH_PATH must not be empty")
+	}
+	if c.AccountProxiesPath == "" {
+		return errors.New("ACCOUNT_PROXIES_PATH must not be empty")
 	}
 	if c.ShutdownTimeout <= 0 {
 		return errors.New("SHUTDOWN_TIMEOUT must be positive")

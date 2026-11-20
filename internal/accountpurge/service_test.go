@@ -60,6 +60,19 @@ type fakeEvidence struct {
 	purged   bool
 }
 
+type fakeProxyCleaner struct {
+	deleted bool
+	err     error
+}
+
+func (f *fakeProxyCleaner) Delete(context.Context, int64) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	f.deleted = true
+	return true, nil
+}
+
 func (f *fakeEvidence) CheckAccountPurge(context.Context, int64) error {
 	return f.checkErr
 }
@@ -136,5 +149,47 @@ func TestRunOnceRetriesFailedClaims(t *testing.T) {
 	}
 	if lifecycle.failed {
 		t.Fatal("competing claim was treated as a purge failure")
+	}
+}
+
+func TestRunOnceDeletesProxyCredentialsBeforeAccountRecord(t *testing.T) {
+	lifecycle := &fakeLifecycle{
+		due: []account.Account{{ID: 7, PurgeState: account.PurgeStateScheduled}},
+	}
+	proxies := &fakeProxyCleaner{}
+	service, err := New(
+		lifecycle,
+		&fakeSessions{},
+		&fakeEvidence{},
+		WithCredentialCleaner(proxies),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := service.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if !proxies.deleted {
+		t.Fatal("proxy credentials were not deleted")
+	}
+}
+
+func TestRunOnceRetainsAccountWhenProxyCleanupFails(t *testing.T) {
+	lifecycle := &fakeLifecycle{
+		due: []account.Account{{ID: 7, PurgeState: account.PurgeStateScheduled}},
+	}
+	service, err := New(
+		lifecycle,
+		&fakeSessions{},
+		&fakeEvidence{},
+		WithCredentialCleaner(&fakeProxyCleaner{err: errors.New("storage unavailable")}),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	err = service.RunOnce(context.Background())
+	if err == nil || !lifecycle.failed || lifecycle.finalized {
+		t.Fatalf("RunOnce() error = %v, failed = %t, finalized = %t",
+			err, lifecycle.failed, lifecycle.finalized)
 	}
 }

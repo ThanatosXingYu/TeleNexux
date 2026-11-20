@@ -45,8 +45,19 @@ type Account struct {
 	DeletionEffectiveAt *time.Time `json:"deletion_effective_at,omitempty"`
 	PurgeState          string     `json:"purge_state"`
 	PurgeError          string     `json:"purge_error,omitempty"`
+	Proxy               Proxy      `json:"proxy"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
+}
+
+type Proxy struct {
+	Enabled     bool       `json:"enabled"`
+	Host        string     `json:"host,omitempty"`
+	Port        int        `json:"port,omitempty"`
+	Username    string     `json:"username,omitempty"`
+	Configured  bool       `json:"configured"`
+	LastChecked *time.Time `json:"last_checked_at,omitempty"`
+	LastError   string     `json:"last_error,omitempty"`
 }
 
 type CreateInput struct {
@@ -95,6 +106,8 @@ type Repository interface {
 	ClaimPurge(ctx context.Context, id int64, now time.Time) (Account, error)
 	FailPurge(ctx context.Context, id int64, reason string, now time.Time) error
 	Delete(ctx context.Context, id int64) error
+	SetProxy(ctx context.Context, id int64, proxy Proxy, now time.Time) (Account, error)
+	ClearProxy(ctx context.Context, id int64, now time.Time) (Account, error)
 }
 
 type Service struct {
@@ -250,6 +263,43 @@ func (s *Service) FinalizePurge(ctx context.Context, id int64) error {
 		return errors.New("account ID must be positive")
 	}
 	return s.repository.Delete(ctx, id)
+}
+
+func (s *Service) SetProxy(ctx context.Context, id int64, proxy Proxy) (Account, error) {
+	if id <= 0 {
+		return Account{}, errors.New("account ID must be positive")
+	}
+	proxy.Host = strings.TrimSpace(proxy.Host)
+	proxy.Username = strings.TrimSpace(proxy.Username)
+	proxy.LastError = strings.TrimSpace(proxy.LastError)
+	if proxy.Enabled {
+		proxy.Configured = true
+		if proxy.Host == "" || len(proxy.Host) > 253 {
+			return Account{}, errors.New("proxy host is invalid")
+		}
+		if proxy.Port < 1 || proxy.Port > 65535 {
+			return Account{}, errors.New("proxy port must be between 1 and 65535")
+		}
+		if len(proxy.Username) > 128 {
+			return Account{}, errors.New("proxy username is too long")
+		}
+		if proxy.LastChecked == nil {
+			proxy.LastError = ""
+		}
+	} else {
+		proxy = Proxy{}
+	}
+	if utf8.RuneCountInString(proxy.LastError) > 160 {
+		proxy.LastError = string([]rune(proxy.LastError)[:160])
+	}
+	return s.repository.SetProxy(ctx, id, proxy, s.clock().UTC())
+}
+
+func (s *Service) ClearProxy(ctx context.Context, id int64) (Account, error) {
+	if id <= 0 {
+		return Account{}, errors.New("account ID must be positive")
+	}
+	return s.repository.ClearProxy(ctx, id, s.clock().UTC())
 }
 
 func IsValidStatus(status string) bool {

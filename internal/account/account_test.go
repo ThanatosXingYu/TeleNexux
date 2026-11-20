@@ -141,6 +141,30 @@ func (r *memoryRepository) Update(
 	return item, nil
 }
 
+func (r *memoryRepository) SetProxy(
+	_ context.Context,
+	id int64,
+	proxy Proxy,
+	now time.Time,
+) (Account, error) {
+	item, exists := r.accounts[id]
+	if !exists || item.PurgeState != PurgeStateActive {
+		return Account{}, ErrNotFound
+	}
+	item.Proxy = proxy
+	item.UpdatedAt = now
+	r.accounts[id] = item
+	return item, nil
+}
+
+func (r *memoryRepository) ClearProxy(
+	ctx context.Context,
+	id int64,
+	now time.Time,
+) (Account, error) {
+	return r.SetProxy(ctx, id, Proxy{}, now)
+}
+
 func (r *memoryRepository) ScheduleDeletion(
 	_ context.Context,
 	id int64,
