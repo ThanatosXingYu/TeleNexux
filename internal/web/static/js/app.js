@@ -734,9 +734,16 @@
     const verifiedAt = account?.last_verified_at
       ? new Date(account.last_verified_at).getTime()
       : Number.NaN;
-    const needsVerification = status === "online" &&
+    const needsVerification = ["online", "error"].includes(status) &&
       (!Number.isFinite(verifiedAt) ||
         Date.now() - verifiedAt > accountVerificationTTL);
+    if (account?.refresh_deferred) {
+      return {
+        key: "stale",
+        label: "暂时无法校验",
+        reason: "Telegram 暂时不可达，未确认账号在线，请稍后重试",
+      };
+    }
     return {
       key: needsVerification ? "stale" : status,
       label: needsVerification
@@ -1503,6 +1510,14 @@
       showNotice(accountsError, "");
       return true;
     } catch (error) {
+      const deferredAccounts = new Set(
+        accountRefreshWarnings.map((warning) => Number(warning.account_id)),
+      );
+      allAccounts = allAccounts.map((item) => (
+        deferredAccounts.has(Number(item.id))
+          ? {...item, refresh_deferred: true, status_reason: error.message}
+          : item
+      ));
       accountsLoading?.setAttribute("hidden", "");
       if (verifySessions) {
         renderAccounts(filteredAccounts());
@@ -1528,6 +1543,7 @@
     const outcomes = [];
     const warnings = [];
     results.forEach((result, index) => {
+      const accountID = Number(accountIDs[index]);
       if (result.status === "fulfilled") {
         const {item, outcome, verifiedAt} = result.value;
         items.push(item);
@@ -1542,8 +1558,16 @@
         return;
       }
       warnings.push({
-        account_id: Number(accountIDs[index]),
+        account_id: accountID,
         message: result.reason?.message || "账号状态暂时无法校验",
+      });
+      outcomes.push({
+        account_id: accountID,
+        status: allAccounts.find((account) => Number(account.id) === accountID)?.status || "pending",
+        reason: result.reason?.message || "账号状态暂时无法校验",
+        deferred: true,
+        skipped: false,
+        verified_at: "",
       });
     });
     const current = new Map(allAccounts.map((account) => [Number(account.id), account]));
@@ -1604,6 +1628,14 @@
               : `${formatPhone(refreshed.phone_number)} · 授权有效`,
       );
     } catch (error) {
+      if (account?.id) {
+        allAccounts = allAccounts.map((item) => (
+          Number(item.id) === Number(account.id)
+            ? {...item, refresh_deferred: true, status_reason: error.message}
+            : item
+        ));
+        renderAccounts(filteredAccounts());
+      }
       showNotice(accountsError, error.message, true);
     } finally {
       button?.removeAttribute("disabled");

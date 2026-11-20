@@ -1413,7 +1413,7 @@
       const verifiedAt = account.last_verified_at
         ? new Date(account.last_verified_at).getTime()
         : Number.NaN;
-      const stale = account.status === "online" &&
+      const stale = ["online", "error"].includes(account.status) &&
         (!Number.isFinite(verifiedAt) || Date.now() - verifiedAt > 10 * 60 * 1000);
       const online = account.status === "online" && !stale;
       const statusLabel = stale
