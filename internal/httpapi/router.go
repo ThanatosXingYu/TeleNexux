@@ -1949,19 +1949,10 @@ func (a *API) refreshAccounts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "could not list accounts")
 		return
 	}
-	var wait sync.WaitGroup
-	semaphore := make(chan struct{}, telegramAuthConcurrency)
 	results := make([]accountRefreshResult, len(items))
 	for i := range items {
-		wait.Add(1)
-		go func(index int) {
-			defer wait.Done()
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
-			results[index].item, results[index].err = a.refreshAccountStatus(r.Context(), items[index])
-		}(i)
+		results[i].item, results[i].err = a.refreshAccountStatus(r.Context(), items[i])
 	}
-	wait.Wait()
 	warnings := make([]accountRefreshWarning, 0)
 	outcomes := make([]accountRefreshOutcome, 0, len(items))
 	for i, result := range results {

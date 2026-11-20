@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -138,6 +139,57 @@ func (s *fakeAccountService) List(
 ) ([]account.Account, error) {
 	s.listFilter = filter
 	return s.items, s.listErr
+}
+
+type fakeOrderedAccountService struct {
+	fakeAccountService
+	accountItems []account.Account
+	verify       []account.Account
+}
+
+func (s *fakeOrderedAccountService) List(
+	_ context.Context,
+	filter account.Filter,
+) ([]account.Account, error) {
+	s.listFilter = filter
+	return append([]account.Account(nil), s.accountItems...), nil
+}
+
+func (s *fakeOrderedAccountService) UpsertAuthorized(
+	_ context.Context,
+	input account.CreateInput,
+) (account.Account, error) {
+	now := time.Unix(10, 0).UTC()
+	item := account.Account{
+		ID:             input.ID,
+		PhoneNumber:    input.PhoneNumber,
+		Username:       input.Username,
+		DisplayName:    input.DisplayName,
+		Status:         account.StatusOnline,
+		LastVerifiedAt: &now,
+	}
+	s.verify = append(s.verify, item)
+	s.created = item
+	return item, nil
+}
+
+func (s *fakeOrderedAccountService) RecordVerification(
+	_ context.Context,
+	id int64,
+	status string,
+	reason string,
+) (account.Account, error) {
+	s.verifyCalls++
+	now := time.Unix(10, 0).UTC()
+	item := account.Account{
+		ID:             id,
+		Status:         status,
+		StatusReason:   reason,
+		LastVerifiedAt: &now,
+	}
+	s.verify = append(s.verify, item)
+	s.created = item
+	return item, nil
 }
 
 func (s *fakeAccountService) Get(_ context.Context, _ int64) (account.Account, error) {
@@ -347,6 +399,30 @@ type fakeTelegramChatService struct {
 	validateCalls int
 	inspectCalls  int
 	resetID       int64
+}
+
+type fakeOrderedTelegramChatService struct {
+	fakeTelegramChatService
+	mu        sync.Mutex
+	visited   []int64
+	inspectFn func(accountID int64) (telegramchat.Profile, error)
+}
+
+func (s *fakeOrderedTelegramChatService) InspectSession(
+	_ context.Context,
+	accountID int64,
+) (telegramchat.Profile, error) {
+	s.mu.Lock()
+	s.inspectCalls++
+	s.visited = append(s.visited, accountID)
+	s.mu.Unlock()
+	return s.inspectFn(accountID)
+}
+
+func (s *fakeOrderedTelegramChatService) calls() []int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int64(nil), s.visited...)
 }
 
 func (s *fakeTelegramChatService) ValidateSession(
@@ -1488,6 +1564,53 @@ func TestRefreshAccountsKeepsStatusForTransientTelegramFailure(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), `"deferred":true`) {
 		t.Fatalf("response = %s, want deferred refresh outcome", recorder.Body.String())
+	}
+}
+
+func TestRefreshAccountsContinuesAfterExpiredSession(t *testing.T) {
+	accounts := &fakeOrderedAccountService{
+		accountItems: []account.Account{
+			{ID: 41, Status: account.StatusOnline},
+			{ID: 42, Status: account.StatusOnline},
+		},
+	}
+	chats := &fakeOrderedTelegramChatService{
+		inspectFn: func(accountID int64) (telegramchat.Profile, error) {
+			if accountID == 41 {
+				return telegramchat.Profile{}, telegramchat.ErrSessionInvalid
+			}
+			return telegramchat.Profile{
+				ID:          accountID,
+				PhoneNumber: "15550001042",
+			}, nil
+		},
+	}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/accounts/refresh",
+		strings.NewReader(`{}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	newTestHandlerWithDependencies(
+		accounts,
+		&fakeTelegramAuthService{},
+		chats,
+		nil,
+	).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := chats.calls(); !reflect.DeepEqual(got, []int64{41, 42}) {
+		t.Fatalf("InspectSession() accounts = %v, want [41 42]", got)
+	}
+	if !strings.Contains(
+		recorder.Body.String(),
+		`"outcomes":[{"account_id":41,"status":"error","reason":"Telegram 授权已失效，请重新登录","verified_at":"1970-01-01T00:00:10Z"},{"account_id":42,"status":"online","verified_at":"1970-01-01T00:00:10Z"}]`,
+	) {
+		t.Fatalf("response = %s, want both account outcomes", recorder.Body.String())
 	}
 }
 
