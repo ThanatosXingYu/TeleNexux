@@ -638,7 +638,6 @@
     paused: "已暂停",
     error: "已掉线",
   };
-  const verificationTTL = 10 * 60 * 1000;
   const automaticVerificationInterval = 60 * 1000;
   const verificationTimestampKey = "telenexus.account-verification-at";
   const isDeletedAccount = (account) => (
@@ -685,22 +684,12 @@
         reason: "账号数据正在后台销毁",
       };
     }
-    const verifiedAt = account?.last_verified_at ? new Date(account.last_verified_at) : null;
-    if (
-      account?.status === "online" &&
-      (!verifiedAt || Number.isNaN(verifiedAt.getTime()) ||
-        Date.now() - verifiedAt.getTime() > verificationTTL)
-    ) {
-      return {
-        key: "stale",
-        label: "状态待确认",
-        reason: "请点击“刷新状态”重新验证 Telegram 授权",
-      };
-    }
     return {
       key: account?.status || "pending",
       label: statusLabels[account?.status] || account?.status || "未知",
-      reason: account?.status_reason || "",
+      reason: account?.refresh_deferred
+        ? "Telegram 暂时不可达，已保留上次状态"
+        : (account?.status_reason || ""),
     };
   };
 
@@ -1317,7 +1306,23 @@
       } else {
         accountRefreshWarnings = [];
       }
-      allAccounts = Array.isArray(payload?.items) ? payload.items : [];
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      if (verifySessions) {
+        const outcomes = new Map(
+          (Array.isArray(payload?.outcomes) ? payload.outcomes : [])
+            .map((outcome) => [Number(outcome.account_id), outcome]),
+        );
+        items.forEach((item) => {
+          const outcome = outcomes.get(Number(item.id));
+          if (!outcome) {
+            return;
+          }
+          item.status = outcome.status || item.status;
+          item.status_reason = outcome.reason || "";
+          item.refresh_deferred = Boolean(outcome.deferred);
+        });
+      }
+      allAccounts = items;
       const validAccountIDs = new Set(allAccounts.map((account) => Number(account.id)));
       for (const accountID of selectedAccountIDs) {
         if (!validAccountIDs.has(accountID)) {
@@ -1354,13 +1359,22 @@
         `/api/v1/accounts/${encodeURIComponent(account.id)}/refresh`,
         {method: "POST", body: "{}"},
       );
+      const refreshed = updated?.item || updated;
+      const outcome = Array.isArray(updated?.outcomes) ? updated.outcomes[0] : null;
+      if (outcome) {
+        refreshed.status = outcome.status || refreshed.status;
+        refreshed.status_reason = outcome.reason || "";
+        refreshed.refresh_deferred = Boolean(outcome.deferred);
+      }
       allAccounts = allAccounts.map((item) => (
-        Number(item.id) === Number(updated.id) ? updated : item
+        Number(item.id) === Number(refreshed.id) ? refreshed : item
       ));
       renderAccounts(filteredAccounts());
-      const state = accountStatus(updated);
+      const state = accountStatus(refreshed);
       showAccountToast(
-        state.key === "error"
+        refreshed.refresh_deferred
+          ? `账号校验未完成：${state.reason}`
+          : state.key === "error"
           ? `账号校验完成：${state.label}${state.reason ? ` · ${state.reason}` : ""}`
           : "账号状态已重新校验",
       );
@@ -1470,7 +1484,7 @@
 
   accountBatchRefresh?.addEventListener("click", async () => {
     const targets = selectedAccounts().filter(
-      (account) => ["online", "error", "stale"].includes(accountStatus(account).key),
+      (account) => !isDeletedAccount(account),
     );
     if (targets.length === 0) {
       showNotice(accountsError, "所选账号当前没有可刷新的会话状态。", true);
@@ -1478,23 +1492,26 @@
     }
     setBatchButtonsDisabled(true);
     showNotice(accountsError, `正在验证 ${targets.length} 个账号的 Telegram 授权...`);
-    let failed = 0;
     try {
-      for (const account of targets) {
-        try {
-          await requestJSON(
-            `/api/v1/accounts/${encodeURIComponent(account.id)}/refresh`,
-            {method: "POST", body: "{}"},
+      if (await loadAccounts(true)) {
+        markAutomaticVerification();
+        const offline = allAccounts.filter(
+          (account) => accountStatus(account).key === "error",
+        ).length;
+        const deferred = accountRefreshWarnings.length;
+        if (deferred > 0) {
+          showAccountToast(
+            `状态校验完成，${deferred} 个账号暂时无法连接，原状态已保留`,
           );
-        } catch {
-          failed += 1;
+        } else {
+          showAccountToast(
+            offline > 0
+              ? `状态校验完成，${offline} 个账号需要重新登录`
+              : `状态校验完成，${targets.length} 个账号授权有效`,
+          );
         }
-      }
-      await loadAccounts();
-      if (failed > 0) {
-        showNotice(accountsError, `${failed} 个账号状态刷新失败，请稍后重试。`, true);
       } else {
-        showAccountToast(`${targets.length} 个账号状态已刷新`);
+        showNotice(accountsError, "账号状态校验失败，请稍后重试。", true);
       }
     } finally {
       setBatchButtonsDisabled(false);
@@ -1611,7 +1628,7 @@
 
   const automaticStatusCheckNeeded = () => allAccounts.some((account) => (
     !isDeletedAccount(account) &&
-    ["stale", "error"].includes(accountStatus(account).key)
+    ["online", "error"].includes(accountStatus(account).key)
   ));
 
   const maybeVerifyExpiredAccounts = () => {
@@ -1655,6 +1672,9 @@
   }
 
   const authDialog = document.getElementById("telegram-login-dialog");
+  const reloginDialog = document.getElementById("account-relogin-dialog");
+  const reloginForm = document.querySelector("[data-account-relogin-form]");
+  const reloginNotice = document.querySelector("[data-account-relogin-notice]");
   const authSteps = [...document.querySelectorAll("[data-auth-step]")];
   const progressSteps = [...document.querySelectorAll("[data-progress-step]")];
   const phoneForm = document.querySelector("[data-phone-form]");
@@ -1929,14 +1949,14 @@
       return;
     }
     resetLoginDialog();
-    const relogin = Boolean(account?.id);
-    reloginAccountID = relogin ? Number(account.id) : 0;
+    const relogin = Boolean(account?.phone_number);
+    reloginAccountID = Number(account?.id) > 0 ? Number(account.id) : 0;
     if (loginKicker) {
       loginKicker.textContent = relogin ? "恢复 Telegram 授权" : "官方 MTProto 登录";
     }
     if (loginTitle) {
       loginTitle.textContent = relogin
-        ? `重新登录 ${account.display_name || account.username || "Telegram 账号"}`
+        ? `重新登录 ${account.display_name || account.username || formatPhone(account.phone_number)}`
         : "登录 Telegram 账号";
     }
     if (relogin && phoneForm) {
@@ -1968,6 +1988,35 @@
 
   document.querySelectorAll("[data-open-login]").forEach((button) => {
     button.addEventListener("click", () => openLoginDialog());
+  });
+  document.querySelectorAll("[data-open-relogin]").forEach((button) => {
+    button.addEventListener("click", () => {
+      reloginForm?.reset();
+      showNotice(reloginNotice, "");
+      reloginDialog?.showModal();
+      reloginForm?.elements.namedItem("phone_number")?.focus();
+    });
+  });
+  document.querySelectorAll("[data-account-relogin-close]").forEach((button) => {
+    button.addEventListener("click", () => {
+      reloginForm?.reset();
+      reloginDialog?.close();
+    });
+  });
+  reloginForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const phoneNumber = String(new FormData(reloginForm).get("phone_number") || "")
+      .replace(/[^\d+]/g, "");
+    if (!/^\+\d{8,15}$/.test(phoneNumber)) {
+      showNotice(reloginNotice, "请输入包含国家区号的完整手机号。", true);
+      return;
+    }
+    const existing = allAccounts.find(
+      (account) => `+${String(account.phone_number || "").replace(/\D/g, "")}` === phoneNumber,
+    );
+    reloginForm.reset();
+    reloginDialog?.close();
+    openLoginDialog(existing || {phone_number: phoneNumber});
   });
   loginModeButtons.forEach((button) => {
     button.addEventListener("click", () => setAuthMode(button.dataset.loginMode));
@@ -2410,25 +2459,59 @@
     const healthRefresh = document.querySelector("[data-health-refresh]");
     const readOnlySettingsTabs = new Set(["page", "display", "device", "security", "status"]);
 
-    const activateSettingsTab = (name) => {
+    const activateSettingsTab = (name, updateURL = false) => {
       settingsTabs.forEach((button) => {
         const active = button.dataset.settingsTab === name;
         button.classList.toggle("active", active);
         button.setAttribute("aria-selected", String(active));
+        button.tabIndex = active ? 0 : -1;
       });
       settingsPanels.forEach((panel) => {
         panel.hidden = panel.dataset.settingsPanel !== name;
       });
       settingsActions?.toggleAttribute("hidden", readOnlySettingsTabs.has(name));
+      if (updateURL) {
+        const url = new URL(window.location.href);
+        if (name === "basic") {
+          url.searchParams.delete("tab");
+        } else {
+          url.searchParams.set("tab", name);
+        }
+        window.history.replaceState({}, "", url);
+      }
     };
 
     settingsTabs.forEach((button) => {
       button.addEventListener("click", () => {
-        activateSettingsTab(button.dataset.settingsTab || "basic");
+        activateSettingsTab(button.dataset.settingsTab || "basic", true);
       });
     });
-    activateSettingsTab(settingsTabs.find((button) => button.classList.contains("active"))
-      ?.dataset.settingsTab || "basic");
+    settingsTabs.forEach((button, index) => {
+      button.addEventListener("keydown", (event) => {
+        let nextIndex = index;
+        if (event.key === "ArrowRight") {
+          nextIndex = (index + 1) % settingsTabs.length;
+        } else if (event.key === "ArrowLeft") {
+          nextIndex = (index - 1 + settingsTabs.length) % settingsTabs.length;
+        } else if (event.key === "Home") {
+          nextIndex = 0;
+        } else if (event.key === "End") {
+          nextIndex = settingsTabs.length - 1;
+        } else {
+          return;
+        }
+        event.preventDefault();
+        const next = settingsTabs[nextIndex];
+        activateSettingsTab(next.dataset.settingsTab || "basic", true);
+        next.focus();
+      });
+    });
+    const requestedTab = new URLSearchParams(window.location.search).get("tab");
+    const initialTab = settingsTabs.some((button) => button.dataset.settingsTab === requestedTab)
+      ? requestedTab
+      : (settingsTabs.find((button) => button.classList.contains("active"))
+        ?.dataset.settingsTab || "basic");
+    activateSettingsTab(initialTab);
 
     const renderSettings = (settings) => {
       const setValue = (name, value) => {

@@ -1963,6 +1963,13 @@ a {
   font-size: 16px;
 }
 
+.account-toolbar-config {
+  padding-left: 16px;
+  border-left: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
 .icon {
   display: inline-block;
   width: 16px;
@@ -2094,13 +2101,6 @@ a {
   font: inherit;
 }
 
-.account-overview {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 10px;
-}
-
 .account-batch-bar {
   display: flex;
   align-items: center;
@@ -2128,37 +2128,6 @@ a {
 
 .account-batch-actions .inline-filter select {
   min-width: 120px;
-}
-
-.overview-item {
-  display: flex;
-  align-items: center;
-  gap: 13px;
-  min-width: 0;
-  padding: 14px 16px;
-  border-radius: 4px;
-  background: var(--surface);
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.015);
-}
-
-.overview-item > span:last-child {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.overview-item strong {
-  overflow: hidden;
-  font-size: 20px;
-  font-weight: 650;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.overview-item small {
-  color: var(--text-secondary);
-  font-size: 12px;
 }
 
 .accounts-card {
@@ -2392,11 +2361,6 @@ a {
 .account-status-deleted {
   background: #f0f5ff;
   color: #2f54eb;
-}
-
-.account-status-stale {
-  background: #fffbe6;
-  color: #ad6800;
 }
 
 .account-status-error {
@@ -3414,6 +3378,16 @@ a {
   margin-top: 20px;
 }
 
+.settings-inline-note {
+  margin-top: 10px;
+}
+
+.account-dialog-copy {
+  margin: 0 0 18px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
 [hidden] {
   display: none !important;
 }
@@ -3425,14 +3399,6 @@ a {
 
   .stats-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .account-overview {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .overview-integration {
-    grid-column: 1 / -1;
   }
 
   .login-form-area {
@@ -3544,8 +3510,14 @@ a {
     flex: 1;
   }
 
-  .account-overview {
-    grid-template-columns: minmax(0, 1fr);
+  .account-toolbar-summary {
+    flex-wrap: wrap;
+    gap: 8px 16px;
+  }
+
+  .account-toolbar-config {
+    padding-left: 0;
+    border-left: 0;
   }
 
   .account-filters {
@@ -3574,10 +3546,6 @@ a {
 
   .account-batch-actions .inline-filter select {
     width: 100%;
-  }
-
-  .overview-integration {
-    grid-column: auto;
   }
 
   .accounts-table {
