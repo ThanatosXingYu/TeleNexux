@@ -77,5 +77,22 @@
   </form>
 </dialog>
 
+<dialog class="account-dialog business-dialog" id="alert-history-dialog"
+  aria-labelledby="alert-history-title">
+  <div class="dialog-card">
+    <div class="dialog-header">
+      <div>
+        <p class="eyebrow">处理记录</p>
+        <h2 id="alert-history-title" data-alert-history-title>告警历史</h2>
+      </div>
+      <button class="tool-button" type="button" data-alert-history-close aria-label="关闭告警历史">
+        <span class="icon icon-x" aria-hidden="true"></span>
+      </button>
+    </div>
+    <div class="rule-version-list" data-alert-history-list></div>
+    <p class="form-notice form-notice-error" data-alert-history-error hidden></p>
+  </div>
+</dialog>
+
 <div class="account-toast" data-business-toast role="status" aria-live="polite" hidden></div>
 {{end}}

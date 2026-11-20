@@ -517,6 +517,18 @@ ORDER BY sequence`, alertID)
 	if strings.Join(events, ",") != strings.Join(want, ",") {
 		t.Fatalf("monitor alert events = %v, want %v", events, want)
 	}
+	alertEvents, err := service.ListAlertEvents(ctx, alertID, 20)
+	if err != nil {
+		t.Fatalf("ListAlertEvents() error = %v", err)
+	}
+	if len(alertEvents) != len(want) ||
+		alertEvents[0].Action != "reopened" ||
+		alertEvents[len(alertEvents)-1].Action != "created" {
+		t.Fatalf("ListAlertEvents() = %+v", alertEvents)
+	}
+	if _, err := service.ListAlertEvents(ctx, 9999, 20); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ListAlertEvents(missing) error = %v", err)
+	}
 }
 
 func TestMonitorAlertMigrationBackfillsLifecycleDefaults(t *testing.T) {

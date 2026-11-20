@@ -186,6 +186,17 @@ type AlertUpdateInput struct {
 	Actor    string `json:"-"`
 }
 
+type AlertEvent struct {
+	Sequence      int64     `json:"sequence"`
+	AlertID       int64     `json:"alert_id"`
+	Action        string    `json:"action"`
+	Actor         string    `json:"actor"`
+	Note          string    `json:"note,omitempty"`
+	PreviousState string    `json:"previous_state"`
+	NextState     string    `json:"next_state"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
 type IndexedMessage struct {
 	AccountID     int64     `json:"account_id"`
 	PeerType      string    `json:"peer_type"`
@@ -1914,6 +1925,67 @@ func (s *Service) GetAlert(ctx context.Context, id int64) (Alert, error) {
 		return Alert{}, ErrNotFound
 	}
 	return item, err
+}
+
+func (s *Service) ListAlertEvents(
+	ctx context.Context,
+	alertID int64,
+	limit int,
+) ([]AlertEvent, error) {
+	if alertID <= 0 {
+		return nil, ErrNotFound
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `
+SELECT 1 FROM monitor_alerts WHERE id = ?`, alertID,
+	).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	} else if err != nil {
+		return nil, fmt.Errorf("check monitor alert: %w", err)
+	}
+	limit = normalizeLimit(limit, 100, 200)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT sequence, alert_id, action, actor, note,
+	previous_state, next_state, created_at
+FROM monitor_alert_events
+WHERE alert_id = ?
+ORDER BY sequence DESC
+LIMIT ?`,
+		alertID,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list monitor alert events: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	items := make([]AlertEvent, 0)
+	for rows.Next() {
+		var (
+			item      AlertEvent
+			createdAt string
+		)
+		if err := rows.Scan(
+			&item.Sequence,
+			&item.AlertID,
+			&item.Action,
+			&item.Actor,
+			&item.Note,
+			&item.PreviousState,
+			&item.NextState,
+			&createdAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan monitor alert event: %w", err)
+		}
+		item.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse monitor alert event time: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate monitor alert events: %w", err)
+	}
+	return items, nil
 }
 
 func (s *Service) UpdateAlert(

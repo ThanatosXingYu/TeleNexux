@@ -1913,6 +1913,21 @@ func TestMonitorAlertUpdateUsesAuthenticatedActor(t *testing.T) {
 		updated.AcknowledgedAt == nil {
 		t.Fatalf("updated alert = %+v", updated)
 	}
+	historyRequest := httptest.NewRequest(
+		http.MethodGet,
+		fmt.Sprintf("/api/v1/monitor/alerts/%d/events", alerts[0].ID),
+		nil,
+	)
+	historyRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(historyRecorder, historyRequest)
+	if historyRecorder.Code != http.StatusOK ||
+		!strings.Contains(historyRecorder.Body.String(), `"action":"acknowledged"`) ||
+		!strings.Contains(historyRecorder.Body.String(), `"actor":"admin"`) {
+		t.Fatalf("alert history response = %d %s",
+			historyRecorder.Code,
+			historyRecorder.Body.String(),
+		)
+	}
 }
 
 func TestAuthenticatedAPIAccessIsAudited(t *testing.T) {

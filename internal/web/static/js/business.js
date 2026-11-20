@@ -1430,6 +1430,10 @@
     const actionNotice = document.querySelector("[data-alert-action-notice]");
     const severityField = document.querySelector("[data-alert-severity-field]");
     const assigneeField = document.querySelector("[data-alert-assignee-field]");
+    const historyDialog = document.querySelector("#alert-history-dialog");
+    const historyList = document.querySelector("[data-alert-history-list]");
+    const historyError = document.querySelector("[data-alert-history-error]");
+    const historyTitle = document.querySelector("[data-alert-history-title]");
 
     const stateMeta = (value) => ({
       pending: { label: "待处理", className: "badge-red", action: "acknowledge" },
@@ -1446,6 +1450,71 @@
       const action = actionSelect?.value;
       severityField?.toggleAttribute("hidden", action !== "set_severity");
       assigneeField?.toggleAttribute("hidden", action !== "assign");
+    };
+
+    const actionLabels = {
+      created: "告警创建",
+      acknowledged: "确认处理",
+      assigned: "分派负责人",
+      severity_changed: "调整严重度",
+      noted: "添加备注",
+      resolved: "标记已解决",
+      reopened: "重新打开",
+    };
+    const historyStateLabels = {
+      pending: "待处理",
+      acknowledged: "处理中",
+      resolved: "已解决",
+    };
+    const renderHistory = (events, alert) => {
+      const items = Array.isArray(events) ? events : [];
+      if (historyTitle) {
+        historyTitle.textContent = `${alert.rule_name || "监控规则"} · 历史`;
+      }
+      if (items.length === 0) {
+        const empty = element("p", "business-empty-copy", "这条告警还没有可显示的处理记录。");
+        historyList?.replaceChildren(empty);
+        return;
+      }
+      historyList?.replaceChildren(...items.map((event) => {
+        const item = element("article", "rule-version-item");
+        const header = element("div", "rule-version-header");
+        header.append(
+          element("strong", "", actionLabels[event.action] || event.action || "处理记录"),
+          element("small", "", formatDate(event.created_at)),
+        );
+        const state = event.previous_state === event.next_state
+          ? historyStateLabels[event.previous_state] || event.previous_state || "未知"
+          : `${historyStateLabels[event.previous_state] || event.previous_state || "未知"} → ${
+            historyStateLabels[event.next_state] || event.next_state || "未知"
+          }`;
+        item.append(
+          header,
+          element("p", "", `状态：${state}`),
+          element("small", "", `操作人：${event.actor || "系统"}${event.note ? ` · ${event.note}` : ""}`),
+        );
+        return item;
+      }));
+    };
+    const openHistory = async (alert) => {
+      if (!historyDialog) {
+        return;
+      }
+      if (historyTitle) {
+        historyTitle.textContent = `${alert.rule_name || "监控规则"} · 历史`;
+      }
+      showNotice(historyError);
+      historyList?.replaceChildren(element("p", "business-empty-copy", "正在读取处理记录..."));
+      historyDialog.showModal();
+      try {
+        const payload = await api(
+          `/api/v1/monitor/alerts/${encodeURIComponent(alert.id)}/events?limit=100`,
+        );
+        renderHistory(payload?.items, alert);
+      } catch (requestError) {
+        historyList?.replaceChildren();
+        showNotice(historyError, requestError.message, true);
+      }
     };
 
     const load = async () => {
@@ -1505,7 +1574,12 @@
             syncActionFields();
             dialog.showModal();
           });
-          card.append(processButton);
+          const historyButton = element("button", "button button-secondary button-compact", "历史");
+          historyButton.type = "button";
+          historyButton.addEventListener("click", () => openHistory(alert));
+          const actions = element("span", "business-actions");
+          actions.append(processButton, historyButton);
+          card.append(actions);
           return card;
         }));
         list.toggleAttribute("hidden", items.length === 0);
@@ -1518,6 +1592,9 @@
     actionSelect?.addEventListener("change", syncActionFields);
     document.querySelectorAll("[data-alert-action-close]").forEach((button) => {
       button.addEventListener("click", () => dialog.close());
+    });
+    document.querySelectorAll("[data-alert-history-close]").forEach((button) => {
+      button.addEventListener("click", () => historyDialog?.close());
     });
     actionForm?.addEventListener("submit", async (event) => {
       event.preventDefault();

@@ -188,6 +188,7 @@ type OperationsService interface {
 	SetRuleEnabled(ctx context.Context, id int64, enabled bool, actor string) error
 	DeleteRule(ctx context.Context, id int64) error
 	ListAlerts(ctx context.Context, state string, limit int) ([]operations.Alert, error)
+	ListAlertEvents(ctx context.Context, alertID int64, limit int) ([]operations.AlertEvent, error)
 	UpdateAlert(ctx context.Context, id int64, input operations.AlertUpdateInput) (operations.Alert, error)
 	IngestMessages(ctx context.Context, messages []operations.MessageRecord) (int, []operations.Alert, error)
 	MonitorSummary(ctx context.Context) (operations.MonitorSummary, error)
@@ -343,6 +344,8 @@ func (a *API) Handler() http.Handler {
 		a.requireAPIPermission(auth.PermissionMonitorRead, a.listMonitorTargets))
 	mux.HandleFunc("GET /api/v1/monitor/alerts",
 		a.requireAPIPermission(auth.PermissionMonitorRead, a.listMonitorAlerts))
+	mux.HandleFunc("GET /api/v1/monitor/alerts/{id}/events",
+		a.requireAPIPermission(auth.PermissionMonitorRead, a.listMonitorAlertEvents))
 	mux.HandleFunc(
 		"POST /api/v1/monitor/alerts/{id}/resolve",
 		a.requireAPIPermission(auth.PermissionMonitorOperate, a.resolveMonitorAlert),
@@ -897,6 +900,32 @@ func (a *API) listMonitorAlerts(w http.ResponseWriter, r *http.Request) {
 	items, err := a.operations.ListAlerts(r.Context(), r.URL.Query().Get("state"), limit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_alert_query", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (a *API) listMonitorAlertEvents(w http.ResponseWriter, r *http.Request) {
+	if !a.prepareOperations(w) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	limit, ok := parseLimit(w, r, 100)
+	if !ok {
+		return
+	}
+	items, err := a.operations.ListAlertEvents(r.Context(), id, limit)
+	if errors.Is(err, operations.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "告警记录不存在")
+		return
+	}
+	if err != nil {
+		a.logger.Error("list monitor alert events", "alert_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "alert_history_failed",
+			"无法读取告警历史")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})

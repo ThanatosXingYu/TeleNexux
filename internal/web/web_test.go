@@ -80,7 +80,13 @@ func TestBusinessPagesExposeRealDataControls(t *testing.T) {
 			"data-channel-list-error",
 			`name="cooldown_seconds"`,
 		},
-		"/monitor/alerts": {"data-alerts-list", "data-alert-state", "data-alert-action-form"},
+		"/monitor/alerts": {
+			"data-alerts-list",
+			"data-alert-state",
+			"data-alert-action-form",
+			"data-alert-history-list",
+			"data-alert-history-close",
+		},
 		"/messages": {
 			"data-message-filter",
 			"data-messages-body",
