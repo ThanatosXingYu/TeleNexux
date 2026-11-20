@@ -21,11 +21,35 @@ import (
 )
 
 const (
-	FormatVersion = 1
+	FormatVersion = 2
 	maxManifest   = 1 << 20
 )
 
 var requiredTables = []string{
+	"accounts",
+	"account_destructions",
+	"account_group_members",
+	"account_groups",
+	"audit_events",
+	"evidence_events",
+	"indexed_messages",
+	"indexed_messages_fts",
+	"ingestion_batches",
+	"legal_holds",
+	"monitor_account_states",
+	"monitor_alert_events",
+	"monitor_alerts",
+	"monitor_checkpoints",
+	"monitor_rule_versions",
+	"monitor_rules",
+	"notification_channels",
+	"notification_deliveries",
+	"pending_message_deletions",
+	"retention_policies",
+	"retention_destructions",
+}
+
+var legacyRequiredTables = []string{
 	"accounts",
 	"account_destructions",
 	"audit_events",
@@ -251,8 +275,12 @@ func ManifestPath(backupPath string) string {
 }
 
 func verifyDatabase(ctx context.Context, path string, manifest Manifest) error {
-	if manifest.FormatVersion != FormatVersion {
-		return fmt.Errorf("unsupported backup format version %d", manifest.FormatVersion)
+	tables, err := manifestTables(manifest.FormatVersion)
+	if err != nil {
+		return err
+	}
+	if !equalStrings(manifest.Tables, tables) {
+		return errors.New("backup manifest table list is invalid")
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -268,7 +296,7 @@ func verifyDatabase(ctx context.Context, path string, manifest Manifest) error {
 	if digest != manifest.SHA256 {
 		return errors.New("backup database SHA-256 does not match manifest")
 	}
-	integrity, _, err := inspectDatabase(ctx, path)
+	integrity, _, err := inspectDatabaseTables(ctx, path, tables)
 	if err != nil {
 		return err
 	}
@@ -278,9 +306,28 @@ func verifyDatabase(ctx context.Context, path string, manifest Manifest) error {
 	return nil
 }
 
+func manifestTables(formatVersion int) ([]string, error) {
+	switch formatVersion {
+	case 1:
+		return legacyRequiredTables, nil
+	case FormatVersion:
+		return requiredTables, nil
+	default:
+		return nil, fmt.Errorf("unsupported backup format version %d", formatVersion)
+	}
+}
+
 func inspectDatabase(
 	ctx context.Context,
 	path string,
+) (string, map[string]int, error) {
+	return inspectDatabaseTables(ctx, path, requiredTables)
+}
+
+func inspectDatabaseTables(
+	ctx context.Context,
+	path string,
+	tables []string,
 ) (string, map[string]int, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
@@ -303,8 +350,8 @@ func inspectDatabase(
 	if err := db.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&integrity); err != nil {
 		return "", nil, fmt.Errorf("check backup database integrity: %w", err)
 	}
-	counts := make(map[string]int, len(requiredTables))
-	for _, table := range requiredTables {
+	counts := make(map[string]int, len(tables))
+	for _, table := range tables {
 		var exists int
 		if err := db.QueryRowContext(ctx, `
 SELECT COUNT(1) FROM sqlite_master
@@ -361,9 +408,6 @@ func readManifest(path, backupPath string) (Manifest, error) {
 	}
 	if manifest.CreatedAt.IsZero() || manifest.SizeBytes <= 0 {
 		return Manifest{}, errors.New("backup manifest metadata is invalid")
-	}
-	if !equalStrings(manifest.Tables, requiredTables) {
-		return Manifest{}, errors.New("backup manifest table list is invalid")
 	}
 	return manifest, nil
 }

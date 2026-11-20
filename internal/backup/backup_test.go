@@ -2,9 +2,12 @@ package backup_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -33,6 +36,8 @@ func TestCreateVerifyAndDrillBackup(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 	if manifest.Database != filepath.Base(backupPath) ||
+		manifest.FormatVersion != backup.FormatVersion ||
+		!containsAllTables(manifest.Tables) ||
 		manifest.SizeBytes <= 0 ||
 		len(manifest.SHA256) != 64 {
 		t.Fatalf("Create() manifest = %+v", manifest)
@@ -59,8 +64,10 @@ func TestCreateVerifyAndDrillBackup(t *testing.T) {
 		report.RestoredBytes != manifest.SizeBytes ||
 		report.TableCounts["accounts"] != 1 ||
 		report.TableCounts["audit_events"] != 1 ||
+		report.TableCounts["indexed_messages_fts"] != 1 ||
 		report.TableCounts["ingestion_batches"] != 1 ||
 		report.TableCounts["evidence_events"] != 1 ||
+		report.TableCounts["monitor_rules"] != 0 ||
 		report.TableCounts["legal_holds"] != 1 {
 		t.Fatalf("Drill() = %+v", report)
 	}
@@ -116,6 +123,77 @@ func TestCreateRejectsInvalidSourcesAndInsecureOutput(t *testing.T) {
 			t.Fatalf("Create() error = %v, want insecure directory rejection", err)
 		}
 	})
+}
+
+func TestVerifyRequiresCurrentRuntimeTables(t *testing.T) {
+	ctx := context.Background()
+	manifest, backupPath, err := backup.Create(
+		ctx,
+		newApplicationDatabase(t),
+		filepath.Join(t.TempDir(), "backups"),
+		time.Now(),
+	)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	db, err := sql.Open("sqlite", backupPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DROP TABLE monitor_rules"); err != nil {
+		_ = db.Close()
+		t.Fatalf("drop required runtime table: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close modified backup: %v", err)
+	}
+	info, err := os.Stat(backupPath)
+	if err != nil {
+		t.Fatalf("stat modified backup: %v", err)
+	}
+	digest, err := fileDigest(backupPath)
+	if err != nil {
+		t.Fatalf("hash modified backup: %v", err)
+	}
+	manifest.SizeBytes = info.Size()
+	manifest.SHA256 = digest
+	writeManifest(t, backup.ManifestPath(backupPath), manifest)
+	if _, err := backup.Verify(ctx, backupPath); err == nil ||
+		!strings.Contains(err.Error(), "missing required table monitor_rules") {
+		t.Fatalf("Verify() error = %v, want missing runtime table", err)
+	}
+}
+
+func TestVerifyAcceptsLegacyManifestTableSet(t *testing.T) {
+	ctx := context.Background()
+	manifest, backupPath, err := backup.Create(
+		ctx,
+		newApplicationDatabase(t),
+		filepath.Join(t.TempDir(), "backups"),
+		time.Now(),
+	)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	manifest.FormatVersion = 1
+	manifest.Tables = []string{
+		"accounts",
+		"account_destructions",
+		"audit_events",
+		"evidence_events",
+		"ingestion_batches",
+		"legal_holds",
+		"pending_message_deletions",
+		"retention_destructions",
+	}
+	writeManifest(t, backup.ManifestPath(backupPath), manifest)
+	verified, err := backup.Verify(ctx, backupPath)
+	if err != nil {
+		t.Fatalf("Verify() legacy backup error = %v", err)
+	}
+	if verified.FormatVersion != 1 || len(verified.Tables) != 8 {
+		t.Fatalf("legacy Verify() = %+v", verified)
+	}
 }
 
 func TestVerifyRejectsTamperedDataAndManifest(t *testing.T) {
@@ -397,6 +475,54 @@ func writeManifest(t *testing.T, path string, manifest backup.Manifest) {
 	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
 		t.Fatalf("WriteFile() manifest error = %v", err)
 	}
+}
+
+func fileDigest(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = file.Close() }()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func containsAllTables(tables []string) bool {
+	required := []string{
+		"accounts",
+		"account_destructions",
+		"account_group_members",
+		"account_groups",
+		"audit_events",
+		"evidence_events",
+		"indexed_messages",
+		"indexed_messages_fts",
+		"ingestion_batches",
+		"legal_holds",
+		"monitor_account_states",
+		"monitor_alert_events",
+		"monitor_alerts",
+		"monitor_checkpoints",
+		"monitor_rule_versions",
+		"monitor_rules",
+		"notification_channels",
+		"notification_deliveries",
+		"pending_message_deletions",
+		"retention_policies",
+		"retention_destructions",
+	}
+	if len(tables) != len(required) {
+		return false
+	}
+	for index := range required {
+		if tables[index] != required[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func assertDirectoryEmpty(t *testing.T, path string) {
