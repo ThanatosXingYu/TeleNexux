@@ -2923,6 +2923,131 @@ func TestDeleteChatMessagesRejectsUnknownScope(t *testing.T) {
 	}
 }
 
+func TestDeleteChatMessagesRecordsEvidenceAndTombstone(t *testing.T) {
+	ctx := context.Background()
+	operationsService, err := operations.Open(
+		ctx,
+		filepath.Join(t.TempDir(), "delete-evidence.db"),
+	)
+	if err != nil {
+		t.Fatalf("operations.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := operationsService.Close(); err != nil {
+			t.Errorf("operations.Close() error = %v", err)
+		}
+	})
+	if _, _, err := operationsService.IngestMessages(ctx, []operations.MessageRecord{{
+		AccountID: 42,
+		PeerType:  "user",
+		PeerID:    99,
+		PeerTitle: "Alice",
+		MessageID: 7,
+		Sender:    "Alice",
+		Text:      "delete this",
+		SentAt:    time.Now().UTC(),
+	}}); err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+	accounts := &fakeAccountService{
+		created: account.Account{ID: 42, Status: account.StatusOnline},
+	}
+	chats := &fakeTelegramChatService{}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/accounts/42/chats/user/99/messages/delete",
+		strings.NewReader(`{"message_ids":[7],"scope":"me"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	newTestHandlerWithOperations(accounts, chats, operationsService).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body: %s", recorder.Code, recorder.Body.String())
+	}
+	events, err := operationsService.ListEvidenceEvents(ctx, 42, "user", 99, 7, 10)
+	if err != nil {
+		t.Fatalf("ListEvidenceEvents() error = %v", err)
+	}
+	if len(events) != 2 ||
+		events[0].EventType != "delete" ||
+		events[0].Actor == "" ||
+		events[1].EventType != "message" {
+		t.Fatalf("deletion evidence = %+v", events)
+	}
+	page, err := operationsService.SearchMessages(ctx, operations.MessageQuery{
+		Query: "delete this",
+		Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("SearchMessages() error = %v", err)
+	}
+	if page.Total != 0 || len(page.Items) != 0 {
+		t.Fatalf("deleted message remained searchable: %+v", page)
+	}
+}
+
+func TestDeleteChatMessagesReportsEvidenceFailure(t *testing.T) {
+	ctx := context.Background()
+	operationsService, err := operations.Open(
+		ctx,
+		filepath.Join(t.TempDir(), "delete-evidence-failure.db"),
+	)
+	if err != nil {
+		t.Fatalf("operations.Open() error = %v", err)
+	}
+	if err := operationsService.Close(); err != nil {
+		t.Fatalf("operations.Close() error = %v", err)
+	}
+	accounts := &fakeAccountService{
+		created: account.Account{ID: 42, Status: account.StatusOnline},
+	}
+	chats := &fakeTelegramChatService{}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/accounts/42/chats/user/99/messages/delete",
+		strings.NewReader(`{"message_ids":[7],"scope":"me"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	newTestHandlerWithOperations(accounts, chats, operationsService).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "deletion_evidence_failed") {
+		t.Fatalf("body = %s, want evidence failure code", recorder.Body.String())
+	}
+}
+
+func newTestHandlerWithOperations(
+	accounts AccountService,
+	chats TelegramChatService,
+	operationsService OperationsService,
+) http.Handler {
+	webHandler, err := web.New()
+	if err != nil {
+		panic(err)
+	}
+	manager, token, csrf := testAuthentication()
+	return authenticatedTestHandler{
+		next: New(
+			accounts,
+			&fakeTelegramAuthService{},
+			chats,
+			nil,
+			manager,
+			webHandler.Handler(),
+			slog.New(slog.NewTextHandler(io.Discard, nil)),
+			nil,
+			operationsService,
+			nil,
+		).Handler(),
+		token: token,
+		csrf:  csrf,
+	}
+}
+
 func newTestHandlerWithDependencies(
 	accounts AccountService,
 	telegram TelegramAuthService,

@@ -194,6 +194,14 @@ type OperationsService interface {
 	ListAlertEvents(ctx context.Context, alertID int64, limit int) ([]operations.AlertEvent, error)
 	UpdateAlert(ctx context.Context, id int64, input operations.AlertUpdateInput) (operations.Alert, error)
 	IngestMessages(ctx context.Context, messages []operations.MessageRecord) (int, []operations.Alert, error)
+	RecordDeletion(
+		ctx context.Context,
+		accountID int64,
+		peerType string,
+		peerID int64,
+		messageIDs []int,
+		actor string,
+	) (string, error)
 	MonitorSummary(ctx context.Context) (operations.MonitorSummary, error)
 	ListCollectionTargets(ctx context.Context) ([]operations.CollectionTarget, error)
 	SearchMessages(ctx context.Context, filter operations.MessageQuery) (operations.MessagePage, error)
@@ -2398,6 +2406,27 @@ func (a *API) deleteChatMessages(w http.ResponseWriter, r *http.Request) {
 	); err != nil {
 		a.writeChatError(r.Context(), w, accountID, err)
 		return
+	}
+	if a.operations != nil {
+		if _, err := a.operations.RecordDeletion(
+			r.Context(),
+			accountID,
+			peerType,
+			peerID,
+			input.MessageIDs,
+			currentActor(r),
+		); err != nil {
+			a.logger.Error(
+				"record deleted Telegram messages",
+				"account_id", accountID,
+				"peer_type", peerType,
+				"peer_id", peerID,
+				"error", err,
+			)
+			writeError(w, http.StatusInternalServerError, "deletion_evidence_failed",
+				"消息已从 Telegram 删除，但本地证据记录失败；请重试以完成记录")
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
