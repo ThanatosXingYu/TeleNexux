@@ -649,6 +649,21 @@ BEFORE DELETE ON account_destructions
 BEGIN
 	SELECT RAISE(ABORT, 'account destruction records are append-only');
 END;
+CREATE TABLE IF NOT EXISTS pending_message_deletions (
+	account_id INTEGER NOT NULL,
+	peer_type TEXT NOT NULL,
+	peer_id INTEGER NOT NULL,
+	message_id INTEGER NOT NULL,
+	observed_at TEXT NOT NULL,
+	state TEXT NOT NULL DEFAULT 'pending'
+		CHECK (state IN ('pending', 'ambiguous', 'missing')),
+	attempts INTEGER NOT NULL DEFAULT 0,
+	last_attempt_at TEXT NOT NULL DEFAULT '',
+	last_error TEXT NOT NULL DEFAULT '',
+	PRIMARY KEY (account_id, peer_type, peer_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS pending_message_deletions_state_idx
+	ON pending_message_deletions(state, observed_at, account_id, message_id);
 CREATE TABLE IF NOT EXISTS audit_events (
 	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
 	request_id TEXT NOT NULL UNIQUE,
@@ -2420,6 +2435,7 @@ LIMIT 1`, accountID).Scan(&heldAccountID); err == nil {
 		`DELETE FROM monitor_account_states WHERE account_id = ?`,
 		`DELETE FROM ingestion_batches WHERE account_id = ?`,
 		`DELETE FROM evidence_events WHERE account_id = ?`,
+		`DELETE FROM pending_message_deletions WHERE account_id = ?`,
 	} {
 		if _, err := tx.ExecContext(ctx, query, accountID); err != nil {
 			return fmt.Errorf("purge account operations: %w", err)

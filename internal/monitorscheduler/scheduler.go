@@ -37,6 +37,10 @@ type ChatReader interface {
 	) (telegramchat.MessageCollection, error)
 }
 
+type deletionSource interface {
+	Deletions() <-chan telegramchat.DeletionNotice
+}
+
 const (
 	collectionPageSize    = 50
 	collectionMaxPages    = 20
@@ -137,12 +141,17 @@ func (s *Scheduler) Start(ctx context.Context) {
 	updateSource, _ := s.chats.(interface {
 		Updates() <-chan int64
 	})
+	deletionNotifications, _ := s.chats.(deletionSource)
 	var updates <-chan int64
 	if updateSource != nil {
 		updates = updateSource.Updates()
 		s.mu.Lock()
 		s.status.Mode = "event_driven_with_poll_fallback"
 		s.mu.Unlock()
+	}
+	var deletions <-chan telegramchat.DeletionNotice
+	if deletionNotifications != nil {
+		deletions = deletionNotifications.Deletions()
 	}
 	go func() {
 		nextRun := time.Now().UTC().Add(s.initialDelay)
@@ -165,6 +174,19 @@ func (s *Scheduler) Start(ctx context.Context) {
 						goto run
 					}
 				}
+			case notice, ok := <-deletions:
+				if !ok {
+					deletions = nil
+					continue
+				}
+				if err := s.recordDeletionNotice(ctx, notice); err != nil {
+					s.logger.Warn(
+						"persist Telegram deletion notice",
+						"account_id", notice.AccountID,
+						"error", err,
+					)
+				}
+				trigger = "update"
 			}
 		run:
 			s.recordTrigger(trigger)
@@ -204,11 +226,16 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 
 	started := s.now().UTC()
 	s.setRunning(true, started)
+	var runErr error
+	if _, err := s.operations.ResolveExternalDeletions(ctx, 100); err != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("resolve Telegram deletion notices: %w", err))
+	}
 	targets, err := s.operations.ListCollectionTargets(ctx)
 	if err != nil {
 		s.resetAccountStatuses(nil)
-		s.finish(started, err)
-		return err
+		runErr = errors.Join(runErr, err)
+		s.finish(started, runErr)
+		return runErr
 	}
 	groups := groupTargetsByAccount(targets)
 	s.resetAccountStatuses(groups)
@@ -237,12 +264,27 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	close(jobs)
 	workers.Wait()
 
-	var runErr error
 	for _, err := range errs {
 		runErr = errors.Join(runErr, err)
 	}
 	s.finish(started, runErr)
 	return runErr
+}
+
+func (s *Scheduler) recordDeletionNotice(
+	ctx context.Context,
+	notice telegramchat.DeletionNotice,
+) error {
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_, err := s.operations.EnqueueExternalDeletion(
+		recordCtx,
+		notice.AccountID,
+		notice.PeerType,
+		notice.PeerID,
+		notice.MessageIDs,
+	)
+	return err
 }
 
 func (s *Scheduler) runAccountGroup(

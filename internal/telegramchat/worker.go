@@ -19,17 +19,18 @@ import (
 
 // ListenerStatus reports the lifecycle of one account's Telegram connection.
 type ListenerStatus struct {
-	AccountID          int64      `json:"account_id"`
-	Connected          bool       `json:"connected"`
-	Connections        int        `json:"connections"`
-	Disconnections     int        `json:"disconnections"`
-	EventsObserved     int64      `json:"events_observed"`
-	QueuedEvents       int        `json:"queued_events"`
-	GapRecoveryCount   int        `json:"gap_recovery_count"`
-	LastConnectedAt    *time.Time `json:"last_connected_at,omitempty"`
-	LastEventAt        *time.Time `json:"last_event_at,omitempty"`
-	LastDisconnectedAt *time.Time `json:"last_disconnected_at,omitempty"`
-	LastError          string     `json:"last_error,omitempty"`
+	AccountID            int64      `json:"account_id"`
+	Connected            bool       `json:"connected"`
+	Connections          int        `json:"connections"`
+	Disconnections       int        `json:"disconnections"`
+	EventsObserved       int64      `json:"events_observed"`
+	QueuedEvents         int        `json:"queued_events"`
+	QueuedDeletionEvents int        `json:"queued_deletion_events"`
+	GapRecoveryCount     int        `json:"gap_recovery_count"`
+	LastConnectedAt      *time.Time `json:"last_connected_at,omitempty"`
+	LastEventAt          *time.Time `json:"last_event_at,omitempty"`
+	LastDisconnectedAt   *time.Time `json:"last_disconnected_at,omitempty"`
+	LastError            string     `json:"last_error,omitempty"`
 }
 
 type clientCommand struct {
@@ -296,6 +297,9 @@ func (s *Service) observeUpdate(accountID int64, value tg.UpdatesClass) {
 		status.EventsObserved++
 		status.LastEventAt = &now
 	})
+	for _, notice := range deletionNotices(accountID, value) {
+		s.queueDeletionNotice(notice)
+	}
 	select {
 	case s.updates <- accountID:
 	default:
@@ -303,6 +307,84 @@ func (s *Service) observeUpdate(accountID int64, value tg.UpdatesClass) {
 		// queue is full, so dropping a duplicate wake-up is safe.
 		s.observeGap(accountID)
 	}
+}
+
+func (s *Service) queueDeletionNotice(notice DeletionNotice) {
+	s.deletionsMu.Lock()
+	if s.deletionsClosed {
+		s.deletionsMu.Unlock()
+		return
+	}
+	s.deletionPending = append(s.deletionPending, notice)
+	s.deletionsMu.Unlock()
+	select {
+	case s.deletionWake <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Service) deliverDeletionNotices() {
+	defer close(s.deletionDone)
+	defer close(s.deletions)
+	for {
+		s.deletionsMu.Lock()
+		if len(s.deletionPending) == 0 {
+			if s.deletionsClosed {
+				s.deletionsMu.Unlock()
+				return
+			}
+			s.deletionsMu.Unlock()
+			select {
+			case <-s.deletionWake:
+				continue
+			case <-s.ctx.Done():
+				return
+			}
+		}
+		notice := s.deletionPending[0]
+		s.deletionPending = s.deletionPending[1:]
+		s.deletionsMu.Unlock()
+
+		select {
+		case s.deletions <- notice:
+		case <-s.ctx.Done():
+			return
+		}
+	}
+}
+
+func deletionNotices(accountID int64, value tg.UpdatesClass) []DeletionNotice {
+	notices := make([]DeletionNotice, 0, 2)
+	appendUpdate := func(update tg.UpdateClass) {
+		switch item := update.(type) {
+		case *tg.UpdateDeleteMessages:
+			notices = append(notices, DeletionNotice{
+				AccountID:  accountID,
+				PeerType:   "unknown",
+				MessageIDs: append([]int(nil), item.Messages...),
+			})
+		case *tg.UpdateDeleteChannelMessages:
+			notices = append(notices, DeletionNotice{
+				AccountID:  accountID,
+				PeerType:   "channel",
+				PeerID:     item.ChannelID,
+				MessageIDs: append([]int(nil), item.Messages...),
+			})
+		}
+	}
+	switch update := value.(type) {
+	case *tg.Updates:
+		for _, item := range update.Updates {
+			appendUpdate(item)
+		}
+	case *tg.UpdatesCombined:
+		for _, item := range update.Updates {
+			appendUpdate(item)
+		}
+	case *tg.UpdateShort:
+		appendUpdate(update.Update)
+	}
+	return notices
 }
 
 func (s *Service) observeGap(accountID int64) {

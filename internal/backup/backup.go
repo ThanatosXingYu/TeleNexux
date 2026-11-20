@@ -32,6 +32,7 @@ var requiredTables = []string{
 	"evidence_events",
 	"ingestion_batches",
 	"legal_holds",
+	"pending_message_deletions",
 	"retention_destructions",
 }
 

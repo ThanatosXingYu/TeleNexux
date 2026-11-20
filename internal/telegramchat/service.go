@@ -95,6 +95,15 @@ type MessagePage struct {
 	NextBeforeID int       `json:"next_before_id,omitempty"`
 }
 
+// DeletionNotice carries the minimum stable fields from a Telegram deletion
+// update. An unknown peer type means the update did not identify a chat.
+type DeletionNotice struct {
+	AccountID  int64  `json:"account_id"`
+	PeerType   string `json:"peer_type"`
+	PeerID     int64  `json:"peer_id"`
+	MessageIDs []int  `json:"message_ids"`
+}
+
 type Service struct {
 	appID            int
 	appHash          string
@@ -113,6 +122,13 @@ type Service struct {
 	listenerMu sync.RWMutex
 	listeners  map[int64]ListenerStatus
 	updates    chan int64
+	deletions  chan DeletionNotice
+
+	deletionsMu     sync.Mutex
+	deletionsClosed bool
+	deletionWake    chan struct{}
+	deletionPending []DeletionNotice
+	deletionDone    chan struct{}
 
 	peerMu   sync.RWMutex
 	peers    map[string]cachedPeer
@@ -185,7 +201,7 @@ func NewServiceWithProxy(
 		return nil, errors.New("Telegram session directory must not be empty")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Service{
+	service := &Service{
 		appID:            appID,
 		appHash:          strings.TrimSpace(appHash),
 		sessionDirectory: sessionDirectory,
@@ -195,10 +211,15 @@ func NewServiceWithProxy(
 		workers:          make(map[int64]*accountWorker),
 		listeners:        make(map[int64]ListenerStatus),
 		updates:          make(chan int64, 64),
+		deletions:        make(chan DeletionNotice, 64),
 		peers:            make(map[string]cachedPeer),
 		avatars:          make(map[string]cachedAvatar),
 		proxyProvider:    proxyProvider,
-	}, nil
+		deletionWake:     make(chan struct{}, 1),
+		deletionDone:     make(chan struct{}),
+	}
+	go service.deliverDeletionNotices()
+	return service, nil
 }
 
 func (s *Service) Chats(ctx context.Context, accountID int64, limit int) (ChatPage, error) {
@@ -363,6 +384,10 @@ func (s *Service) Close() {
 		s.cancel()
 		s.workersMu.Unlock()
 		s.workersWG.Wait()
+		s.deletionsMu.Lock()
+		s.deletionsClosed = true
+		s.deletionsMu.Unlock()
+		<-s.deletionDone
 	})
 }
 
@@ -375,6 +400,15 @@ func (s *Service) Updates() <-chan int64 {
 	return s.updates
 }
 
+// Deletions emits a deletion notice without message content or reusable
+// Telegram file locators. Consumers persist notices before resolving them.
+func (s *Service) Deletions() <-chan DeletionNotice {
+	if s == nil {
+		return nil
+	}
+	return s.deletions
+}
+
 // ListenerStatuses returns connection and real-time update health by account.
 func (s *Service) ListenerStatuses() []ListenerStatus {
 	if s == nil {
@@ -382,8 +416,13 @@ func (s *Service) ListenerStatuses() []ListenerStatus {
 	}
 	s.listenerMu.RLock()
 	items := make([]ListenerStatus, 0, len(s.listeners))
+	queuedDeletions := len(s.deletions)
+	s.deletionsMu.Lock()
+	queuedDeletions += len(s.deletionPending)
+	s.deletionsMu.Unlock()
 	for _, item := range s.listeners {
 		item.QueuedEvents = len(s.updates)
+		item.QueuedDeletionEvents = queuedDeletions
 		items = append(items, item)
 	}
 	s.listenerMu.RUnlock()

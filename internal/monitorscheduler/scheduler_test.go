@@ -182,6 +182,15 @@ type pollOnlyChatReader struct {
 	calls chan int64
 }
 
+type deletionSourceChatReader struct {
+	pollOnlyChatReader
+	deletions chan telegramchat.DeletionNotice
+}
+
+func (r *deletionSourceChatReader) Deletions() <-chan telegramchat.DeletionNotice {
+	return r.deletions
+}
+
 func (r *pollOnlyChatReader) CollectMessages(
 	_ context.Context,
 	accountID int64,
@@ -582,6 +591,94 @@ func TestStartKeepsPeriodicPollingWithoutUpdateSource(t *testing.T) {
 	if status.Mode != "polling" || status.PollRuns != 1 {
 		t.Fatalf("Status() = %+v", status)
 	}
+}
+
+func TestStartPersistsAndResolvesTelegramDeletionNotice(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := testOperationsService(t)
+	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.UTC)
+	if _, _, err := service.IngestMessages(ctx, []operations.MessageRecord{{
+		AccountID: 7,
+		PeerType:  "chat",
+		PeerID:    42,
+		MessageID: 301,
+		Sender:    "Alice",
+		Text:      "to be deleted",
+		SentAt:    now,
+	}}); err != nil {
+		t.Fatalf("IngestMessages() error = %v", err)
+	}
+	reader := &deletionSourceChatReader{
+		pollOnlyChatReader: pollOnlyChatReader{calls: make(chan int64, 1)},
+		deletions:          make(chan telegramchat.DeletionNotice, 1),
+	}
+	scheduler := New(service, &fakeAccountLookup{}, reader, time.Hour, testLogger())
+	scheduler.initialDelay = time.Hour
+	scheduler.Start(ctx)
+	reader.deletions <- telegramchat.DeletionNotice{
+		AccountID:  7,
+		PeerType:   "unknown",
+		MessageIDs: []int{301},
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := service.ListEvidenceEvents(ctx, 7, "chat", 42, 301, 10)
+		if err != nil {
+			t.Fatalf("ListEvidenceEvents() error = %v", err)
+		}
+		if len(events) == 2 && events[0].EventType == "delete" {
+			pending, err := service.ListPendingDeletions(ctx, "", 10)
+			if err != nil {
+				t.Fatalf("ListPendingDeletions() error = %v", err)
+			}
+			if len(pending) != 0 {
+				t.Fatalf("resolved deletion remains pending: %+v", pending)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("Telegram deletion notice did not produce evidence")
+}
+
+func TestStartRetainsUnmatchedTelegramDeletionForDiagnosis(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := testOperationsService(t)
+	reader := &deletionSourceChatReader{
+		pollOnlyChatReader: pollOnlyChatReader{calls: make(chan int64, 1)},
+		deletions:          make(chan telegramchat.DeletionNotice, 1),
+	}
+	scheduler := New(service, &fakeAccountLookup{}, reader, time.Hour, testLogger())
+	scheduler.initialDelay = time.Hour
+	scheduler.Start(ctx)
+	reader.deletions <- telegramchat.DeletionNotice{
+		AccountID:  8,
+		PeerType:   "unknown",
+		MessageIDs: []int{999},
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		missing, err := service.ListPendingDeletions(
+			ctx,
+			operations.PendingDeletionMissing,
+			10,
+		)
+		if err != nil {
+			t.Fatalf("ListPendingDeletions() error = %v", err)
+		}
+		if len(missing) == 1 &&
+			missing[0].AccountID == 8 &&
+			missing[0].MessageID == 999 &&
+			missing[0].LastError != "" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("unmatched Telegram deletion was not retained for diagnosis")
 }
 
 func TestRunOnceSkipsAccountsPendingDeletion(t *testing.T) {

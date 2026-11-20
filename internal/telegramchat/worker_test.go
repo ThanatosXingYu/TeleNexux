@@ -77,6 +77,66 @@ func TestObserveUpdateQueuesOnlyMessageActivities(t *testing.T) {
 	}
 }
 
+func TestObserveUpdateDoesNotBlockOnUnreadDeletionQueue(t *testing.T) {
+	service, err := NewService(1, "test-hash", t.TempDir())
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	defer service.Close()
+
+	service.deletionsMu.Lock()
+	for range cap(service.deletions) {
+		service.deletionPending = append(service.deletionPending, DeletionNotice{
+			AccountID:  7,
+			PeerType:   "unknown",
+			MessageIDs: []int{1},
+		})
+	}
+	service.deletionsMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		service.observeUpdate(7, &tg.UpdateShort{Update: &tg.UpdateDeleteMessages{
+			Messages: []int{9},
+		}})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("observeUpdate blocked on an unread deletion queue")
+	}
+	statuses := service.ListenerStatuses()
+	if len(statuses) != 1 || statuses[0].QueuedDeletionEvents == 0 {
+		t.Fatalf("ListenerStatuses() = %+v, want queued deletion events", statuses)
+	}
+}
+
+func TestCloseStopsDeletionDelivery(t *testing.T) {
+	service, err := NewService(1, "test-hash", t.TempDir())
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		service.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Close() did not stop deletion delivery")
+	}
+	select {
+	case _, ok := <-service.Deletions():
+		if ok {
+			t.Fatal("Deletions() remained open after Close()")
+		}
+	default:
+		t.Fatal("Deletions() was not closed")
+	}
+}
+
 func TestObserveGapRequestsCatchup(t *testing.T) {
 	service, err := NewService(1, "test-hash", t.TempDir())
 	if err != nil {
@@ -96,6 +156,63 @@ func TestObserveGapRequestsCatchup(t *testing.T) {
 	statuses := service.ListenerStatuses()
 	if len(statuses) != 1 || statuses[0].GapRecoveryCount != 1 {
 		t.Fatalf("ListenerStatuses() = %+v", statuses)
+	}
+}
+
+func TestDeletionNoticesPreserveProtocolPeerContext(t *testing.T) {
+	tests := []struct {
+		name  string
+		value tg.UpdatesClass
+		want  DeletionNotice
+	}{
+		{
+			name: "private or chat deletion lacks peer",
+			value: &tg.UpdateShort{Update: &tg.UpdateDeleteMessages{
+				Messages: []int{7, 8},
+			}},
+			want: DeletionNotice{
+				AccountID:  9,
+				PeerType:   "unknown",
+				MessageIDs: []int{7, 8},
+			},
+		},
+		{
+			name: "channel deletion retains channel ID",
+			value: &tg.Updates{
+				Updates: []tg.UpdateClass{
+					&tg.UpdateDeleteChannelMessages{
+						ChannelID: 42,
+						Messages:  []int{11},
+					},
+				},
+			},
+			want: DeletionNotice{
+				AccountID:  9,
+				PeerType:   "channel",
+				PeerID:     42,
+				MessageIDs: []int{11},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			notices := deletionNotices(9, test.value)
+			if len(notices) != 1 {
+				t.Fatalf("deletionNotices() = %+v", notices)
+			}
+			got := notices[0]
+			if got.AccountID != test.want.AccountID ||
+				got.PeerType != test.want.PeerType ||
+				got.PeerID != test.want.PeerID ||
+				len(got.MessageIDs) != len(test.want.MessageIDs) {
+				t.Fatalf("deletionNotices() = %+v, want %+v", got, test.want)
+			}
+			for index := range got.MessageIDs {
+				if got.MessageIDs[index] != test.want.MessageIDs[index] {
+					t.Fatalf("deletionNotices() = %+v, want %+v", got, test.want)
+				}
+			}
+		})
 	}
 }
 
