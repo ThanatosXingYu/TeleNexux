@@ -61,6 +61,7 @@
     appContextMenu: root.querySelector("[data-app-context-menu]"),
     forwardDialog: root.querySelector("[data-forward-dialog]"),
     forwardForm: root.querySelector("[data-forward-form]"),
+    forwardSearch: root.querySelector("[data-forward-search]"),
     forwardTarget: root.querySelector("[data-forward-target]"),
     forwardCount: root.querySelector("[data-forward-count]"),
     forwardError: root.querySelector("[data-forward-error]"),
@@ -88,6 +89,9 @@
     contextMessage: null,
     actionMessageIDs: [],
     forwardChats: new Map(),
+    forwardSearchTimer: 0,
+    forwardSearchRequest: 0,
+    permissions: new Set(),
     profile: null,
     profileTarget: null,
     toastTimer: 0,
@@ -169,6 +173,21 @@
     } finally {
       window.clearTimeout(timeout);
     }
+  };
+
+  const hasPermission = (permission) => state.permissions.has(permission);
+
+  const loadPermissions = async () => {
+    const session = await requestJSON("/api/v1/auth/session");
+    state.permissions = new Set(
+      Array.isArray(session?.permissions) ? session.permissions.filter((item) => typeof item === "string") : [],
+    );
+    root.dataset.permissions = [...state.permissions].join(" ");
+    root.querySelectorAll("[data-context-action='forward'], [data-context-action='delete'], [data-context-action='select'], [data-selection-forward], [data-selection-delete], [data-app-context-action='select']").forEach((button) => {
+      const allowed = hasPermission("chat:operate");
+      button.toggleAttribute("disabled", !allowed);
+      button.setAttribute("aria-disabled", String(!allowed));
+    });
   };
 
   const showNotice = (element, message) => {
@@ -703,7 +722,10 @@
         ? "这里显示当前已授权账号的 Telegram 资料，可修改名称、用户名和简介。"
         : "这里显示从 Telegram 实时读取的会话资料。";
     }
-    elements.profileEdit?.toggleAttribute("hidden", !profile.can_edit);
+    elements.profileEdit?.toggleAttribute(
+      "hidden",
+      !profile.can_edit || !hasPermission("account:write"),
+    );
     elements.profileForm?.setAttribute("hidden", "");
     showNotice(elements.profileError, "");
   };
@@ -726,7 +748,11 @@
   };
 
   const openProfileEditor = () => {
-    if (!state.profile?.can_edit || !elements.profileForm) {
+    if (
+      !state.profile?.can_edit ||
+      !hasPermission("account:write") ||
+      !elements.profileForm
+    ) {
       return;
     }
     elements.profileForm.elements.namedItem("first_name").value = state.profile.first_name || "";
@@ -1023,6 +1049,10 @@
   };
 
   const openForwardDialog = (messageIDs) => {
+    if (!hasPermission("chat:operate")) {
+      showToast("当前账号没有转发消息权限");
+      return;
+    }
     if (!state.selectedChat || !elements.forwardDialog || !elements.forwardTarget) {
       return;
     }
@@ -1032,6 +1062,11 @@
     }
     state.actionMessageIDs = ids;
     state.forwardChats.clear();
+    state.forwardSearchRequest += 1;
+    window.clearTimeout(state.forwardSearchTimer);
+    if (elements.forwardSearch) {
+      elements.forwardSearch.value = "";
+    }
     const currentID = `${state.selectedChat.type}:${state.selectedChat.peer_id}`;
     state.chats.forEach((chat) => {
       const value = `${chat.type}:${chat.peer_id}`;
@@ -1040,14 +1075,7 @@
       }
       state.forwardChats.set(value, chat);
     });
-    elements.forwardTarget.replaceChildren(
-      ...[...state.forwardChats.entries()].map(([value, chat]) => {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = chat.title || (chat.username ? `@${chat.username}` : value);
-        return option;
-      }),
-    );
+    renderForwardTargets();
     if (state.forwardChats.size === 0) {
       showToast("没有可用的转发目标");
       return;
@@ -1059,7 +1087,84 @@
     elements.forwardDialog.showModal();
   };
 
+  const renderForwardTargets = () => {
+    if (!elements.forwardTarget) {
+      return;
+    }
+    const query = normalizeSearchQuery(elements.forwardSearch?.value || "");
+    const targets = [...state.forwardChats.entries()].filter(([, chat]) => {
+      if (!query) {
+        return true;
+      }
+      return [chat.title, chat.username, `@${chat.username || ""}`]
+        .filter(Boolean)
+        .join(" ")
+        .toLocaleLowerCase()
+        .includes(query);
+    });
+    elements.forwardTarget.replaceChildren(
+      ...targets.map(([value, chat]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = chat.username
+          ? `${chat.title || chat.username} · @${chat.username}`
+          : (chat.title || value);
+        return option;
+      }),
+    );
+    elements.forwardTarget.disabled = targets.length === 0;
+    if (targets.length === 0) {
+      showNotice(elements.forwardError, query
+        ? "没有匹配的转发目标，请尝试完整用户名或姓名。"
+        : "没有可用的转发目标。");
+    } else {
+      showNotice(elements.forwardError, "");
+    }
+  };
+
+  const searchForwardTargets = async () => {
+    const query = String(elements.forwardSearch?.value || "").trim();
+    const requestID = ++state.forwardSearchRequest;
+    if (!query || !state.selectedChat) {
+      renderForwardTargets();
+      return;
+    }
+    try {
+      const params = new URLSearchParams({q: query, limit: "30"});
+      const payload = await requestJSON(
+        `/api/v1/accounts/${encodeURIComponent(accountID)}/search?${params}`,
+      );
+      if (requestID !== state.forwardSearchRequest) {
+        return;
+      }
+      const currentID = `${state.selectedChat.type}:${state.selectedChat.peer_id}`;
+      const resultChats = Array.isArray(payload?.items) ? payload.items : [];
+      resultChats.forEach((chat) => {
+        const value = `${chat.type}:${chat.peer_id}`;
+        if (value !== currentID && chat.type && Number(chat.peer_id) > 0) {
+          state.forwardChats.set(value, chat);
+        }
+      });
+      renderForwardTargets();
+    } catch (error) {
+      if (requestID === state.forwardSearchRequest) {
+        renderForwardTargets();
+        showNotice(elements.forwardError, `联系人搜索失败：${error.message}`);
+      }
+    }
+  };
+
+  elements.forwardSearch?.addEventListener("input", () => {
+    renderForwardTargets();
+    window.clearTimeout(state.forwardSearchTimer);
+    state.forwardSearchTimer = window.setTimeout(searchForwardTargets, 320);
+  });
+
   const openDeleteDialog = (messageIDs) => {
+    if (!hasPermission("chat:operate")) {
+      showToast("当前账号没有删除消息权限");
+      return;
+    }
     if (!elements.deleteDialog) {
       return;
     }
@@ -1597,9 +1702,14 @@
     }
   });
 
-  loadAccount().then((online) => {
-    if (online) {
-      loadChats();
-    }
-  });
+  loadPermissions()
+    .catch((error) => {
+      showToast(error.message);
+    })
+    .then(() => loadAccount())
+    .then((online) => {
+      if (online) {
+        loadChats();
+      }
+    });
 })();

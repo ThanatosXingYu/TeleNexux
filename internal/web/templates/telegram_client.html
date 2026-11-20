@@ -11,7 +11,8 @@
     <script src="/static/js/telegram_client.js" defer></script>
   </head>
   <body>
-    <div class="telegram-client" data-telegram-client data-account-id="{{.AccountID}}" data-mobile-view="list">
+    <div class="telegram-client" data-telegram-client data-account-id="{{.AccountID}}"
+      data-mobile-view="list">
       <nav class="tg-rail" aria-label="Telegram 快捷导航">
         <a class="tg-rail-brand" href="/accounts" aria-label="返回 TeleNexus 账号列表">
           <img src="/static/img/logo.svg" alt="">
@@ -299,8 +300,12 @@
           </header>
           <p>将 <strong data-forward-count>0</strong> 条消息转发到：</p>
           <label class="tg-dialog-field">
+            <span>搜索收件人</span>
+            <input type="search" data-forward-search placeholder="用户名、姓名或会话名称" autocomplete="off">
+          </label>
+          <label class="tg-dialog-field">
             <span>目标会话</span>
-            <select name="target" data-forward-target required></select>
+            <select name="target" data-forward-target size="6" required></select>
           </label>
           <p class="tg-notice tg-notice-error" data-forward-error hidden></p>
           <footer>

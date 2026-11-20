@@ -1391,6 +1391,7 @@ textarea:focus-visible {
 
 .tg-profile-form input,
 .tg-profile-form textarea,
+.tg-dialog-field input,
 .tg-dialog-field select {
   width: 100%;
   padding: 10px 12px;
@@ -1403,6 +1404,7 @@ textarea:focus-visible {
 
 .tg-profile-form input:focus,
 .tg-profile-form textarea:focus,
+.tg-dialog-field input:focus,
 .tg-dialog-field select:focus {
   border-color: var(--tg-primary);
 }

@@ -1455,18 +1455,26 @@
         `/api/v1/accounts/${encodeURIComponent(accountID)}/refresh`,
         {method: "POST", body: "{}"},
       );
-      return response?.item || response;
+      return {
+        item: response?.item || response,
+        outcome: Array.isArray(response?.outcomes) ? response.outcomes[0] : null,
+        verifiedAt: response?.verified_at || "",
+      };
     }));
     const items = [];
     const outcomes = [];
     const warnings = [];
     results.forEach((result, index) => {
       if (result.status === "fulfilled") {
-        items.push(result.value);
+        const {item, outcome, verifiedAt} = result.value;
+        items.push(item);
         outcomes.push({
-          account_id: Number(result.value.id),
-          status: result.value.status,
-          reason: result.value.status_reason || "",
+          account_id: Number(item.id),
+          status: outcome?.status || item.status,
+          reason: outcome?.reason || item.status_reason || "",
+          deferred: Boolean(outcome?.deferred),
+          skipped: Boolean(outcome?.skipped),
+          verified_at: verifiedAt,
         });
         return;
       }
@@ -1649,13 +1657,13 @@
     setBatchButtonsDisabled(true);
     showNotice(accountsError, `正在验证 ${targets.length} 个账号的 Telegram 授权...`);
     try {
-      if (await loadAccounts(true)) {
+      if (await loadAccounts(true, targets.map((account) => Number(account.id)))) {
         markAutomaticVerification();
         const active = allAccounts.filter((account) => !isDeletedAccount(account));
         const offline = active.filter((account) => accountStatus(account).key === "error").length;
         const skipped = active.filter((account) => account.refresh_skipped).length;
-        const checked = active.length - skipped - accountRefreshWarnings.length;
-        const deferred = accountRefreshWarnings.length;
+        const deferred = new Set(accountRefreshWarnings.map((warning) => Number(warning.account_id))).size;
+        const checked = active.length - skipped - deferred;
         if (deferred > 0) {
           showAccountToast(
             `状态校验完成：${checked} 个已校验，${deferred} 个暂时不可达，${skipped} 个已跳过`,
@@ -1760,8 +1768,8 @@
         const active = allAccounts.filter((account) => !isDeletedAccount(account));
         const offline = active.filter((account) => accountStatus(account).key === "error").length;
         const skipped = active.filter((account) => account.refresh_skipped).length;
-        const checked = active.length - skipped - accountRefreshWarnings.length;
-        const deferred = accountRefreshWarnings.length;
+        const deferred = new Set(accountRefreshWarnings.map((warning) => Number(warning.account_id))).size;
+        const checked = active.length - skipped - deferred;
         if (deferred > 0) {
           showAccountToast(
             `状态校验完成：${checked} 个已校验，${deferred} 个暂时不可达，${skipped} 个已跳过`,

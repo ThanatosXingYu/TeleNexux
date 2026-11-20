@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -84,6 +85,18 @@ var knownPermissions = map[string]struct{}{
 	PermissionSettingsRead:   {},
 	PermissionSettingsWrite:  {},
 	PermissionTelegramAuth:   {},
+}
+
+// Permissions returns the permissions granted to a supported local role.
+func Permissions(role string) []string {
+	permissions := make([]string, 0, len(knownPermissions))
+	for permission := range knownPermissions {
+		if CanAccess(role, permission) {
+			permissions = append(permissions, permission)
+		}
+	}
+	sort.Strings(permissions)
+	return permissions
 }
 
 type credentials struct {

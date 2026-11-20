@@ -382,6 +382,7 @@ func TestAccountWorkspaceRendersStandaloneChatViewer(t *testing.T) {
 		`data-app-context-menu`,
 		`搜索会话或用户名`,
 		`data-app-context-action="select"`,
+		`data-forward-search`,
 		`仅为我删除`,
 		`name="scope" value="me"`,
 		`class="tg-rail-folders"`,

@@ -1361,10 +1361,12 @@ type loginAttempt struct {
 }
 
 type authSessionResponse struct {
-	Configured    bool   `json:"configured"`
-	Authenticated bool   `json:"authenticated"`
-	Username      string `json:"username,omitempty"`
-	CSRFToken     string `json:"csrf_token,omitempty"`
+	Configured    bool     `json:"configured"`
+	Authenticated bool     `json:"authenticated"`
+	Username      string   `json:"username,omitempty"`
+	Role          string   `json:"role,omitempty"`
+	Permissions   []string `json:"permissions,omitempty"`
+	CSRFToken     string   `json:"csrf_token,omitempty"`
 }
 
 type accountRefreshResult struct {
@@ -1402,6 +1404,8 @@ func (a *API) authSession(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			response.Authenticated = true
 			response.Username = a.auth.Username()
+			response.Role = session.Role
+			response.Permissions = auth.Permissions(session.Role)
 			response.CSRFToken = session.CSRF
 		}
 	}
@@ -1526,6 +1530,8 @@ func (a *API) startAdministratorSession(w http.ResponseWriter, r *http.Request) 
 		Configured:    true,
 		Authenticated: true,
 		Username:      a.auth.Username(),
+		Role:          session.Role,
+		Permissions:   auth.Permissions(session.Role),
 		CSRFToken:     session.CSRF,
 	})
 	return nil

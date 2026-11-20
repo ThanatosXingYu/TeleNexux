@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -120,6 +121,30 @@ func TestRolePermissionMatrix(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+func TestPermissionsReturnsStableRoleCapabilities(t *testing.T) {
+	administrator := Permissions(RoleAdministrator)
+	if !slices.IsSorted(administrator) {
+		t.Fatalf("administrator permissions are not sorted: %v", administrator)
+	}
+	if !slices.Contains(administrator, PermissionAccountWrite) ||
+		!slices.Contains(administrator, PermissionSettingsWrite) {
+		t.Fatalf("administrator permissions are incomplete: %v", administrator)
+	}
+
+	viewer := Permissions(RoleViewer)
+	if !slices.IsSorted(viewer) {
+		t.Fatalf("viewer permissions are not sorted: %v", viewer)
+	}
+	if !slices.Contains(viewer, PermissionChatRead) ||
+		slices.Contains(viewer, PermissionChatOperate) ||
+		slices.Contains(viewer, PermissionAccountWrite) {
+		t.Fatalf("viewer permissions do not match read-only policy: %v", viewer)
+	}
+	if got := Permissions("unsupported"); len(got) != 0 {
+		t.Fatalf("unsupported role permissions = %v, want none", got)
 	}
 }
 

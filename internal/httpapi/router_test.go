@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -644,6 +645,39 @@ func TestAdministratorLoginCreatesSession(t *testing.T) {
 	cookies := recorder.Result().Cookies()
 	if len(cookies) == 0 {
 		t.Fatal("login did not set a session cookie")
+	}
+}
+
+func TestAuthSessionReportsRolePermissions(t *testing.T) {
+	manager, err := auth.NewTestManager("viewer", "strong-password-123")
+	if err != nil {
+		t.Fatalf("NewTestManager() error = %v", err)
+	}
+	token, session, err := manager.CreateRoleSession(auth.RoleViewer)
+	if err != nil {
+		t.Fatalf("CreateRoleSession() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil)
+	request.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	recorder := httptest.NewRecorder()
+	newRawTestHandler(t, manager).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	var payload authSessionResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode session response: %v", err)
+	}
+	if payload.Role != auth.RoleViewer || !payload.Authenticated {
+		t.Fatalf("session response = %+v", payload)
+	}
+	if payload.CSRFToken != session.CSRF {
+		t.Fatal("session response did not contain the active CSRF token")
+	}
+	if !slices.Contains(payload.Permissions, auth.PermissionChatRead) ||
+		slices.Contains(payload.Permissions, auth.PermissionChatOperate) ||
+		slices.Contains(payload.Permissions, auth.PermissionAccountWrite) {
+		t.Fatalf("viewer permissions = %v", payload.Permissions)
 	}
 }
 
