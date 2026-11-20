@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/ThanatosXingYu/TeleNexux/internal/account"
+	"github.com/ThanatosXingYu/TeleNexux/internal/accountproxy"
 	"github.com/ThanatosXingYu/TeleNexux/internal/auth"
 	healthcheck "github.com/ThanatosXingYu/TeleNexux/internal/health"
 	"github.com/ThanatosXingYu/TeleNexux/internal/monitorscheduler"
@@ -55,6 +56,8 @@ type AccountService interface {
 		reason string,
 	) (account.Account, error)
 	Update(ctx context.Context, id int64, input account.UpdateInput) (account.Account, error)
+	SetProxy(ctx context.Context, id int64, proxy account.Proxy) (account.Account, error)
+	ClearProxy(ctx context.Context, id int64) (account.Account, error)
 	ScheduleDeletion(ctx context.Context, id int64) (account.Account, error)
 	Restore(ctx context.Context, id int64) (account.Account, error)
 }
@@ -121,6 +124,14 @@ type SettingsService interface {
 	Save(values settings.Values) error
 	RestartRequired() bool
 }
+
+type AccountProxyStore interface {
+	Get(accountID int64) (accountproxy.Profile, bool)
+	Set(ctx context.Context, accountID int64, profile accountproxy.Profile) error
+	Delete(ctx context.Context, accountID int64) (bool, error)
+}
+
+type ProxyChecker func(ctx context.Context, profile accountproxy.Profile) error
 
 type HealthService interface {
 	Check(ctx context.Context, detailed bool) healthcheck.Report
@@ -213,6 +224,8 @@ type API struct {
 	accounts   AccountService
 	telegram   TelegramAuthService
 	chats      TelegramChatService
+	proxies    AccountProxyStore
+	proxyCheck ProxyChecker
 	settings   SettingsService
 	auth       *auth.Manager
 	healthSvc  HealthService
@@ -227,6 +240,22 @@ type API struct {
 	authSlots  chan struct{}
 }
 
+type Option func(*API)
+
+func WithAccountProxyStore(store AccountProxyStore) Option {
+	return func(api *API) {
+		api.proxies = store
+	}
+}
+
+func WithProxyChecker(checker ProxyChecker) Option {
+	return func(api *API) {
+		if checker != nil {
+			api.proxyCheck = checker
+		}
+	}
+}
+
 func New(
 	accounts AccountService,
 	telegram TelegramAuthService,
@@ -238,8 +267,9 @@ func New(
 	healthService HealthService,
 	operationsService OperationsService,
 	monitorRunner MonitorRunner,
+	options ...Option,
 ) *API {
-	return &API{
+	api := &API{
 		accounts:   accounts,
 		telegram:   telegram,
 		chats:      chats,
@@ -253,7 +283,14 @@ func New(
 		attempts:   make(map[string]loginAttempt),
 		authOps:    make(map[string]loginAttempt),
 		authSlots:  make(chan struct{}, telegramAuthConcurrency),
+		proxyCheck: accountproxy.Check,
 	}
+	for _, option := range options {
+		if option != nil {
+			option(api)
+		}
+	}
+	return api
 }
 
 func (a *API) Handler() http.Handler {
@@ -358,6 +395,12 @@ func (a *API) Handler() http.Handler {
 		a.requireAPIPermission(auth.PermissionAccountWrite, a.restoreAccount))
 	mux.HandleFunc("POST /api/v1/accounts/{id}/refresh",
 		a.requireAPIPermission(auth.PermissionAccountWrite, a.refreshAccount))
+	mux.HandleFunc("PUT /api/v1/accounts/{id}/proxy",
+		a.requireAPIPermission(auth.PermissionAccountWrite, a.setAccountProxy))
+	mux.HandleFunc("DELETE /api/v1/accounts/{id}/proxy",
+		a.requireAPIPermission(auth.PermissionAccountWrite, a.clearAccountProxy))
+	mux.HandleFunc("POST /api/v1/accounts/{id}/proxy/check",
+		a.requireAPIPermission(auth.PermissionAccountWrite, a.checkAccountProxy))
 	mux.HandleFunc("GET /api/v1/accounts/{id}/chats",
 		a.requireAPIPermission(auth.PermissionChatRead, a.listAccountChats))
 	mux.HandleFunc("GET /api/v1/accounts/{id}/search",
@@ -1836,6 +1879,200 @@ func (a *API) refreshAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+type accountProxyInput struct {
+	ProxyURL string `json:"proxy_url"`
+}
+
+func (a *API) setAccountProxy(w http.ResponseWriter, r *http.Request) {
+	if !prepareJSONMutation(w, r) {
+		return
+	}
+	if a.proxies == nil {
+		writeError(w, http.StatusServiceUnavailable, "proxy_store_unavailable",
+			"账号代理存储不可用")
+		return
+	}
+	id, ok := accountIDPath(w, r)
+	if !ok {
+		return
+	}
+	if _, err := a.accounts.Get(r.Context(), id); err != nil {
+		a.writeAccountReadError(w, id, err)
+		return
+	}
+	var input accountProxyInput
+	if !decodeJSONBody(w, r, &input) {
+		return
+	}
+	profile, err := accountproxy.Parse(input.ProxyURL)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_proxy", err.Error())
+		return
+	}
+	previous, hadPrevious := a.proxies.Get(id)
+	if err := a.proxies.Set(r.Context(), id, profile); err != nil {
+		a.logger.Error("save account proxy credentials", "account_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "proxy_save_failed",
+			"代理凭据保存失败")
+		return
+	}
+	item, err := a.accounts.SetProxy(r.Context(), id, account.Proxy{
+		Enabled:  true,
+		Host:     profile.Host,
+		Port:     profile.Port,
+		Username: profile.Username,
+	})
+	if err != nil {
+		a.rollbackProxy(r.Context(), id, previous, hadPrevious)
+		a.writeAccountProxyError(w, id, err)
+		return
+	}
+	a.resetAccountConnection(id)
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (a *API) clearAccountProxy(w http.ResponseWriter, r *http.Request) {
+	if !prepareJSONMutation(w, r) {
+		return
+	}
+	if a.proxies == nil {
+		writeError(w, http.StatusServiceUnavailable, "proxy_store_unavailable",
+			"账号代理存储不可用")
+		return
+	}
+	id, ok := accountIDPath(w, r)
+	if !ok {
+		return
+	}
+	if _, err := a.accounts.Get(r.Context(), id); err != nil {
+		a.writeAccountReadError(w, id, err)
+		return
+	}
+	if _, err := a.proxies.Delete(r.Context(), id); err != nil {
+		a.logger.Error("delete account proxy credentials", "account_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "proxy_delete_failed",
+			"代理凭据删除失败，账号代理设置未变更")
+		return
+	}
+	item, err := a.accounts.ClearProxy(r.Context(), id)
+	if err != nil {
+		a.writeAccountProxyError(w, id, err)
+		return
+	}
+	a.resetAccountConnection(id)
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (a *API) checkAccountProxy(w http.ResponseWriter, r *http.Request) {
+	if !prepareJSONMutation(w, r) {
+		return
+	}
+	if a.proxies == nil {
+		writeError(w, http.StatusServiceUnavailable, "proxy_store_unavailable",
+			"账号代理存储不可用")
+		return
+	}
+	id, ok := accountIDPath(w, r)
+	if !ok {
+		return
+	}
+	if _, err := a.accounts.Get(r.Context(), id); err != nil {
+		a.writeAccountReadError(w, id, err)
+		return
+	}
+	profile, found := a.proxies.Get(id)
+	if !found {
+		writeError(w, http.StatusNotFound, "proxy_not_found",
+			"该账号尚未配置代理")
+		return
+	}
+	checkErr := a.proxyCheck(r.Context(), profile)
+	now := time.Now().UTC()
+	proxy := account.Proxy{
+		Enabled:     true,
+		Host:        profile.Host,
+		Port:        profile.Port,
+		Username:    profile.Username,
+		LastChecked: &now,
+	}
+	if checkErr != nil {
+		proxy.LastError = "代理连接失败"
+		a.logger.Warn("account proxy connectivity check failed",
+			"account_id", id, "error_type", fmt.Sprintf("%T", checkErr))
+	}
+	_, err := a.accounts.SetProxy(r.Context(), id, proxy)
+	if err != nil {
+		a.writeAccountProxyError(w, id, err)
+		return
+	}
+	status := http.StatusOK
+	if checkErr != nil {
+		status = http.StatusBadGateway
+	}
+	writeJSON(w, status, map[string]any{
+		"ok": checkErr == nil,
+		"message": map[bool]string{
+			true:  "代理连接正常",
+			false: "代理暂时无法连接 Telegram，账号在线状态未变更",
+		}[checkErr == nil],
+	})
+}
+
+func (a *API) rollbackProxy(
+	ctx context.Context,
+	id int64,
+	previous accountproxy.Profile,
+	hadPrevious bool,
+) {
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	var err error
+	if hadPrevious {
+		err = a.proxies.Set(rollbackCtx, id, previous)
+	} else {
+		_, err = a.proxies.Delete(rollbackCtx, id)
+	}
+	if err != nil {
+		a.logger.Error("rollback account proxy credentials", "account_id", id, "error", err)
+	}
+}
+
+func (a *API) resetAccountConnection(id int64) {
+	if a.chats != nil {
+		a.chats.ResetAccount(id)
+	}
+}
+
+func (a *API) writeAccountProxyError(w http.ResponseWriter, id int64, err error) {
+	if errors.Is(err, account.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "account_not_found", "account was not found")
+		return
+	}
+	a.logger.Error("update account proxy metadata", "account_id", id, "error", err)
+	writeError(w, http.StatusInternalServerError, "proxy_update_failed",
+		"代理设置保存失败")
+}
+
+func (a *API) writeAccountReadError(w http.ResponseWriter, id int64, err error) {
+	if errors.Is(err, account.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "account_not_found", "account was not found")
+		return
+	}
+	a.logger.Error("read account for proxy update", "account_id", id, "error", err)
+	writeError(w, http.StatusInternalServerError, "internal_error",
+		"could not load account")
+}
+
+func accountIDPath(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid_id",
+			"account ID must be a positive integer")
+		return 0, false
+	}
+	return id, true
 }
 
 func (a *API) refreshAccountStatus(

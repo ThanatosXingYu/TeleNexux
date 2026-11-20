@@ -83,6 +83,9 @@ func TestScriptUsesOnlyReferencedControls(t *testing.T) {
 		`restoreAccount(account, restore)`,
 		`accountStatus(account).key !== "online"`,
 		`.account-row-select input`,
+		`/proxy/check`,
+		`openProxyDialog(account)`,
+		`proxy_url`,
 	}
 	for _, behavior := range requiredBehavior {
 		if !strings.Contains(script, behavior) {

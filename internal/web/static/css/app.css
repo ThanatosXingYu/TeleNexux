@@ -2404,6 +2404,17 @@ a {
   color: #cf1322;
 }
 
+.proxy-summary {
+  display: inline-flex;
+  max-width: 190px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.proxy-summary.is-configured {
+  color: var(--text);
+}
+
 .accounts-empty {
   min-height: 310px;
 }

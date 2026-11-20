@@ -118,6 +118,7 @@
           <th>账号</th>
           <th>手机号</th>
           <th>用户名</th>
+          <th>代理</th>
           <th>状态</th>
           <th>最近校验</th>
           <th>操作</th>
@@ -324,6 +325,45 @@
         rel="noopener" hidden>打开账号 Web，编辑 Telegram 资料</a>
     </form>
   </div>
+</dialog>
+
+<dialog class="account-dialog account-proxy-dialog" id="account-proxy-dialog"
+  aria-labelledby="account-proxy-title">
+  <form class="dialog-card" data-account-proxy-form>
+    <div class="dialog-header">
+      <div>
+        <p class="eyebrow">账号连接</p>
+        <h2 id="account-proxy-title">SOCKS5 代理</h2>
+      </div>
+      <button class="tool-button" type="button" data-account-proxy-close aria-label="关闭代理设置">
+        <span class="icon icon-x" aria-hidden="true"></span>
+      </button>
+    </div>
+    <div class="account-profile-summary">
+      <span class="account-monogram">
+        <span class="icon icon-shield-check" aria-hidden="true"></span>
+      </span>
+      <span>
+        <strong data-account-proxy-name>Telegram 账号</strong>
+        <small data-account-proxy-state>仅影响该账号的 Telegram 连接</small>
+      </span>
+    </div>
+    <label class="field">
+      <span>代理地址</span>
+      <input name="proxy_url" type="url" maxlength="1024" autocomplete="off"
+        placeholder="socks5://host:1080 或 socks5://user:password@host:1080" required>
+    </label>
+    <p class="field-hint">仅支持 SOCKS5。密码只写入加密凭据文件，不会在页面再次显示。</p>
+    <p class="form-notice" data-account-proxy-notice hidden></p>
+    <div class="dialog-actions">
+      <button class="button button-secondary" type="button" data-account-proxy-close>取消</button>
+      <button class="button button-secondary" type="button" data-account-proxy-check
+        hidden>校验连接</button>
+      <button class="button button-danger-ghost" type="button" data-account-proxy-clear
+        hidden>移除代理</button>
+      <button class="button button-primary" type="submit">保存并重连</button>
+    </div>
+  </form>
 </dialog>
 
 <dialog class="account-dialog account-confirm-dialog" id="account-delete-dialog"

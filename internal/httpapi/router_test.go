@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ThanatosXingYu/TeleNexux/internal/account"
+	"github.com/ThanatosXingYu/TeleNexux/internal/accountproxy"
 	"github.com/ThanatosXingYu/TeleNexux/internal/auth"
 	"github.com/ThanatosXingYu/TeleNexux/internal/monitorscheduler"
 	"github.com/ThanatosXingYu/TeleNexux/internal/operations"
@@ -88,6 +89,9 @@ type fakeAccountService struct {
 	scheduledID int64
 	restoredID  int64
 	verifyCalls int
+	proxy       account.Proxy
+	proxyID     int64
+	clearedID   int64
 }
 
 func (s *fakeAccountService) Create(_ context.Context, input account.CreateInput) (account.Account, error) {
@@ -179,6 +183,34 @@ func (s *fakeAccountService) Update(
 	s.created.PhoneNumber = input.PhoneNumber
 	s.created.Username = input.Username
 	s.created.DisplayName = input.DisplayName
+	return s.created, nil
+}
+
+func (s *fakeAccountService) SetProxy(
+	_ context.Context,
+	id int64,
+	proxy account.Proxy,
+) (account.Account, error) {
+	if s.updateErr != nil {
+		return account.Account{}, s.updateErr
+	}
+	s.proxyID = id
+	s.proxy = proxy
+	s.created.ID = id
+	s.created.Proxy = proxy
+	return s.created, nil
+}
+
+func (s *fakeAccountService) ClearProxy(
+	_ context.Context,
+	id int64,
+) (account.Account, error) {
+	if s.updateErr != nil {
+		return account.Account{}, s.updateErr
+	}
+	s.clearedID = id
+	s.created.ID = id
+	s.created.Proxy = account.Proxy{}
 	return s.created, nil
 }
 
@@ -300,6 +332,7 @@ type fakeTelegramChatService struct {
 	sessionID     int64
 	deleteScope   bool
 	validateCalls int
+	resetID       int64
 }
 
 func (s *fakeTelegramChatService) ValidateSession(_ context.Context, _ int64) error {
@@ -315,7 +348,39 @@ func (s *fakeTelegramChatService) DeleteSession(accountID int64) error {
 	return nil
 }
 
-func (s *fakeTelegramChatService) ResetAccount(_ int64) {}
+func (s *fakeTelegramChatService) ResetAccount(accountID int64) {
+	s.resetID = accountID
+}
+
+type fakeAccountProxyStore struct {
+	items map[int64]accountproxy.Profile
+}
+
+func (s *fakeAccountProxyStore) Get(accountID int64) (accountproxy.Profile, bool) {
+	item, ok := s.items[accountID]
+	return item, ok
+}
+
+func (s *fakeAccountProxyStore) Set(
+	_ context.Context,
+	accountID int64,
+	profile accountproxy.Profile,
+) error {
+	if s.items == nil {
+		s.items = make(map[int64]accountproxy.Profile)
+	}
+	s.items[accountID] = profile
+	return nil
+}
+
+func (s *fakeAccountProxyStore) Delete(
+	_ context.Context,
+	accountID int64,
+) (bool, error) {
+	_, ok := s.items[accountID]
+	delete(s.items, accountID)
+	return ok, nil
+}
 
 func (s *fakeTelegramChatService) Chats(
 	_ context.Context,
@@ -1150,6 +1215,90 @@ func TestRefreshAccountsPersistsExpiredSession(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "重新登录") {
 		t.Fatalf("response = %s, want actionable refresh reason", recorder.Body.String())
+	}
+}
+
+func TestSetAccountProxyStoresCredentialsWithoutEchoingPassword(t *testing.T) {
+	accounts := &fakeAccountService{created: account.Account{ID: 42}}
+	chats := &fakeTelegramChatService{}
+	proxies := &fakeAccountProxyStore{}
+	request := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/accounts/42/proxy",
+		strings.NewReader(
+			`{"proxy_url":"socks5://alice:super-secret@proxy.example:1080"}`,
+		),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	newTestHandlerWithProxy(accounts, chats, proxies).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "super-secret") {
+		t.Fatal("response exposed proxy password")
+	}
+	profile, ok := proxies.Get(42)
+	if !ok || profile.Host != "proxy.example" || profile.Password != "super-secret" {
+		t.Fatalf("stored proxy = %+v, ok = %t", profile, ok)
+	}
+	if accounts.proxy.Host != "proxy.example" || accounts.proxy.Username != "alice" ||
+		accounts.proxy.Port != 1080 || !accounts.proxy.Enabled {
+		t.Fatalf("account proxy metadata = %+v", accounts.proxy)
+	}
+	if chats.resetID != 42 {
+		t.Fatalf("ResetAccount() account = %d, want 42", chats.resetID)
+	}
+}
+
+func TestSetAccountProxyRejectsInvalidURL(t *testing.T) {
+	accounts := &fakeAccountService{created: account.Account{ID: 42}}
+	request := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/accounts/42/proxy",
+		strings.NewReader(`{"proxy_url":"http://proxy.example:8080"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	newTestHandlerWithProxy(accounts, &fakeTelegramChatService{}, &fakeAccountProxyStore{}).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnprocessableEntity ||
+		!strings.Contains(recorder.Body.String(), `"code":"invalid_proxy"`) {
+		t.Fatalf("status = %d; body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestCheckAccountProxyDoesNotMarkAccountOffline(t *testing.T) {
+	accounts := &fakeAccountService{
+		created: account.Account{ID: 42, Status: account.StatusOnline},
+	}
+	proxies := &fakeAccountProxyStore{items: map[int64]accountproxy.Profile{
+		42: {Enabled: true, Host: "proxy.example", Port: 1080},
+	}}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/accounts/42/proxy/check",
+		strings.NewReader(`{}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	newTestHandlerWithProxy(
+		accounts,
+		&fakeTelegramChatService{},
+		proxies,
+		WithProxyChecker(func(context.Context, accountproxy.Profile) error {
+			return errors.New("proxy unavailable")
+		}),
+	).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if accounts.created.Status != account.StatusOnline {
+		t.Fatalf("account status = %q, proxy check must not mark it offline",
+			accounts.created.Status)
+	}
+	if accounts.proxy.LastChecked == nil || accounts.proxy.LastError == "" {
+		t.Fatalf("proxy check result = %+v", accounts.proxy)
 	}
 }
 
@@ -2584,6 +2733,38 @@ func newTestHandlerWithDependencies(
 			nil,
 			nil,
 			nil,
+		).Handler(),
+		token: token,
+		csrf:  csrf,
+	}
+}
+
+func newTestHandlerWithProxy(
+	accounts AccountService,
+	chats TelegramChatService,
+	proxies AccountProxyStore,
+	options ...Option,
+) http.Handler {
+	webHandler, err := web.New()
+	if err != nil {
+		panic(err)
+	}
+	manager, token, csrf := testAuthentication()
+	apiOptions := []Option{WithAccountProxyStore(proxies)}
+	apiOptions = append(apiOptions, options...)
+	return authenticatedTestHandler{
+		next: New(
+			accounts,
+			&fakeTelegramAuthService{},
+			chats,
+			nil,
+			manager,
+			webHandler.Handler(),
+			slog.New(slog.NewTextHandler(io.Discard, nil)),
+			nil,
+			nil,
+			nil,
+			apiOptions...,
 		).Handler(),
 		token: token,
 		csrf:  csrf,

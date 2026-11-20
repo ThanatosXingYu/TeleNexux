@@ -475,6 +475,13 @@
   const profileID = document.querySelector("[data-account-profile-id]");
   const profileNotice = document.querySelector("[data-account-edit-notice]");
   const profileWebLink = document.querySelector("[data-account-open-web]");
+  const proxyDialog = document.getElementById("account-proxy-dialog");
+  const proxyForm = document.querySelector("[data-account-proxy-form]");
+  const proxyName = document.querySelector("[data-account-proxy-name]");
+  const proxyState = document.querySelector("[data-account-proxy-state]");
+  const proxyNotice = document.querySelector("[data-account-proxy-notice]");
+  const proxyCheckButton = document.querySelector("[data-account-proxy-check]");
+  const proxyClearButton = document.querySelector("[data-account-proxy-clear]");
   const deleteDialog = document.getElementById("account-delete-dialog");
   const deleteForm = document.querySelector("[data-account-delete-form]");
   const deleteName = document.querySelector("[data-account-delete-name]");
@@ -916,10 +923,15 @@
     deleteAction.type = "button";
     deleteAction.textContent = "删除";
     deleteAction.addEventListener("click", () => openDeleteDialog(account));
+    const proxyAction = document.createElement("button");
+    proxyAction.className = "button button-secondary button-compact";
+    proxyAction.type = "button";
+    proxyAction.textContent = account.proxy?.enabled ? "代理设置" : "配置代理";
+    proxyAction.addEventListener("click", () => openProxyDialog(account));
     if (status.key === "error") {
-      actionGroup.append(relogin, refreshAction, profileAction, deleteAction);
+      actionGroup.append(relogin, refreshAction, profileAction, proxyAction, deleteAction);
     } else {
-      actionGroup.append(refreshAction, relogin, profileAction, deleteAction);
+      actionGroup.append(refreshAction, relogin, profileAction, proxyAction, deleteAction);
     }
     return actionGroup;
   };
@@ -963,6 +975,7 @@
       "最近校验",
       account.last_verified_at ? formatAccountDate(account.last_verified_at) : "尚未校验",
     );
+    addDetail("代理", proxyLabelFor(account));
 
     card.append(header, details, createAccountActions(account));
     return card;
@@ -1017,6 +1030,54 @@
     deleteDialog.showModal();
   };
 
+  const proxyLabelFor = (account) => {
+    const proxy = account.proxy;
+    if (!proxy?.enabled) {
+      return "未配置";
+    }
+    const host = [proxy.host, proxy.port].filter(Boolean).join(":");
+    return proxy.last_error
+      ? `${host} · 连接异常`
+      : proxy.last_checked_at
+        ? `${host} · 已校验`
+        : host;
+  };
+
+  const openProxyDialog = (account) => {
+    if (!proxyDialog || !proxyForm) {
+      return;
+    }
+    managedAccount = account;
+    if (proxyName) {
+      proxyName.textContent =
+        account.display_name || account.username || `账号 ${account.id}`;
+    }
+    const proxy = account.proxy;
+    if (proxyState) {
+      proxyState.textContent = proxy?.enabled
+        ? `${proxy.host}:${proxy.port}${proxy.last_error
+          ? ` · ${proxy.last_error}`
+          : proxy.last_checked_at
+            ? " · 连接正常"
+            : " · 待校验"}`
+        : "仅影响该账号的 Telegram 连接";
+    }
+    proxyForm.reset();
+    const configuredHint = proxy?.enabled
+      ? "输入新的 SOCKS5 地址以替换现有代理；密码不会回显。"
+      : "例如 socks5://127.0.0.1:1080";
+    proxyForm.elements.namedItem("proxy_url").placeholder = configuredHint;
+    proxyCheckButton?.toggleAttribute("hidden", !proxy?.enabled);
+    proxyClearButton?.toggleAttribute("hidden", !proxy?.enabled);
+    showNotice(proxyNotice, "");
+    proxyDialog.showModal();
+  };
+
+  const closeProxyDialog = () => {
+    proxyDialog?.close();
+    managedAccount = null;
+  };
+
   const renderAccounts = (items) => {
     if (!accountBody || !accountsMobile) {
       return;
@@ -1065,12 +1126,18 @@
         : "未设置";
 
       const status = createStatus(account);
+      const proxy = element(
+        "span",
+        `proxy-summary${account.proxy?.enabled ? " is-configured" : ""}`,
+        proxyLabelFor(account),
+      );
 
       row.append(
         tableCell(createAccountSelection(account, "account-row-select")),
         tableCell(identity),
         tableCell(phone),
         tableCell(username),
+        tableCell(proxy),
         tableCell(status),
         tableCell(formatAccountDate(account.last_verified_at || account.updated_at)),
         tableCell(createAccountActions(account)),
@@ -1089,6 +1156,76 @@
       deleteDialog?.close();
       managedAccount = null;
     });
+  });
+  document.querySelectorAll("[data-account-proxy-close]").forEach((button) => {
+    button.addEventListener("click", closeProxyDialog);
+  });
+  proxyForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!managedAccount) {
+      return;
+    }
+    const data = new FormData(proxyForm);
+    const proxyURL = String(data.get("proxy_url") || "").trim();
+    if (!proxyURL) {
+      showNotice(proxyNotice, "请输入 SOCKS5 代理地址", true);
+      return;
+    }
+    const submit = proxyForm.querySelector("button[type='submit']");
+    submit?.setAttribute("disabled", "");
+    showNotice(proxyNotice, "正在保存并重连该账号...");
+    try {
+      await requestJSON(
+        `/api/v1/accounts/${encodeURIComponent(managedAccount.id)}/proxy`,
+        {method: "PUT", body: JSON.stringify({proxy_url: proxyURL})},
+      );
+      closeProxyDialog();
+      showAccountToast("代理已保存，账号连接正在重连");
+      await loadAccounts();
+    } catch (error) {
+      showNotice(proxyNotice, error.message, true);
+    } finally {
+      submit?.removeAttribute("disabled");
+    }
+  });
+  proxyCheckButton?.addEventListener("click", async () => {
+    if (!managedAccount) {
+      return;
+    }
+    proxyCheckButton.setAttribute("disabled", "");
+    showNotice(proxyNotice, "正在通过代理连接 Telegram...");
+    try {
+      const result = await requestJSON(
+        `/api/v1/accounts/${encodeURIComponent(managedAccount.id)}/proxy/check`,
+        {method: "POST", body: "{}"},
+      );
+      showNotice(proxyNotice, result?.message || "代理连接正常");
+      showAccountToast("代理连接正常");
+    } catch (error) {
+      showNotice(proxyNotice, error.message, true);
+    } finally {
+      proxyCheckButton.removeAttribute("disabled");
+    }
+  });
+  proxyClearButton?.addEventListener("click", async () => {
+    if (!managedAccount) {
+      return;
+    }
+    proxyClearButton.setAttribute("disabled", "");
+    showNotice(proxyNotice, "正在移除代理...");
+    try {
+      await requestJSON(
+        `/api/v1/accounts/${encodeURIComponent(managedAccount.id)}/proxy`,
+        {method: "DELETE", body: "{}"},
+      );
+      closeProxyDialog();
+      showAccountToast("代理已移除，账号连接正在重连");
+      await loadAccounts();
+    } catch (error) {
+      showNotice(proxyNotice, error.message, true);
+    } finally {
+      proxyClearButton.removeAttribute("disabled");
+    }
   });
   profileForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
