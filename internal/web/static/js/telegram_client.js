@@ -993,6 +993,7 @@
 
   const openContextMenu = (event, message) => {
     if (!message) {
+      state.actionMessageIDs = [];
       placeContextMenu(elements.appContextMenu, event);
       return;
     }

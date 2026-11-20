@@ -31,6 +31,7 @@ func TestTelegramClientScriptBehaviors(t *testing.T) {
 		`contextmenu`,
 		`data-app-context-menu`,
 		`placeContextMenu(elements.appContextMenu, event)`,
+		`state.actionMessageIDs = []`,
 		`setSelectionMode(true)`,
 		`/messages/forward`,
 		`/messages/delete`,
