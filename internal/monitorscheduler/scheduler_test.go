@@ -417,6 +417,79 @@ func TestRunOncePersistsNewMessagesAndCheckpoint(t *testing.T) {
 	}
 }
 
+func TestRunOnceReusesIdempotentBatchForReplayedCollection(t *testing.T) {
+	ctx := context.Background()
+	service := testOperationsService(t)
+	if _, err := service.CreateRule(ctx, "Replay", 7, "chat", 42, "Ops", nil); err != nil {
+		t.Fatalf("CreateRule() error = %v", err)
+	}
+	if _, err := service.IngestBatch(ctx, operations.IngestBatchInput{
+		Source:          "test",
+		AccountID:       7,
+		PeerType:        "chat",
+		PeerID:          42,
+		CheckpointAfter: 100,
+		Complete:        true,
+		Messages: []operations.MessageRecord{{
+			AccountID: 7,
+			PeerType:  "chat",
+			PeerID:    42,
+			MessageID: 100,
+			SentAt:    time.Now().Add(-time.Minute),
+		}},
+	}); err != nil {
+		t.Fatalf("seed batch error = %v", err)
+	}
+	collection := telegramchat.MessageCollection{
+		Items: []telegramchat.Message{{
+			ID:     101,
+			Text:   "same collection",
+			SentAt: time.Now(),
+		}},
+		NewestID: 101,
+		Complete: true,
+	}
+	reader := &collectionSequence{collections: []telegramchat.MessageCollection{
+		collection,
+		collection,
+	}}
+	scheduler := New(service, &fakeAccountLookup{}, reader, time.Minute, testLogger())
+	if err := scheduler.RunOnce(ctx); err != nil {
+		t.Fatalf("first RunOnce() error = %v", err)
+	}
+	if err := scheduler.RunOnce(ctx); err != nil {
+		t.Fatalf("replay RunOnce() error = %v", err)
+	}
+	input := operations.IngestBatchInput{
+		Source:           "scheduler",
+		AccountID:        7,
+		PeerType:         "chat",
+		PeerID:           42,
+		CheckpointBefore: 100,
+		CheckpointAfter:  collection.NewestID,
+		Complete:         collection.Complete,
+		Messages: []operations.MessageRecord{{
+			AccountID: 7,
+			PeerType:  "chat",
+			PeerID:    42,
+			MessageID: 101,
+			Text:      "same collection",
+			SentAt:    collection.Items[0].SentAt,
+		}},
+	}
+	firstID, err := operations.IdempotentBatchID(input)
+	if err != nil {
+		t.Fatalf("first IdempotentBatchID() error = %v", err)
+	}
+	secondID, err := operations.IdempotentBatchID(input)
+	if err != nil {
+		t.Fatalf("second IdempotentBatchID() error = %v", err)
+	}
+	if firstID == "" || firstID != secondID {
+		t.Fatalf("scheduler replay batch IDs = %q/%q, want stable ID", firstID, secondID)
+	}
+}
+
 func TestRunOnceRecordsCollectionFailure(t *testing.T) {
 	ctx := context.Background()
 	service := testOperationsService(t)

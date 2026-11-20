@@ -548,3 +548,88 @@ SELECT COUNT(1) FROM evidence_events WHERE batch_id = 'batch-retry'`).Scan(
 		t.Fatalf("conflicting IngestBatch() error = %v, want ErrBatchConflict", err)
 	}
 }
+
+func TestIdempotentBatchIDIsStableAcrossEquivalentSchedulerAttempts(t *testing.T) {
+	now := time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)
+	first := IngestBatchInput{
+		Source:           "scheduler",
+		AccountID:        7,
+		PeerType:         "chat",
+		PeerID:           42,
+		PeerTitle:        "Operations",
+		CheckpointBefore: 100,
+		CheckpointAfter:  102,
+		Complete:         true,
+		Messages: []MessageRecord{
+			{
+				AccountID: 7,
+				PeerType:  "chat",
+				PeerID:    42,
+				PeerTitle: "Operations",
+				MessageID: 101,
+				Text:      "first",
+				SentAt:    now,
+			},
+			{
+				AccountID: 7,
+				PeerType:  "chat",
+				PeerID:    42,
+				PeerTitle: "Operations",
+				MessageID: 102,
+				Text:      "second",
+				SentAt:    now.Add(time.Second),
+			},
+		},
+	}
+	first.BatchID, _ = IdempotentBatchID(first)
+	second := first
+	second.BatchID = ""
+	second.BatchID, _ = IdempotentBatchID(second)
+	if first.BatchID == "" || first.BatchID != second.BatchID {
+		t.Fatalf("batch IDs = %q/%q, want stable non-empty IDs", first.BatchID, second.BatchID)
+	}
+	second.Messages[1].Text = "changed"
+	changedID, _ := IdempotentBatchID(second)
+	if changedID == first.BatchID {
+		t.Fatal("IdempotentBatchID() ignored materially changed message content")
+	}
+}
+
+func TestDeleteRulePreservesAlertHistory(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t)
+	rule, err := service.CreateRule(
+		ctx,
+		"Evidence alerts",
+		7,
+		"chat",
+		42,
+		"Operations",
+		[]string{"urgent"},
+	)
+	if err != nil {
+		t.Fatalf("CreateRule() error = %v", err)
+	}
+	if _, _, err := service.IngestMessages(ctx, []MessageRecord{{
+		AccountID: 7,
+		PeerType:  "chat",
+		PeerID:    42,
+		PeerTitle: "Operations",
+		MessageID: 300,
+		Text:      "urgent deploy",
+		SentAt:    time.Now(),
+	}}); err != nil {
+		t.Fatalf("IngestMessages() error = %v", err)
+	}
+	if err := service.DeleteRule(ctx, rule.ID); err != nil {
+		t.Fatalf("DeleteRule() error = %v", err)
+	}
+	alerts, err := service.ListAlerts(ctx, "pending", 20)
+	if err != nil || len(alerts) != 1 || alerts[0].RuleName != rule.Name {
+		t.Fatalf("alerts after rule deletion = %+v, %v", alerts, err)
+	}
+	versions, err := service.ListRuleVersions(ctx, rule.ID)
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("rule versions after rejected deletion = %+v, %v", versions, err)
+	}
+}

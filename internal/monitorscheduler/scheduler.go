@@ -605,7 +605,7 @@ func (s *Scheduler) ingestCollection(
 			SentAt:    message.SentAt,
 		})
 	}
-	if _, err := s.operations.IngestBatch(ctx, operations.IngestBatchInput{
+	input := operations.IngestBatchInput{
 		Source:           "scheduler",
 		AccountID:        target.AccountID,
 		PeerType:         target.PeerType,
@@ -616,7 +616,13 @@ func (s *Scheduler) ingestCollection(
 		Complete:         collection.Complete,
 		BacklogDetected:  collection.Backlog,
 		Messages:         messages,
-	}); err != nil {
+	}
+	batchID, err := operations.IdempotentBatchID(input)
+	if err != nil {
+		return fmt.Errorf("build monitor batch ID: %w", err)
+	}
+	input.BatchID = batchID
+	if _, err := s.operations.IngestBatch(ctx, input); err != nil {
 		return err
 	}
 	return nil

@@ -1020,6 +1020,36 @@ DELETE FROM monitor_account_states WHERE account_id = ?`, accountID); err != nil
 }
 
 func normalizeBatchInput(input IngestBatchInput) (IngestBatchInput, error) {
+	input, err := normalizeBatchFields(input)
+	if err != nil {
+		return IngestBatchInput{}, err
+	}
+	if input.BatchID == "" {
+		value, err := newBatchID()
+		if err != nil {
+			return IngestBatchInput{}, err
+		}
+		input.BatchID = value
+	}
+	return input, nil
+}
+
+// IdempotentBatchID derives a stable ID from the complete batch payload.
+// Replaying an identical collection therefore reuses its original result.
+func IdempotentBatchID(input IngestBatchInput) (string, error) {
+	input.BatchID = ""
+	normalized, err := normalizeBatchFields(input)
+	if err != nil {
+		return "", err
+	}
+	value := batchPayloadHash(normalized)
+	if value == "" {
+		return "", errors.New("hash ingestion batch payload")
+	}
+	return value, nil
+}
+
+func normalizeBatchFields(input IngestBatchInput) (IngestBatchInput, error) {
 	input.Source = strings.TrimSpace(input.Source)
 	input.PeerType = strings.TrimSpace(input.PeerType)
 	input.PeerTitle = strings.TrimSpace(input.PeerTitle)
@@ -1034,13 +1064,6 @@ func normalizeBatchInput(input IngestBatchInput) (IngestBatchInput, error) {
 	}
 	if input.CheckpointBefore < 0 || input.CheckpointAfter < 0 {
 		return IngestBatchInput{}, errors.New("batch checkpoints must not be negative")
-	}
-	if input.BatchID == "" {
-		value, err := newBatchID()
-		if err != nil {
-			return IngestBatchInput{}, err
-		}
-		input.BatchID = value
 	}
 	return input, nil
 }
